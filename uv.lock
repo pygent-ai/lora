@@ -1,0 +1,23 @@
+version = 1
+revision = 3
+requires-python = ">=3.13"
+
+[[package]]
+name = "lora"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "pygent-ai" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pygent-ai", specifier = "==0.1.5" }]
+
+[[package]]
+name = "pygent-ai"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d0/5d/20784648624818281e5bd889856684628539ea73366b7b25efb39ee15b73/pygent_ai-0.1.5.tar.gz", hash = "sha256:9abed429dc5b44a3b0c39941391dea4147ddb56ff9a3120f10be0de3e45377fe", size = 80538, upload-time = "2026-05-27T00:26:29.069Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/cd/461af37cf3abe5d290cfa15ebc93ce74995659130fde9014f368e1725702/pygent_ai-0.1.5-py3-none-any.whl", hash = "sha256:290a669edcc3a2081940ceb0ec857ecb0ec5be89660e21515f79ad6e6233ab69", size = 70947, upload-time = "2026-05-27T00:26:27.776Z" },
+]
