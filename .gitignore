@@ -12,3 +12,7 @@ wheels/
 # Local secrets and editor state
 .env
 .idea/
+
+# Local Lora runtime state
+.lora/sessions/
+sessions/
