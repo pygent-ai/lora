@@ -22,15 +22,15 @@ class RunConfig:
     session_id: str | None = None
     case_file: str | None = None
     model: str | None = None
-    max_steps: int = 8
+    max_steps: int = -1
 
     def __post_init__(self) -> None:
         self.workspace_root = _abs_path(self.workspace_root)
         self.lora_root = _abs_path(self.lora_root)
         if self.case_file is not None:
             self.case_file = _abs_path(self.case_file)
-        if self.max_steps <= 0:
-            raise ValueError("max_steps must be greater than 0")
+        if self.max_steps != -1 and self.max_steps <= 0:
+            raise ValueError("max_steps must be -1 or greater than 0")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

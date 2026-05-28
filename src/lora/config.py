@@ -31,7 +31,7 @@ def load_run_config(
         else os.environ.get("LORA_MAX_STEPS")
         or _dig(config_data, "max_steps")
         or _dig(config_data, "runtime.max_steps")
-        or 8
+        or -1
     )
 
     resolved_case_file = str(case_file) if case_file is not None else None

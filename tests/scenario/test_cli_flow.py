@@ -276,10 +276,27 @@ class CliScenarioTests(unittest.TestCase):
             self.assertTrue(payload["session_id"].startswith("chat-chat-"))
             self.assertTrue((run_dir / "events.jsonl").exists())
             self.assertTrue((run_dir / "messages.jsonl").exists())
-            self.assertIn(
-                "conversation.user_message",
-                [item["type"] for item in _read_jsonl(run_dir / "events.jsonl")],
-            )
+            events = _read_jsonl(run_dir / "events.jsonl")
+            self.assertIn("conversation.user_message", [item["type"] for item in events])
+
+            prompt_event = next(item for item in events if item["type"] == "prompt.rendered")
+            rendered_prompt = Path(prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            static_prompt = (
+                root / ".lora" / "sessions" / payload["session_id"] / "context" / "prompts" / "static_prompt.txt"
+            ).read_text(encoding="utf-8")
+
+            self.assertIn("# Identity", static_prompt)
+            self.assertIn("# Coding Work", static_prompt)
+            self.assertNotIn("# Runtime Context", static_prompt)
+            self.assertIn("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", rendered_prompt)
+            self.assertIn("# Runtime Context", rendered_prompt)
+            self.assertIn("# Available Tools", rendered_prompt)
+            self.assertIn("# Recent Context", rendered_prompt)
+            self.assertIn("system.identity", prompt_event["payload"]["static_module_ids"])
+            self.assertIn("system.coding_rules", prompt_event["payload"]["static_module_ids"])
+            self.assertIn("runtime.env_info", prompt_event["payload"]["dynamic_module_ids"])
+            self.assertIn("tool.available", prompt_event["payload"]["dynamic_module_ids"])
+            self.assertEqual(prompt_event["payload"]["injection_decision"]["reason"], "before_model_request")
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]

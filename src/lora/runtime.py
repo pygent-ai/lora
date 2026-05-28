@@ -37,7 +37,7 @@ class RuntimeContext:
 
 
 class EchoAgent:
-    async def stream(self, context: RuntimeContext, max_steps: int = 8) -> AsyncIterator[dict[str, Any]]:
+    async def stream(self, context: RuntimeContext, max_steps: int = -1) -> AsyncIterator[dict[str, Any]]:
         user_messages = [message for message in context.history if message.get("role") == "user"]
         content = user_messages[-1]["content"] if user_messages else ""
         yield {"role": "assistant", "content": f"Echo: {content}", "type": "conversation.assistant_message"}
@@ -433,17 +433,19 @@ def _normalize_output(output: Any) -> RuntimeMessage:
             is_delta=_is_delta_output(output, payload, event_type),
         )
 
-    role = _value(getattr(output, "role", None)) or "assistant"
-    content = _value(getattr(output, "content", None))
+    payload = _message_payload(output)
+    role = (payload or {}).get("role") or _value(getattr(output, "role", None)) or "assistant"
+    content = (payload or {}).get("content") if payload and "content" in payload else _value(getattr(output, "content", None))
     if content is None:
         content = str(output)
     if role == "tool":
-        return RuntimeMessage(role="tool", content=str(content), type="conversation.tool_message")
+        return RuntimeMessage(role="tool", content=str(content), type="conversation.tool_message", payload=payload)
     event_type = _event_type_for_role(str(role))
     return RuntimeMessage(
         role=str(role),
         content=str(content),
         type=event_type,
+        payload=payload,
         is_delta=_is_delta_output(output, None, event_type),
     )
 
@@ -515,6 +517,13 @@ def _message_to_history(message: dict[str, Any] | Any) -> dict[str, Any]:
     return {"role": str(role), "content": str(content)}
 
 
+def _message_payload(message: Any) -> dict[str, Any] | None:
+    if not hasattr(message, "to_dict"):
+        return None
+    payload = _plain_data(message.to_dict())
+    return payload if isinstance(payload, dict) else None
+
+
 def _event_type_for_role(role: str) -> str:
     return {
         "assistant": "conversation.assistant_message",
@@ -531,6 +540,16 @@ def _actor_for_role(role: str) -> str:
 
 def _value(value: Any) -> Any:
     return getattr(value, "data", value)
+
+
+def _plain_data(value: Any) -> Any:
+    if hasattr(value, "data") and not isinstance(value, type):
+        return _plain_data(value.data)
+    if isinstance(value, dict):
+        return {key: _plain_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_data(item) for item in value]
+    return value
 
 
 def _stringify(value: Any) -> str:

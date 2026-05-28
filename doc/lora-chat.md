@@ -53,7 +53,7 @@ lora chat --new
 --workspace-root    指定工作区根目录，默认是当前目录或 LORA_WORKSPACE_ROOT
 --config            指定 lora.yaml
 --model             覆盖模型配置
---max-steps         覆盖 agent 最大执行步数
+--max-steps         覆盖 agent 最大执行步数；-1 表示无限循环，直到模型不再请求工具
 ```
 
 ## Agent 管理配置
@@ -145,13 +145,16 @@ agents:
 
 ## 当前 agent 行为
 
-`AgentRuntimeAdapter` 默认会创建 `LoraAgent`。在 agent 管理功能落地前，`LoraAgent` 会加载工作区 `.env`，读取 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`，并注册内置工具：
+`AgentRuntimeAdapter` 默认会创建 `LoraAgent`。在 agent 管理功能落地前，`LoraAgent` 会加载工作区 `.env`，读取 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`，并从 `pygent.toolkits` 中注册一组白名单工具：
 
-- `list_files`
-- `read_text_file`
-- `add_numbers`
+- `Edit`
+- `Glob`
+- `Read`
+- `Write`
+- `grep`
+- `bash`
 
-如果配置了 `DEEPSEEK_API_KEY`，`LoraAgent` 会通过 DeepSeek 兼容接口进行流式模型调用，并通过 `ToolInterceptor` 记录工具调用和文件读取事件。
+如果配置了 `DEEPSEEK_API_KEY`，`LoraAgent` 会通过 DeepSeek 兼容接口进行流式模型调用；当模型实际调用已注册工具时，调用会通过 `ToolInterceptor` 记录。
 
 如果没有配置 `DEEPSEEK_API_KEY`，它不会调用外部模型，而是返回固定提示：
 

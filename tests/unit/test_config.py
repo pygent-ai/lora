@@ -9,6 +9,12 @@ from lora.config import load_mapping_file, load_run_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_default_max_steps_is_unlimited(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = load_run_config(workspace_root=tmp)
+
+        self.assertEqual(config.max_steps, -1)
+
     def test_load_run_config_merges_file_and_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

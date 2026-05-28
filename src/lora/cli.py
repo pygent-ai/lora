@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace-root", default=None, help="Workspace root. Defaults to cwd or LORA_WORKSPACE_ROOT.")
     parser.add_argument("--config", default=None, help="Path to lora.yaml.")
     parser.add_argument("--model", default=None, help="Model override.")
-    parser.add_argument("--max-steps", type=int, default=None, help="Maximum agent steps.")
+    parser.add_argument("--max-steps", type=int, default=None, help="Maximum agent steps; -1 means unlimited.")
 
     sub = parser.add_subparsers(dest="command", required=True)
     session = sub.add_parser("session", help="Manage sessions")
