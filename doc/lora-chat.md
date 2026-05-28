@@ -1,6 +1,6 @@
 # lora chat 使用说明
 
-`lora chat` 用于启动一个可以和 agent 对话的命令行入口。它复用当前项目里的 session、runtime adapter、event store 和消息历史保存机制，因此每次对话都会落到 `.lora/sessions/{session_id}` 下，后续可以继续使用同一个 session。
+`lora chat` 用于启动一个可以和 Lora Agent 对话的命令行入口。它复用当前项目里的 `SessionManager`、`AgentRuntimeAdapter`、`LoraAgent` 和 `EventStore`，因此每次对话都会落到 `.lora/sessions/{session_id}` 下，后续可以继续使用同一个 session。
 
 ## 基本用法
 
@@ -65,7 +65,7 @@ lora chat --new
   "case_id": "chat",
   "case_run_id": "run-...",
   "error": null,
-  "final_answer": "Echo: ping",
+  "final_answer": "Lora agent is wired into chat, but DEEPSEEK_API_KEY is not configured for a model call.",
   "message_count": 2,
   "run_dir": "...\\.lora\\sessions\\...\\cases\\chat\\runs\\...",
   "session_id": "chat-chat-...",
@@ -98,14 +98,22 @@ lora chat --new
         run_metadata.json
 ```
 
-这和现有 `case run` 流程保持一致，便于后续 replay、分析和调试。
+`events.jsonl` 会记录用户消息、模型请求边界、提示词渲染、assistant 回复、模型响应边界和上下文 checkpoint。实际调用工具时，还会写入 `tool_calls.jsonl`、`tool_results.jsonl` 和 `file_events.jsonl` 等投影文件。
 
 ## 当前 agent 行为
 
-当前项目的默认 agent 是 `EchoAgent`，所以默认回复会是：
+`AgentRuntimeAdapter` 默认会创建 `LoraAgent`。`LoraAgent` 会加载工作区 `.env`，读取 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`，并注册内置工具：
+
+- `list_files`
+- `read_text_file`
+- `add_numbers`
+
+如果配置了 `DEEPSEEK_API_KEY`，`LoraAgent` 会通过 DeepSeek 兼容接口进行流式模型调用，并通过 `ToolInterceptor` 记录工具调用和文件读取事件。
+
+如果没有配置 `DEEPSEEK_API_KEY`，它不会调用外部模型，而是返回固定提示：
 
 ```text
-Echo: <你的输入>
+Lora agent is wired into chat, but DEEPSEEK_API_KEY is not configured for a model call.
 ```
 
-`lora chat` 已经接在通用 `AgentRuntimeAdapter` 上。后续接入真实 pygent、DeepSeek 或其他 agent 时，可以继续复用这个 CLI 入口和 session/event 保存链路。
+`EchoAgent` 仍保留在 `runtime.py` 中用于测试和自定义适配示例，但它不是 `lora chat` 的默认 agent。

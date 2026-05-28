@@ -170,12 +170,23 @@ class AgentContextManager:
         turn_id: str | None,
         tool_names: list[str],
     ) -> str:
+        projection = self.projection(runtime_context.history)
+        if self.store is not None:
+            self.store.append(
+                "context.projection_created",
+                actor="system",
+                payload={
+                    "message_count": len(runtime_context.history),
+                    "projection": projection,
+                },
+                turn_id=turn_id,
+            )
         render_ctx = PromptRenderContext(
             session_id=runtime_context.session_id,
             workspace_root=self.workspace_root,
             session_dir=self.session_dir,
             turn_id=turn_id,
-            projection=self.projection(runtime_context.history),
+            projection=projection,
             tool_names=tool_names,
         )
         prompt, modules = self.prompt_composer.compose(render_ctx)

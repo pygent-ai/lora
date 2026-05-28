@@ -16,9 +16,11 @@ from lora.session import SessionManager
 class RecordingAgent:
     def __init__(self) -> None:
         self.seen_session_id: str | None = None
+        self.seen_history: list[dict[str, Any]] = []
 
     async def stream(self, context: Any, max_steps: int = 8) -> AsyncIterator[dict[str, Any]]:
         self.seen_session_id = context.session_id
+        self.seen_history = list(context.history)
         yield {"role": "assistant", "content": "thinking", "type": "conversation.assistant_message"}
         yield {
             "role": "tool",
@@ -66,6 +68,34 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertIn("conversation.user_message", [event["type"] for event in events])
             self.assertIn("conversation.tool_message", [event["type"] for event in events])
             self.assertEqual([message["role"] for message in messages], ["user", "assistant", "tool", "assistant"])
+
+    def test_carry_context_false_hides_prior_history_but_preserves_it_after_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", max_steps=3)
+            manager = SessionManager(config)
+            ref = manager.create("case-a")
+            session = manager.load(ref.session_id)
+            session.history = [{"role": "user", "content": "old context"}]
+            manager.save(session)
+            run = manager.start_case_run(ref.session_id, "case-a")
+            session = manager.load(ref.session_id)
+            case = CaseDefinition.from_dict(
+                {
+                    "id": "case-a",
+                    "session": {"carry_context": False},
+                    "input": {"content": "fresh input"},
+                }
+            )
+            agent = RecordingAgent()
+
+            asyncio.run(
+                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_case(session, case, run)
+            )
+
+            loaded = manager.load(ref.session_id)
+            self.assertEqual([item["content"] for item in agent.seen_history], ["fresh input"])
+            self.assertEqual(loaded.history[0]["content"], "old context")
+            self.assertEqual(loaded.history[1]["content"], "fresh input")
 
     def test_agent_failure_preserves_partial_trace_and_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,7 +147,15 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant"])
             self.assertEqual(
                 [event["type"] for event in events],
-                ["conversation.user_message", "prompt.rendered", "conversation.assistant_message"],
+                [
+                    "conversation.user_message",
+                    "model.request",
+                    "context.projection_created",
+                    "prompt.rendered",
+                    "conversation.assistant_message",
+                    "model.response",
+                    "context.checkpoint",
+                ],
             )
 
 

@@ -142,6 +142,112 @@ class CliScenarioTests(unittest.TestCase):
             self.assertEqual(payload["analysis"]["root_causes"][0]["type"], "ASSERTION_FAILED")
             self.assertTrue((Path(payload["run"]["run_dir"]) / "analysis.json").exists())
 
+    def test_case_run_supports_fork_session_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            create = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "lora",
+                    "--workspace-root",
+                    str(root),
+                    "session",
+                    "create",
+                    "--case",
+                    "source-case",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            source_session_id = json.loads(create.stdout)["session_id"]
+            case_file = root / "fork-case.yaml"
+            case_file.write_text(
+                "\n".join(
+                    [
+                        "id: fork-case",
+                        "session:",
+                        "  mode: fork",
+                        f"  source_session_id: {source_session_id}",
+                        "input:",
+                        "  content: hello from fork",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            run = subprocess.run(
+                [sys.executable, "-m", "lora", "--workspace-root", str(root), "case", "run", str(case_file)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            run_payload = json.loads(run.stdout)
+            show = subprocess.run(
+                [sys.executable, "-m", "lora", "--workspace-root", str(root), "session", "show", run_payload["session_id"]],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            show_payload = json.loads(show.stdout)
+
+            self.assertNotEqual(run_payload["session_id"], source_session_id)
+            self.assertEqual(show_payload["session"]["metadata"]["forked_from"], source_session_id)
+
+    def test_case_run_supports_resume_and_shared_session_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            create = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "lora",
+                    "--workspace-root",
+                    str(root),
+                    "session",
+                    "create",
+                    "--case",
+                    "shared-case",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            session_id = json.loads(create.stdout)["session_id"]
+
+            for mode in ("resume", "shared"):
+                case_file = root / f"{mode}-case.yaml"
+                case_file.write_text(
+                    "\n".join(
+                        [
+                            f"id: {mode}-case",
+                            "session:",
+                            f"  mode: {mode}",
+                            f"  session_id: {session_id}",
+                            "input:",
+                            f"  content: hello from {mode}",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                run = subprocess.run(
+                    [sys.executable, "-m", "lora", "--workspace-root", str(root), "case", "run", str(case_file)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                self.assertEqual(json.loads(run.stdout)["session_id"], session_id)
+
     def test_chat_message_creates_session_and_records_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

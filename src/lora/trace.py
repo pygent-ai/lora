@@ -9,6 +9,44 @@ from typing import Any
 from .schema import CaseRunRef, ContextEvent
 
 
+DESIGN_EVENT_TYPES = frozenset(
+    {
+        "case.started",
+        "case.finished",
+        "conversation.user_message",
+        "conversation.assistant_message",
+        "conversation.tool_message",
+        "model.request",
+        "model.response",
+        "prompt.rendered",
+        "tool.call",
+        "tool.result",
+        "file.read",
+        "file.write",
+        "file.edit",
+        "file.delete",
+        "context.checkpoint",
+        "context.projection_created",
+        "analysis.created",
+        "test.generated",
+        "repair.started",
+        "repair.patch_created",
+        "repair.finished",
+        "regression.started",
+        "regression.finished",
+    }
+)
+
+LORA_EVENT_TYPES = DESIGN_EVENT_TYPES | frozenset(
+    {
+        "chat.started",
+        "chat.finished",
+        "runtime.error",
+        "error",
+    }
+)
+
+
 class EventStore:
     def __init__(self, case_run_ref: CaseRunRef):
         self.case_run_ref = case_run_ref

@@ -169,11 +169,10 @@ _case_run
   -> load_run_config(case_file/session/model/max_steps)
   -> SessionManager(config)
   -> CaseManager(workspace_root).load(case_file)
-  -> resolve session_id from CLI, case.session.session_id, case.session.id, or create
+  -> _load_case_session 支持 case.session.mode=new/resume/shared/fork
   -> SessionManager.start_case_run
   -> copy case.yaml to run_dir
   -> CaseManager.prepare_workspace
-  -> SessionManager.load
   -> AgentRuntimeAdapter.run_case
   -> Evaluator.evaluate
   -> write result.json
@@ -472,12 +471,16 @@ payload: dict[str, Any] = {}
 事件命名约定：
 
 - conversation：`conversation.user_message`、`conversation.assistant_message`、`conversation.tool_message`
+- model：`model.request`、`model.response`
 - tool：`tool.call`、`tool.result`
-- file：`file.read`
+- file：`file.read`、`file.write`、`file.edit`、`file.delete`
+- context：`context.projection_created`、`context.checkpoint`
 - runtime：`runtime.error`
 - case：`case.started`、`case.finished`
 - prompt：`prompt.rendered`
-- analysis：`analysis.created`
+- analysis/test/repair/regression：`analysis.created`、`test.generated`、`repair.*`、`regression.*`
+
+`trace.py` 中的 `DESIGN_EVENT_TYPES` 对齐设计文档的必备事件清单，`LORA_EVENT_TYPES` 额外包含 chat 和 runtime error 等项目内事件。
 
 ### 6.9 `CaseDefinition`
 
@@ -1128,14 +1131,17 @@ run_case
   -> _start_agent_run(agent, case_run_ref, "turn-0001")
   -> _case_messages(case)
   -> append each user message to context and events
+  -> append model.request
   -> _stream_agent(context, latest_user_content)
   -> normalize and record assistant/tool outputs
   -> except: status="error"; append runtime.error
   -> finally:
-       session.history = context.history
+       session.history = context.history 或 original_history + 本轮 history
        update session.metadata
        session_manager.save
+       append model.response
        append case.finished
+       append context.checkpoint
   -> count events
   -> return CaseRunResult
 ```
@@ -1144,6 +1150,7 @@ run_case
 
 - runtime status 只表示执行是否出错；case 断言失败由 `Evaluator` 后续覆盖为 failed。
 - 即使 agent 抛异常，partial assistant output 也会保留。
+- `case.session.carry_context: false` 时，Agent 本轮看不到旧 history；运行结束后，本轮增量会追加回原 session history。
 
 #### `_stream_agent(context, latest_user_input)`
 
@@ -1294,6 +1301,8 @@ manager = AgentContextManager(session_dir=..., workspace_root=..., store=...)
 
 ```text
 compose_prompt
+  -> AgentContextManager.projection
+  -> if store exists: append context.projection_created
   -> PromptRenderContext
   -> PromptComposer.compose
   -> if store exists: append prompt.rendered
@@ -1678,7 +1687,6 @@ def start_run(self, case_run_ref: CaseRunRef, turn_id: str | None) -> None:
 | YAML 解析 | 自研子集 | case 复杂后引入 PyYAML 或 ruamel.yaml |
 | `PromptModule.version_hash` | 使用 Python `hash` | 改为稳定 hash |
 | 文件路径安全 | Agent 工具限制 workspace，Case fixture 解析未强制限制绝对路径 | 对 case setup 加路径逃逸检查 |
-| chat 文档 | `doc/lora-chat.md` 当前显示为乱码 | 需要重新保存为正确 UTF-8 |
 | regression | CLI 仅返回 skipped | 后续实现 manifest 和执行器 |
 | analysis | 规则化 root cause | 后续抽出独立 `FailureAnalyzer` |
 | repair | 未实现 | 后续增加 plan/apply/gate |
@@ -1688,7 +1696,7 @@ def start_run(self, case_run_ref: CaseRunRef, turn_id: str | None) -> None:
 
 短期：
 
-1. 修复文档编码和 README。
+1. 补 README。
 2. 补齐 regression manifest 读取和执行。
 3. 将 `_root_causes` 从 CLI 抽到独立 analyzer 模块。
 4. 为 prompt rendered 增加文本落盘或可配置开关。
@@ -1696,9 +1704,9 @@ def start_run(self, case_run_ref: CaseRunRef, turn_id: str | None) -> None:
 中期：
 
 1. 支持完整 YAML。
-2. 增加 model request/response 事件。
-3. 增加 context checkpoint 和 projection。
-4. 增加更多工具和文件写入追踪。
+2. 增加更多工具和文件写入追踪。
+3. 实现 context checkpoint/projection 的真实恢复能力。
+4. 增加模型请求和响应的详细 token/耗时指标。
 
 长期：
 

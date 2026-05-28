@@ -73,6 +73,7 @@ class AgentRuntimeAdapter:
         message_count = 0
         status = "passed"
         error: str | None = None
+        model_request_written = False
 
         try:
             _start_agent_run(self.agent, case_run_ref, resolved_turn_id)
@@ -84,6 +85,18 @@ class AgentRuntimeAdapter:
                 turn_id=resolved_turn_id,
             )
             message_count += 1
+            store.append(
+                "model.request",
+                actor="system",
+                payload={
+                    "agent": type(self.agent).__name__,
+                    "max_steps": self.config.max_steps,
+                    "history_message_count": len(context.history),
+                    "latest_user_input": user_input,
+                },
+                turn_id=resolved_turn_id,
+            )
+            model_request_written = True
 
             async for raw_output in self._stream_agent(context, user_input):
                 runtime_message = _normalize_output(raw_output)
@@ -114,6 +127,30 @@ class AgentRuntimeAdapter:
                 }
             )
             self.session_manager.save(session)
+            if model_request_written or error is not None:
+                store.append(
+                    "model.response",
+                    actor="system",
+                    payload={
+                        "agent": type(self.agent).__name__,
+                        "status": status,
+                        "error": error,
+                        "assistant_text_length": len("".join(final_parts)),
+                        "message_count": message_count,
+                    },
+                    turn_id=resolved_turn_id,
+                )
+            store.append(
+                "context.checkpoint",
+                actor="system",
+                payload={
+                    "status": status,
+                    "message_count": message_count,
+                    "history_message_count": len(session.history),
+                    "case_run_id": case_run_ref.case_run_id,
+                },
+                turn_id=resolved_turn_id,
+            )
 
         return {
             "session_id": case_run_ref.session_id,
@@ -133,17 +170,23 @@ class AgentRuntimeAdapter:
         case_run_ref: CaseRunRef,
     ) -> CaseRunResult:
         store = EventStore(case_run_ref)
+        carry_context = _case_carry_context(case)
+        original_history = list(session.history)
+        if not carry_context:
+            session.history = []
         context = RuntimeContext(session)
         turn_id = "turn-0001"
         final_parts: list[str] = []
         message_count = 0
         status = "passed"
         error: str | None = None
+        model_request_written = False
 
         store.append("case.started", actor="system", payload={"title": case.title}, turn_id=turn_id)
         try:
             _start_agent_run(self.agent, case_run_ref, turn_id)
-            for message in _case_messages(case):
+            input_messages = _case_messages(case)
+            for message in input_messages:
                 context.add_message(message)
                 store.append(
                     "conversation.user_message",
@@ -152,6 +195,20 @@ class AgentRuntimeAdapter:
                     turn_id=turn_id,
                 )
                 message_count += 1
+            store.append(
+                "model.request",
+                actor="system",
+                payload={
+                    "agent": type(self.agent).__name__,
+                    "max_steps": self.config.max_steps,
+                    "history_message_count": len(context.history),
+                    "input_message_count": len(input_messages),
+                    "carry_context": carry_context,
+                    "latest_user_input": _latest_user_content(case),
+                },
+                turn_id=turn_id,
+            )
+            model_request_written = True
 
             async for raw_output in self._stream_agent(context, _latest_user_content(case)):
                 runtime_message = _normalize_output(raw_output)
@@ -173,7 +230,7 @@ class AgentRuntimeAdapter:
                 turn_id=turn_id,
             )
         finally:
-            session.history = context.history
+            session.history = context.history if carry_context else [*original_history, *context.history]
             session.metadata.update(
                 {
                     "active_case_id": case.id,
@@ -182,10 +239,34 @@ class AgentRuntimeAdapter:
                 }
             )
             self.session_manager.save(session)
+            if model_request_written or error is not None:
+                store.append(
+                    "model.response",
+                    actor="system",
+                    payload={
+                        "agent": type(self.agent).__name__,
+                        "status": status,
+                        "error": error,
+                        "assistant_text_length": len("".join(final_parts)),
+                        "message_count": message_count,
+                    },
+                    turn_id=turn_id,
+                )
             store.append(
                 "case.finished",
                 actor="system",
                 payload={"status": status, "error": error},
+                turn_id=turn_id,
+            )
+            store.append(
+                "context.checkpoint",
+                actor="system",
+                payload={
+                    "status": status,
+                    "message_count": message_count,
+                    "history_message_count": len(session.history),
+                    "case_run_id": case_run_ref.case_run_id,
+                },
                 turn_id=turn_id,
             )
 
@@ -241,6 +322,10 @@ def _case_messages(case: CaseDefinition) -> list[dict[str, str]]:
 def _latest_user_content(case: CaseDefinition) -> str:
     messages = _case_messages(case)
     return messages[-1]["content"] if messages else ""
+
+
+def _case_carry_context(case: CaseDefinition) -> bool:
+    return case.session.get("carry_context") is not False
 
 
 def _normalize_output(output: Any) -> RuntimeMessage:
