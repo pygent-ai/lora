@@ -276,11 +276,63 @@ def load_run_config(
 - 当前 YAML 解析器是项目内实现的子集解析器，不支持完整 YAML 特性。
 - `case_file` 只在参数非空时写入 `RunConfig.case_file`。
 
-### 5.2 `load_mapping_file(path) -> dict[str, Any]`
+### 5.2 Agent 管理配置扩展
+
+当前实现只有默认 `LoraAgent`，模型配置也主要依赖 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和全局 `--model`。后续 agent 管理功能应把“选择哪个 agent”和“这个 agent 怎么发起模型请求”变成结构化配置。
+
+推荐 `lora.yaml` 结构：
+
+```yaml
+agent:
+  default_alias: dev
+
+agents:
+  - alias: dev
+    model_request:
+      api_key_env: DEEPSEEK_API_KEY
+      api_key: ""
+      model_name: deepseek-v4-flash
+  - alias: fast-check
+    model_request:
+      api_key_env: DEEPSEEK_API_KEY
+      model_name: deepseek-v4-flash
+```
+
+字段语义：
+
+| 字段 | 说明 |
+| --- | --- |
+| `agent.default_alias` | 没有通过 CLI 显式指定时使用的 agent 别名 |
+| `agents[].alias` | agent profile 的稳定别名，必须非空且唯一 |
+| `agents[].model_request.api_key_env` | API key 来源环境变量，推荐优先使用 |
+| `agents[].model_request.api_key` | 本地明文 API key，仅适合不提交的个人配置 |
+| `agents[].model_request.model_name` | 发起模型请求时使用的模型名称 |
+
+解析规则：
+
+1. 先确定 agent alias：CLI 参数优先，其次 `agent.default_alias`，最后内置默认 alias。
+2. 根据 alias 找到 `agents[]` 中的 profile；找不到应在创建 session/run 前报错。
+3. `--model` 继续作为最高优先级模型覆盖，其次使用 `model_request.model_name`，再兼容 `LORA_MODEL`、`DEEPSEEK_MODEL` 和默认模型。
+4. API key 优先读取 `model_request.api_key_env` 指向的环境变量；为空时才回退到 `model_request.api_key`；最后兼容 `DEEPSEEK_API_KEY`。
+5. `run_config.json` 和事件 payload 只允许记录 `agent_alias`、`model_name`、`api_key_source` 等脱敏元数据，禁止记录原始 API key。
+
+建议新增内部解析结果，供 `AgentRuntimeAdapter` 和 `LoraAgent` 使用：
+
+```python
+class ResolvedAgentConfig:
+    alias: str
+    model_name: str
+    api_key: str | None
+    api_key_source: str | None
+```
+
+如果把 alias 加入 `RunConfig`，它可以落盘；如果把 API key 放入解析结果，必须保持非持久化。
+
+### 5.3 `load_mapping_file(path) -> dict[str, Any]`
 
 读取 UTF-8 文本并调用 `_parse_yaml_subset`。主要用于 `lora.yaml` 和 `case.yaml`。
 
-### 5.3 YAML 子集解析方法
+### 5.4 YAML 子集解析方法
 
 | 方法 | 职责 |
 | --- | --- |
@@ -1370,14 +1422,23 @@ agent = LoraAgent(config)
 
 - 保存 `RunConfig`。
 - 加载 workspace `.env`。
-- 读取 `DEEPSEEK_API_KEY`。
+- 读取 `DEEPSEEK_API_KEY`。agent 管理扩展落地后，应改为读取已解析的 agent profile，不直接绑定单一环境变量名。
 - 确定模型：
   - `config.model`
+  - 选中 agent 的 `model_request.model_name`
   - `DEEPSEEK_MODEL`
-  - 默认 `deepseek-chat`
+  - 默认 `deepseek-v4-flash`
 - 确定 base URL：`DEEPSEEK_BASE_URL` 或 `https://api.deepseek.com`。
 - 如果有 API key，创建 `AsyncRequestsClient`；否则 `llm=None`。
 - 初始化工具管理器。
+
+Agent 管理扩展落地后的目标职责：
+
+- 根据 `agent_alias` 选择 agent profile。
+- 将 `model_request.api_key_env` 或 `model_request.api_key` 解析成非持久化 API key。
+- 将 `model_request.model_name` 作为 profile 默认模型，并允许 `--model` 覆盖。
+- 在 `model.request` 和 `model.response` 事件中记录 `agent_alias` 和 `model_name`，但不记录 API key。
+- 缺少 API key 时，错误或 fallback 文案要包含 agent alias，方便定位是哪份配置缺失。
 
 #### `start_run(case_run_ref, turn_id) -> None`
 
@@ -1691,15 +1752,17 @@ def start_run(self, case_run_ref: CaseRunRef, turn_id: str | None) -> None:
 | analysis | 规则化 root cause | 后续抽出独立 `FailureAnalyzer` |
 | repair | 未实现 | 后续增加 plan/apply/gate |
 | prompt 落盘 | 只记录 prompt hash 和 module 元数据 | 如需 debug，可保存 rendered prompt 文本 |
+| agent 管理 | 当前只有默认 `LoraAgent` 和 DeepSeek 环境变量 | 增加 agent alias、profile 解析、模型请求配置和密钥脱敏 |
 
 ## 18. 推荐扩展路线
 
 短期：
 
 1. 补 README。
-2. 补齐 regression manifest 读取和执行。
-3. 将 `_root_causes` 从 CLI 抽到独立 analyzer 模块。
-4. 为 prompt rendered 增加文本落盘或可配置开关。
+2. 实现 agent profile 管理：alias、API key 来源、model name 和 `--model` 覆盖规则。
+3. 补齐 regression manifest 读取和执行。
+4. 将 `_root_causes` 从 CLI 抽到独立 analyzer 模块。
+5. 为 prompt rendered 增加文本落盘或可配置开关。
 
 中期：
 

@@ -5,7 +5,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .schema import AgentSession, CaseDefinition, CaseRunRef, CaseRunResult, RunConfig
 from .session import SessionManager
@@ -18,6 +18,7 @@ class RuntimeMessage:
     content: str
     type: str | None = None
     payload: dict[str, Any] | None = None
+    is_delta: bool = False
 
 
 class RuntimeContext:
@@ -65,6 +66,7 @@ class AgentRuntimeAdapter:
         user_input: str,
         case_run_ref: CaseRunRef,
         turn_id: str | None = None,
+        on_assistant_delta: Callable[[str], Any] | None = None,
     ) -> dict[str, Any]:
         store = EventStore(case_run_ref)
         context = RuntimeContext(session)
@@ -74,6 +76,7 @@ class AgentRuntimeAdapter:
         status = "passed"
         error: str | None = None
         model_request_written = False
+        assistant_delta_parts: list[str] = []
 
         try:
             _start_agent_run(self.agent, case_run_ref, resolved_turn_id)
@@ -100,15 +103,51 @@ class AgentRuntimeAdapter:
 
             async for raw_output in self._stream_agent(context, user_input):
                 runtime_message = _normalize_output(raw_output)
-                event_type = runtime_message.type or _event_type_for_role(runtime_message.role)
-                actor = _actor_for_role(runtime_message.role)
-                payload = runtime_message.payload or {"role": runtime_message.role, "content": runtime_message.content}
-                context.add_message({"role": runtime_message.role, "content": runtime_message.content, **payload})
-                store.append(event_type, actor=actor, payload=payload, turn_id=resolved_turn_id)
-                if runtime_message.role == "assistant":
-                    final_parts.append(runtime_message.content)
-                message_count += 1
+                if runtime_message.is_delta:
+                    if runtime_message.role == "assistant" and runtime_message.content:
+                        assistant_delta_parts.append(runtime_message.content)
+                        await _emit_assistant_delta(on_assistant_delta, runtime_message.content)
+                    continue
+
+                if assistant_delta_parts and runtime_message.role != "assistant":
+                    message_count += _flush_assistant_delta(
+                        assistant_delta_parts,
+                        context=context,
+                        store=store,
+                        turn_id=resolved_turn_id,
+                        final_parts=final_parts,
+                    )
+                if runtime_message.role == "assistant" and assistant_delta_parts:
+                    buffered = "".join(assistant_delta_parts)
+                    if runtime_message.content == buffered:
+                        assistant_delta_parts.clear()
+                    elif not runtime_message.content:
+                        assistant_delta_parts.clear()
+                        runtime_message.content = buffered
+                        runtime_message.payload = {"role": "assistant", "content": buffered}
+                    else:
+                        message_count += _flush_assistant_delta(
+                            assistant_delta_parts,
+                            context=context,
+                            store=store,
+                            turn_id=resolved_turn_id,
+                            final_parts=final_parts,
+                        )
+                message_count += _append_runtime_message(
+                    runtime_message,
+                    context=context,
+                    store=store,
+                    turn_id=resolved_turn_id,
+                    final_parts=final_parts,
+                )
         except Exception as exc:  # noqa: BLE001 - preserve partial chat state on agent failures.
+            message_count += _flush_assistant_delta(
+                assistant_delta_parts,
+                context=context,
+                store=store,
+                turn_id=resolved_turn_id,
+                final_parts=final_parts,
+            )
             status = "error"
             error = str(exc)
             store.append(
@@ -118,6 +157,13 @@ class AgentRuntimeAdapter:
                 turn_id=resolved_turn_id,
             )
         finally:
+            message_count += _flush_assistant_delta(
+                assistant_delta_parts,
+                context=context,
+                store=store,
+                turn_id=resolved_turn_id,
+                final_parts=final_parts,
+            )
             session.history = context.history
             session.metadata.update(
                 {
@@ -181,6 +227,7 @@ class AgentRuntimeAdapter:
         status = "passed"
         error: str | None = None
         model_request_written = False
+        assistant_delta_parts: list[str] = []
 
         store.append("case.started", actor="system", payload={"title": case.title}, turn_id=turn_id)
         try:
@@ -212,15 +259,50 @@ class AgentRuntimeAdapter:
 
             async for raw_output in self._stream_agent(context, _latest_user_content(case)):
                 runtime_message = _normalize_output(raw_output)
-                event_type = runtime_message.type or _event_type_for_role(runtime_message.role)
-                actor = _actor_for_role(runtime_message.role)
-                payload = runtime_message.payload or {"role": runtime_message.role, "content": runtime_message.content}
-                context.add_message({"role": runtime_message.role, "content": runtime_message.content, **payload})
-                store.append(event_type, actor=actor, payload=payload, turn_id=turn_id)
-                if runtime_message.role == "assistant":
-                    final_parts.append(runtime_message.content)
-                message_count += 1
+                if runtime_message.is_delta:
+                    if runtime_message.role == "assistant" and runtime_message.content:
+                        assistant_delta_parts.append(runtime_message.content)
+                    continue
+
+                if assistant_delta_parts and runtime_message.role != "assistant":
+                    message_count += _flush_assistant_delta(
+                        assistant_delta_parts,
+                        context=context,
+                        store=store,
+                        turn_id=turn_id,
+                        final_parts=final_parts,
+                    )
+                if runtime_message.role == "assistant" and assistant_delta_parts:
+                    buffered = "".join(assistant_delta_parts)
+                    if runtime_message.content == buffered:
+                        assistant_delta_parts.clear()
+                    elif not runtime_message.content:
+                        assistant_delta_parts.clear()
+                        runtime_message.content = buffered
+                        runtime_message.payload = {"role": "assistant", "content": buffered}
+                    else:
+                        message_count += _flush_assistant_delta(
+                            assistant_delta_parts,
+                            context=context,
+                            store=store,
+                            turn_id=turn_id,
+                            final_parts=final_parts,
+                        )
+                message_count += _append_runtime_message(
+                    runtime_message,
+                    context=context,
+                    store=store,
+                    turn_id=turn_id,
+                    final_parts=final_parts,
+                )
         except Exception as exc:  # noqa: BLE001 - runtime boundary must preserve trace on any agent failure.
+            message_count += _flush_assistant_delta(
+                assistant_delta_parts,
+                context=context,
+                store=store,
+                turn_id=turn_id,
+                final_parts=final_parts,
+            )
             status = "error"
             error = str(exc)
             store.append(
@@ -230,6 +312,13 @@ class AgentRuntimeAdapter:
                 turn_id=turn_id,
             )
         finally:
+            message_count += _flush_assistant_delta(
+                assistant_delta_parts,
+                context=context,
+                store=store,
+                turn_id=turn_id,
+                final_parts=final_parts,
+            )
             session.history = context.history if carry_context else [*original_history, *context.history]
             session.metadata.update(
                 {
@@ -334,7 +423,15 @@ def _normalize_output(output: Any) -> RuntimeMessage:
     if isinstance(output, dict):
         role = str(output.get("role") or output.get("actor") or "assistant")
         content = _stringify(output.get("content") if "content" in output else output.get("result", ""))
-        return RuntimeMessage(role=role, content=content, type=output.get("type"), payload=dict(output.get("payload") or output))
+        event_type = output.get("type")
+        payload = dict(output.get("payload") or output)
+        return RuntimeMessage(
+            role=role,
+            content=content,
+            type=event_type,
+            payload=payload,
+            is_delta=_is_delta_output(output, payload, event_type),
+        )
 
     role = _value(getattr(output, "role", None)) or "assistant"
     content = _value(getattr(output, "content", None))
@@ -342,7 +439,70 @@ def _normalize_output(output: Any) -> RuntimeMessage:
         content = str(output)
     if role == "tool":
         return RuntimeMessage(role="tool", content=str(content), type="conversation.tool_message")
-    return RuntimeMessage(role=str(role), content=str(content), type=_event_type_for_role(str(role)))
+    event_type = _event_type_for_role(str(role))
+    return RuntimeMessage(
+        role=str(role),
+        content=str(content),
+        type=event_type,
+        is_delta=_is_delta_output(output, None, event_type),
+    )
+
+
+def _append_runtime_message(
+    runtime_message: RuntimeMessage,
+    *,
+    context: RuntimeContext,
+    store: EventStore,
+    turn_id: str | None,
+    final_parts: list[str],
+) -> int:
+    event_type = runtime_message.type or _event_type_for_role(runtime_message.role)
+    actor = _actor_for_role(runtime_message.role)
+    payload = runtime_message.payload or {"role": runtime_message.role, "content": runtime_message.content}
+    context.add_message({"role": runtime_message.role, "content": runtime_message.content, **payload})
+    store.append(event_type, actor=actor, payload=payload, turn_id=turn_id)
+    if runtime_message.role == "assistant":
+        final_parts.append(runtime_message.content)
+    return 1
+
+
+def _flush_assistant_delta(
+    delta_parts: list[str],
+    *,
+    context: RuntimeContext,
+    store: EventStore,
+    turn_id: str | None,
+    final_parts: list[str],
+) -> int:
+    if not delta_parts:
+        return 0
+    content = "".join(delta_parts)
+    delta_parts.clear()
+    if not content:
+        return 0
+    return _append_runtime_message(
+        RuntimeMessage(role="assistant", content=content, type="conversation.assistant_message"),
+        context=context,
+        store=store,
+        turn_id=turn_id,
+        final_parts=final_parts,
+    )
+
+
+async def _emit_assistant_delta(callback: Callable[[str], Any] | None, content: str) -> None:
+    if callback is None:
+        return
+    result = callback(content)
+    if inspect.isawaitable(result):
+        await result
+
+
+def _is_delta_output(output: Any, payload: dict[str, Any] | None, event_type: Any) -> bool:
+    if event_type in {"conversation.assistant_delta", "conversation.assistant_message_delta", "model.response.chunk"}:
+        return True
+    if isinstance(output, dict):
+        return bool(output.get("delta") or output.get("is_delta") or (payload or {}).get("delta"))
+    return isinstance(output, str) or type(output).__name__.endswith("Chunk")
 
 
 def _message_to_history(message: dict[str, Any] | Any) -> dict[str, Any]:

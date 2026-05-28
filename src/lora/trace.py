@@ -51,6 +51,7 @@ class EventStore:
     def __init__(self, case_run_ref: CaseRunRef):
         self.case_run_ref = case_run_ref
         self.run_dir = Path(case_run_ref.run_dir)
+        self.session_dir = _find_session_dir(self.run_dir)
         self.events_path = self.run_dir / "events.jsonl"
         self.messages_path = self.run_dir / "messages.jsonl"
         self.tool_calls_path = self.run_dir / "tool_calls.jsonl"
@@ -133,27 +134,86 @@ class EventStore:
                     yield json.loads(line)
 
     def _append_event(self, event: ContextEvent) -> None:
+        if event.type == "prompt.rendered":
+            self._persist_rendered_prompt(event)
         self._append_jsonl(self.events_path, event.to_dict())
         if event.type.startswith("conversation."):
+            record = _message_record(event)
             self._append_jsonl(
                 self.messages_path,
-                {
-                    "event_id": event.id,
-                    "session_id": event.session_id,
-                    "case_id": event.case_id,
-                    "case_run_id": event.case_run_id,
-                    "turn_id": event.turn_id,
-                    "role": event.payload.get("role", event.actor),
-                    "content": event.payload.get("content", ""),
-                    "created_at": event.timestamp,
-                },
+                record,
             )
+            self._append_session_history(record)
         elif event.type == "tool.call":
-            self._append_jsonl(self.tool_calls_path, _tool_call_record(event))
+            record = _tool_call_record(event)
+            self._append_jsonl(self.tool_calls_path, record)
+            self._append_session_log("tool_calls.jsonl", record)
         elif event.type == "tool.result":
-            self._append_jsonl(self.tool_results_path, _tool_result_record(event))
+            record = _tool_result_record(event)
+            self._append_jsonl(self.tool_results_path, record)
+            self._append_session_log("tool_results.jsonl", record)
         elif event.type.startswith("file."):
-            self._append_jsonl(self.file_events_path, _file_event_record(event))
+            record = _file_event_record(event)
+            self._append_jsonl(self.file_events_path, record)
+            self._append_session_log("file_events.jsonl", record)
+
+    def _append_session_history(self, record: dict[str, Any]) -> None:
+        if self.session_dir is None:
+            return
+        path = self.session_dir / "context" / "history.jsonl"
+        row = {"seq": _next_jsonl_seq(path), **record}
+        self._append_jsonl(path, row)
+
+    def _append_session_log(self, name: str, record: dict[str, Any]) -> None:
+        if self.session_dir is None:
+            return
+        self._append_jsonl(self.session_dir / "logs" / name, record)
+
+    def _persist_rendered_prompt(self, event: ContextEvent) -> None:
+        prompt = event.payload.pop("prompt", None)
+        if prompt is None:
+            prompt = event.payload.pop("content", None)
+        if prompt is None:
+            prompt = event.payload.pop("text", None)
+        if not isinstance(prompt, str):
+            return
+
+        prompt_file_name = _turn_file_name(event.turn_id)
+        run_prompt_dir = self.run_dir / "rendered_prompts"
+        run_text_path = run_prompt_dir / f"{prompt_file_name}.txt"
+        run_metadata_path = run_prompt_dir / f"{prompt_file_name}.json"
+        prompt_metadata = {
+            "event_id": event.id,
+            "session_id": event.session_id,
+            "case_id": event.case_id,
+            "case_run_id": event.case_run_id,
+            "turn_id": event.turn_id,
+            "created_at": event.timestamp,
+            "prompt_hash": event.payload.get("prompt_hash"),
+            "module_ids": event.payload.get("module_ids", []),
+            "modules": event.payload.get("modules", []),
+            "dynamic_inputs": event.payload.get("dynamic_inputs", {}),
+        }
+        _write_text(run_text_path, prompt)
+        _write_json(run_metadata_path, prompt_metadata)
+        event.payload["prompt_text_path"] = str(run_text_path)
+        event.payload["prompt_metadata_path"] = str(run_metadata_path)
+
+        if self.session_dir is None:
+            return
+        session_prompt_dir = self.session_dir / "context" / "rendered_prompts" / str(event.case_run_id or "session")
+        session_text_path = session_prompt_dir / f"{prompt_file_name}.txt"
+        session_metadata_path = session_prompt_dir / f"{prompt_file_name}.json"
+        _write_text(session_text_path, prompt)
+        _write_json(session_metadata_path, prompt_metadata)
+        self._append_jsonl(
+            self.session_dir / "logs" / "rendered_prompts.jsonl",
+            {
+                **prompt_metadata,
+                "prompt_text_path": str(session_text_path),
+                "prompt_metadata_path": str(session_metadata_path),
+            },
+        )
 
     def _coerce_event(
         self,
@@ -209,6 +269,19 @@ def _tool_call_record(event: ContextEvent) -> dict[str, Any]:
     }
 
 
+def _message_record(event: ContextEvent) -> dict[str, Any]:
+    return {
+        "event_id": event.id,
+        "session_id": event.session_id,
+        "case_id": event.case_id,
+        "case_run_id": event.case_run_id,
+        "turn_id": event.turn_id,
+        "role": event.payload.get("role", event.actor),
+        "content": event.payload.get("content", ""),
+        "created_at": event.timestamp,
+    }
+
+
 def _tool_result_record(event: ContextEvent) -> dict[str, Any]:
     return {
         "event_id": event.id,
@@ -240,3 +313,35 @@ def _file_event_record(event: ContextEvent) -> dict[str, Any]:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _find_session_dir(run_dir: Path) -> Path | None:
+    for parent in [run_dir, *run_dir.parents]:
+        if (parent / "session.json").exists():
+            return parent
+    return None
+
+
+def _turn_file_name(turn_id: str | None) -> str:
+    return str(turn_id or "turn-unknown")
+
+
+def _next_jsonl_seq(path: Path) -> int:
+    if not path.exists():
+        return 1
+    count = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                count += 1
+    return count + 1
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

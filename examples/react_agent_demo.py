@@ -130,7 +130,7 @@ class AddNumbersTool(BaseTool):
 
 
 class DeepSeekReactAgent(BaseAgent):
-    def __init__(self, workspace_root: Path, model_name: str = "deepseek-chat"):
+    def __init__(self, workspace_root: Path, model_name: str = "deepseek-v4-flash"):
         super().__init__()
         api_key = os.environ.get("DEEPSEEK_API_KEY")
         if not api_key:

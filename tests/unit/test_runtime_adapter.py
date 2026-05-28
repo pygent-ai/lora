@@ -8,6 +8,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from pygent.message import AssistantMessage, AssistantMessageChunk, ToolCall
+
+from lora.agent import LoraAgent, _to_pygent_message
 from lora.runtime import AgentRuntimeAdapter
 from lora.schema import CaseDefinition, RunConfig
 from lora.session import SessionManager
@@ -35,6 +38,56 @@ class FailingAgent:
     async def stream(self, context: Any, max_steps: int = 8) -> AsyncIterator[dict[str, Any]]:
         yield {"role": "assistant", "content": "partial", "type": "conversation.assistant_message"}
         raise RuntimeError("boom")
+
+
+class DeltaAgent:
+    async def stream(self, context: Any, max_steps: int = 8) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "role": "assistant",
+            "content": "Hel",
+            "type": "conversation.assistant_delta",
+            "payload": {"role": "assistant", "content": "Hel", "delta": "Hel"},
+        }
+        yield {
+            "role": "assistant",
+            "content": "lo",
+            "type": "conversation.assistant_delta",
+            "payload": {"role": "assistant", "content": "lo", "delta": "lo"},
+        }
+        yield {"role": "assistant", "content": "Hello", "type": "conversation.assistant_message"}
+
+
+class ToolCallingLLM:
+    def __init__(self) -> None:
+        self.request_messages: list[list[dict[str, Any]]] = []
+
+    async def stream_forward(self, context: Any, **kwargs: Any) -> AsyncIterator[AssistantMessageChunk]:
+        self.request_messages.append([message.to_dict() for message in context.history.data])
+        if len(self.request_messages) == 1:
+            context.add_message(
+                AssistantMessage(
+                    content="",
+                    reasoning_content="Need to call the calculator.",
+                    tool_calls=[
+                        ToolCall(
+                            tool_call_id="call_add",
+                            tool_name="add_numbers",
+                            arguments={"a": 2, "b": 3},
+                        )
+                    ],
+                    usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                )
+            )
+            return
+
+        yield AssistantMessageChunk(content="sum is 5", reasoning_content="Now answer.", usage={"total_tokens": 22})
+        context.add_message(
+            AssistantMessage(
+                content="sum is 5",
+                reasoning_content="Now answer.",
+                usage={"prompt_tokens": 15, "completion_tokens": 7, "total_tokens": 22},
+            )
+        )
 
 
 class AgentRuntimeAdapterTests(unittest.TestCase):
@@ -122,6 +175,105 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertIn("runtime.error", [event["type"] for event in events])
             self.assertEqual(loaded.history[-1]["content"], "partial")
 
+    def test_run_turn_streams_assistant_deltas_without_fragmenting_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora")
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            chunks: list[str] = []
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(agent=DeltaAgent(), config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="stream me",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                    on_assistant_delta=chunks.append,
+                )
+            )
+
+            loaded = manager.load(ref.session_id)
+            events = _read_jsonl(Path(run.run_dir) / "events.jsonl")
+            messages = _read_jsonl(Path(run.run_dir) / "messages.jsonl")
+
+            self.assertEqual(chunks, ["Hel", "lo"])
+            self.assertEqual(result["final_answer"], "Hello")
+            self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant"])
+            self.assertEqual(loaded.history[-1]["content"], "Hello")
+            self.assertEqual([message["role"] for message in messages], ["user", "assistant"])
+            self.assertNotIn("conversation.assistant_delta", [event["type"] for event in events])
+
+    def test_lora_agent_persists_assistant_tool_calls_in_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", max_steps=3)
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            llm = ToolCallingLLM()
+            agent = LoraAgent(config)
+            agent.llm = llm
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="add 2 and 3",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            loaded = manager.load(ref.session_id)
+            events = _read_jsonl(Path(run.run_dir) / "events.jsonl")
+            assistant = loaded.history[1]
+            tool_message = loaded.history[2]
+            event_assistant = next(event for event in events if event["type"] == "conversation.assistant_message")
+
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant", "tool", "assistant"])
+            self.assertEqual(assistant["tool_calls"][0]["id"], "call_add")
+            self.assertEqual(assistant["tool_calls"][0]["function"]["name"], "add_numbers")
+            self.assertEqual(json.loads(assistant["tool_calls"][0]["function"]["arguments"]), {"a": 2, "b": 3})
+            self.assertEqual(assistant["reasoning_content"], "Need to call the calculator.")
+            self.assertEqual(assistant["usage"]["total_tokens"], 15)
+            self.assertEqual(tool_message["tool_call_id"], "call_add")
+            self.assertEqual(event_assistant["payload"]["tool_calls"][0]["id"], "call_add")
+            self.assertEqual(event_assistant["payload"]["reasoning_content"], "Need to call the calculator.")
+            self.assertEqual(event_assistant["payload"]["usage"]["total_tokens"], 15)
+            self.assertEqual(loaded.history[-1]["reasoning_content"], "Now answer.")
+            self.assertEqual(loaded.history[-1]["usage"]["total_tokens"], 22)
+            self.assertEqual(llm.request_messages[1][-2]["tool_calls"][0]["id"], "call_add")
+            self.assertEqual(llm.request_messages[1][-2]["reasoning_content"], "Need to call the calculator.")
+            self.assertEqual(llm.request_messages[1][-2]["usage"]["total_tokens"], 15)
+            self.assertEqual(llm.request_messages[1][-1]["tool_call_id"], "call_add")
+
+    def test_to_pygent_message_restores_assistant_metadata(self) -> None:
+        message = _to_pygent_message(
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "Need to call the calculator.",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                "tool_calls": [
+                    {
+                        "id": "call_add",
+                        "type": "function",
+                        "function": {"name": "add_numbers", "arguments": "{\"a\": 2, \"b\": 3}"},
+                    }
+                ],
+            }
+        )
+
+        self.assertIsNotNone(message)
+        restored = message.to_dict()  # type: ignore[union-attr]
+        self.assertEqual(restored["tool_calls"][0]["id"], "call_add")
+        self.assertEqual(restored["tool_calls"][0]["function"]["name"], "add_numbers")
+        self.assertEqual(json.loads(restored["tool_calls"][0]["function"]["arguments"]), {"a": 2, "b": 3})
+        self.assertEqual(restored["reasoning_content"], "Need to call the calculator.")
+        self.assertEqual(restored["usage"]["total_tokens"], 15)
+
     def test_run_turn_records_chat_messages_and_saves_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora")
@@ -141,9 +293,22 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
 
             loaded = manager.load(ref.session_id)
             events = _read_jsonl(Path(run.run_dir) / "events.jsonl")
+            prompt_event = next(event for event in events if event["type"] == "prompt.rendered")
+            prompt_text_path = Path(prompt_event["payload"]["prompt_text_path"])
+            session_prompt_text_path = (
+                Path(ref.session_dir)
+                / "context"
+                / "rendered_prompts"
+                / run.case_run_id
+                / "turn-0001.txt"
+            )
 
             self.assertEqual(result["status"], "passed")
             self.assertIn("Lora agent is wired into chat", result["final_answer"])
+            self.assertIn("You are Lora", loaded.system_prompt)
+            self.assertTrue(prompt_text_path.exists())
+            self.assertTrue(session_prompt_text_path.exists())
+            self.assertIn("Available tools", prompt_text_path.read_text(encoding="utf-8"))
             self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant"])
             self.assertEqual(
                 [event["type"] for event in events],

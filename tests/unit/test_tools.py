@@ -60,6 +60,18 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))), 2)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))), 2)
 
+    def test_file_read_event_keeps_returned_content_for_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "demo.txt"
+            path.write_text("a\nb\nc\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileStateTracker(Path(tmp) / "state")
+
+            tracker.read_text_file(path, offset=2, limit=1, event_store=EventStore(run), turn_id="turn-0001")
+
+            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
+            self.assertEqual(file_events[0]["payload"]["returned_content"], "b")
+
 
 if __name__ == "__main__":
     unittest.main()

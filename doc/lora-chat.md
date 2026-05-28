@@ -56,6 +56,49 @@ lora chat --new
 --max-steps         覆盖 agent 最大执行步数
 ```
 
+## Agent 管理配置
+
+当前最小实现只有默认 `LoraAgent`。Agent 管理功能落地后，`lora chat` 应支持通过别名选择 agent，并从 `lora.yaml` 或环境变量读取模型请求配置。
+
+推荐配置结构：
+
+```yaml
+agent:
+  default_alias: dev
+
+agents:
+  - alias: dev
+    model_request:
+      api_key_env: DEEPSEEK_API_KEY
+      api_key: ""
+      model_name: deepseek-v4-flash
+  - alias: fast-check
+    model_request:
+      api_key_env: DEEPSEEK_API_KEY
+      model_name: deepseek-v4-flash
+```
+
+字段含义：
+
+- `alias`：agent 别名，用于在 chat、case run 或后续 agent 管理命令中选择配置。
+- `model_request.api_key_env`：读取 API key 的环境变量名，推荐优先使用，避免把密钥写入仓库。
+- `model_request.api_key`：本地明文 API key，仅适合个人未提交的本地配置；写入 run 产物时必须脱敏。
+- `model_request.model_name`：模型名称，例如 `deepseek-v4-flash`。
+
+解析优先级建议：
+
+1. CLI 显式选择的 agent alias。
+2. `agent.default_alias`。
+3. 内置默认 alias，例如 `default`。
+
+模型请求字段优先级建议：
+
+1. `--model` 覆盖选中 agent 的 `model_request.model_name`。
+2. `model_request.api_key_env` 指向的环境变量优先于明文 `model_request.api_key`。
+3. 兼容现有 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`。
+
+运行事件和 `run_config.json` 可以记录 `agent_alias`、`model_name` 和 `api_key_source`，但不能记录原始 API key。
+
 ## 单轮输出
 
 `--message` 模式会输出 JSON，包含本次 chat run 和 turn 的关键信息：
@@ -102,7 +145,7 @@ lora chat --new
 
 ## 当前 agent 行为
 
-`AgentRuntimeAdapter` 默认会创建 `LoraAgent`。`LoraAgent` 会加载工作区 `.env`，读取 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`，并注册内置工具：
+`AgentRuntimeAdapter` 默认会创建 `LoraAgent`。在 agent 管理功能落地前，`LoraAgent` 会加载工作区 `.env`，读取 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`，并注册内置工具：
 
 - `list_files`
 - `read_text_file`

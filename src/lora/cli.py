@@ -18,6 +18,7 @@ from .trace import EventStore
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
@@ -28,6 +29,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if result is not None:
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
+
+
+def _configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -238,16 +250,26 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
                 break
             if not user_input.strip():
                 continue
+            streamed = False
+
+            def print_chunk(chunk: str) -> None:
+                nonlocal streamed
+                streamed = True
+                print(chunk, end="", flush=True)
+
             result = asyncio.run(
                 adapter.run_turn(
                     session=session,
                     user_input=user_input,
                     case_run_ref=run_ref,
                     turn_id=f"turn-{turn_index:04d}",
+                    on_assistant_delta=print_chunk,
                 )
             )
             status = result["status"]
-            if result["final_answer"]:
+            if streamed:
+                print()
+            elif result["final_answer"]:
                 print(result["final_answer"])
             if result["error"]:
                 print(f"agent error: {result['error']}", file=sys.stderr)

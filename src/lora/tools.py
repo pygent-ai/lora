@@ -148,6 +148,8 @@ class FileStateTracker:
             return {"status": "stubbed", "content": decision.content, "dedup": decision.reason}
 
         selected = _select_lines(content, read_range)
+        if decision.action == "partial":
+            selected = f"{decision.content}\n\n{selected}"
         returned_range = asdict(read_range)
         event_payload = {
             "path": str(target),
@@ -156,6 +158,7 @@ class FileStateTracker:
             "requested_range": asdict(read_range),
             "returned_range": returned_range,
             "dedup": decision.reason,
+            "returned_content": selected,
         }
         event_id = (
             event_store.append("file.read", actor="tool", payload=event_payload, turn_id=turn_id)
@@ -163,8 +166,6 @@ class FileStateTracker:
             else f"read_{uuid.uuid4().hex}"
         )
         self.record_read(target, content_hash, read_range, event_id)
-        if decision.action == "partial":
-            selected = f"{decision.content}\n\n{selected}"
         return {
             "status": "partial" if decision.action == "partial" else "success",
             "content": selected,

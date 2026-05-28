@@ -11,7 +11,7 @@ from typing import Any, Literal, Union
 from pygent.agent import BaseAgent
 from pygent.context import BaseContext
 from pygent.llm import AsyncRequestsClient
-from pygent.message import AssistantMessage, BaseMessageChunk, ToolMessage, UserMessage
+from pygent.message import AssistantMessage, ToolCall, ToolMessage, UserMessage
 from pygent.module.tool import BaseTool, ToolCategory, ToolManager
 
 from .runtime import RuntimeContext
@@ -190,11 +190,14 @@ class AgentContextManager:
             tool_names=tool_names,
         )
         prompt, modules = self.prompt_composer.compose(render_ctx)
+        runtime_context.system_prompt = prompt
+        runtime_context.session.system_prompt = prompt
         if self.store is not None:
             self.store.append(
                 "prompt.rendered",
                 actor="system",
                 payload={
+                    "prompt": prompt,
                     "module_ids": [module["id"] for module in modules],
                     "modules": modules,
                     "prompt_hash": _hash_text(prompt),
@@ -302,7 +305,7 @@ class LoraAgent(BaseAgent):
         self.workspace_root = Path(config.workspace_root)
         _load_env_file(self.workspace_root / ".env")
         self.api_key = os.environ.get("DEEPSEEK_API_KEY")
-        self.model_name = config.model or os.environ.get("DEEPSEEK_MODEL") or "deepseek-chat"
+        self.model_name = config.model or os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash"
         self.base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
         self.llm = (
             AsyncRequestsClient(
@@ -372,13 +375,26 @@ class LoraAgent(BaseAgent):
                 content = _message_content(chunk)
                 if content:
                     assistant_parts.append(content)
+                    yield {
+                        "role": "assistant",
+                        "content": content,
+                        "type": "conversation.assistant_delta",
+                        "payload": {"role": "assistant", "content": content, "delta": content},
+                    }
 
             assistant_message = pygent_context.last_message
             assistant_text = "".join(assistant_parts)
-            if assistant_text:
-                yield {"role": "assistant", "content": assistant_text, "type": "conversation.assistant_message"}
-
             tool_calls = list(_message_tool_calls(assistant_message))
+            if assistant_text or tool_calls:
+                payload = _assistant_message_payload(assistant_message, fallback_content=assistant_text)
+                payload["type"] = "conversation.assistant_message"
+                yield {
+                    "role": "assistant",
+                    "content": str(payload.get("content", "")),
+                    "type": "conversation.assistant_message",
+                    "payload": payload,
+                }
+
             if not tool_calls:
                 return
 
@@ -398,7 +414,11 @@ class LoraAgent(BaseAgent):
                     "role": "tool",
                     "content": json.dumps(payload, ensure_ascii=False),
                     "type": "conversation.tool_message",
-                    "payload": {"role": "tool", "content": json.dumps(payload, ensure_ascii=False), "tool_call_id": result.tool_call_id},
+                    "payload": {
+                        "role": "tool",
+                        "content": json.dumps(payload, ensure_ascii=False),
+                        "tool_call_id": tool_call.tool_call_id.data,
+                    },
                 }
 
         raise RuntimeError(f"Agent stopped after max_steps={max_steps}")
@@ -433,7 +453,13 @@ def _to_pygent_message(message: dict[str, Any]) -> UserMessage | AssistantMessag
     if role == "user":
         return UserMessage(content=content)
     if role == "assistant":
-        return AssistantMessage(content=content)
+        tool_calls = _tool_calls_from_history(message.get("tool_calls"))
+        return AssistantMessage(
+            content=content,
+            tool_calls=tool_calls or None,
+            reasoning_content=message.get("reasoning_content"),
+            usage=message.get("usage"),
+        )
     if role == "tool" and message.get("tool_call_id"):
         return ToolMessage(content=content, tool_call_id=str(message["tool_call_id"]))
     return None
@@ -446,9 +472,54 @@ def _message_tool_calls(message: Any) -> Iterable[Any]:
     return getattr(tool_calls, "data", tool_calls) or []
 
 
+def _assistant_message_payload(message: Any, fallback_content: str = "") -> dict[str, Any]:
+    if hasattr(message, "to_dict"):
+        payload = _plain_data(message.to_dict())
+    elif isinstance(message, dict):
+        payload = _plain_data(message)
+    else:
+        payload = {"content": _message_content(message)}
+
+    if not isinstance(payload, dict):
+        payload = {"content": str(payload)}
+
+    payload["role"] = "assistant"
+    payload["content"] = str(payload.get("content") or fallback_content or "")
+    if "tool_calls" not in payload:
+        tool_calls = [
+            _plain_data(tool_call.to_dict() if hasattr(tool_call, "to_dict") else tool_call)
+            for tool_call in _message_tool_calls(message)
+        ]
+        if tool_calls:
+            payload["tool_calls"] = tool_calls
+    return payload
+
+
+def _tool_calls_from_history(raw_tool_calls: Any) -> list[ToolCall]:
+    if not isinstance(raw_tool_calls, list):
+        return []
+    tool_calls = []
+    for raw_tool_call in raw_tool_calls:
+        if isinstance(raw_tool_call, ToolCall):
+            tool_calls.append(raw_tool_call)
+        elif isinstance(raw_tool_call, dict):
+            tool_calls.append(ToolCall.from_dict(raw_tool_call))
+    return tool_calls
+
+
 def _message_content(message: Any) -> str:
     content = getattr(message, "content", "")
     return getattr(content, "data", content) or ""
+
+
+def _plain_data(value: Any) -> Any:
+    if hasattr(value, "data") and not isinstance(value, type):
+        return _plain_data(value.data)
+    if isinstance(value, dict):
+        return {key: _plain_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_data(item) for item in value]
+    return value
 
 
 def _hash_text(text: str) -> str:
