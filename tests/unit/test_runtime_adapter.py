@@ -395,11 +395,37 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertEqual(llm.request_messages[1][-2]["usage"]["total_tokens"], 15)
             self.assertEqual(llm.request_messages[1][-1]["tool_call_id"], "call_add")
             self.assertEqual(loaded.system_prompt, llm.request_system_prompts[-1])
-            self.assertIn("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", loaded.system_prompt)
             self.assertEqual(
                 [message["content"] for message in loaded.history[:-1]],
                 [message["content"] for message in llm.request_messages[-1][1:]],
             )
+
+    def test_model_request_prefix_is_append_only_across_tool_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", max_steps=3)
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            llm = ToolCallingLLM()
+            agent = ToolEnabledLoraAgent(config)
+            agent.llm = llm
+
+            asyncio.run(
+                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="add 2 and 3",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            loaded = manager.load(ref.session_id)
+            self.assertEqual(len(llm.request_messages), 2)
+            self.assertEqual(llm.request_system_prompts[0], llm.request_system_prompts[1])
+            self.assertEqual(loaded.system_prompt, llm.request_system_prompts[0])
+            self.assertNotIn("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", llm.request_system_prompts[0])
+            self.assertEqual(llm.request_messages[0], llm.request_messages[1][: len(llm.request_messages[0])])
 
     def test_lora_agent_allows_unlimited_steps_until_no_tool_calls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

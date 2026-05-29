@@ -629,8 +629,8 @@ class AgentContextManager:
         prompt = "\n\n".join(part for part in prompt_parts if part)
         prompt_hash = _hash_text(prompt)
         modules = [*static_prompt.modules, *dynamic_rendered_modules]
-        runtime_context.system_prompt = prompt
-        runtime_context.session.system_prompt = prompt
+        runtime_context.system_prompt = static_prompt.text
+        runtime_context.session.system_prompt = static_prompt.text
         model_prompt = ModelRequestPrompt(
             text=prompt,
             static_text=static_prompt.text,
@@ -772,12 +772,12 @@ class LoraAgent(BaseAgent):
         step_count = 0
         while max_steps == -1 or step_count < max_steps:
             step_count += 1
-            system_prompt = self.context_manager.compose_prompt(
+            model_prompt = self.context_manager.build_model_request_prompt(
                 runtime_context=context,
                 turn_id=self.turn_id,
                 tool_names=list(self._tools),
             )
-            _set_pygent_system_prompt(pygent_context, system_prompt)
+            _set_pygent_system_prompt(pygent_context, model_prompt.static_text)
             assistant_parts: list[str] = []
             async for chunk in self.llm.stream_forward(pygent_context, tools=self.tools_param()):
                 content = _message_content(chunk)
