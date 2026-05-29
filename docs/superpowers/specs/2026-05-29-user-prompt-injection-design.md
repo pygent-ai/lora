@@ -7,7 +7,7 @@ Add a structured user prompt injection layer that works with the existing static
 The design has two required behaviors:
 
 1. Every new user turn carries user identity and the original user message in a structured user-context wrapper.
-2. Runtime reminders, including current time and CLI availability, stay in dynamic system reminder modules that are rendered only before model requests.
+2. Runtime reminders, including CLI availability changes and optional time context, stay in dynamic system reminder modules that are rendered only before model requests when a reminder has been triggered.
 
 This preserves the current split:
 
@@ -89,6 +89,8 @@ Configuration should resolve into `RunConfig` or a nested config dataclass so pr
 
 Add a dynamic prompt module, for example `runtime.system_reminder`, with `cache_scope="request"` and an order before general tool guidance.
 
+This module is event-triggered. It should render only when reminder state says there is something to deliver, such as first-session CLI context or newly detected CLI tools. Normal events and ordinary dynamic prompt rendering must not update or refresh reminder content by default.
+
 It renders:
 
 ```xml
@@ -111,15 +113,19 @@ It renders:
 
 Time rules:
 
-- Render current local system time on every model request.
+- Time is not rendered on every model request by default.
+- `system-reminder` accepts an `include_time` flag for each triggered reminder.
+- When `include_time=true`, render the latest local system time at the moment the reminder is composed.
+- CLI-triggered reminders set `include_time=true` by default, so a newly detected CLI reminder carries the latest time.
+- Future reminder modules may set `include_time=false` when they should not carry time context.
 - Include timezone if available, for example `2026-05-29 14:03:00 Asia/Shanghai`.
 - Keep time out of static prompt because it changes every request.
 
 CLI rules:
 
-- Full `available-bash-cli` is injected only for the first model request of a session.
+- Full `available-bash-cli` is injected only for the first model request of a session, and that first-session CLI reminder uses `include_time=true` unless configured otherwise.
 - Later requests omit full preset CLI descriptions unless forced by a config/debug flag.
-- Newly detected CLI tools are injected once through `new-bash-cli` after detection.
+- Newly detected CLI tools are injected once through `new-bash-cli` after detection, with `include_time=true` by default.
 
 ## CLI Session State
 
@@ -152,7 +158,15 @@ Suggested shape:
       "description": "Python type checker. Use it for static type validation when available.",
       "installed": true,
       "detected_at": "2026-05-29T06:05:00Z",
-      "source": "tool_result"
+      "source": "tool_result",
+      "include_time": true
+    }
+  ],
+  "pending_system_reminders": [
+    {
+      "kind": "cli_context",
+      "include_time": true,
+      "created_at": "2026-05-29T06:05:00Z"
     }
   ]
 }
@@ -163,6 +177,8 @@ State rules:
 - `initial_available_cli_injected` flips after the first successful dynamic render that includes full CLI presets.
 - `known_bash_cli` tracks configured presets and newly detected tools.
 - `pending_new_bash_cli` is consumed exactly once by the dynamic reminder module.
+- `pending_system_reminders` controls whether `runtime.system_reminder` renders at all.
+- Normal event logging, user-message storage, context projection, and ordinary dynamic prompt modules do not update reminder state.
 - Consuming pending state should happen after prompt rendering has been persisted, so failed model request preparation does not lose the reminder.
 
 ## CLI Detection
@@ -199,10 +215,15 @@ Instead:
 1. Tool interceptor records `tool.result` normally.
 2. CLI detector updates `state/cli_context.json` with pending new CLI entries.
 3. The next loop iteration calls the model.
-4. `AgentContextManager.build_model_request_prompt()` renders `runtime.system_reminder`.
-5. The rendered dynamic prompt includes:
+4. `AgentContextManager.build_model_request_prompt()` sees a pending reminder and renders `runtime.system_reminder`.
+5. Because CLI reminders default to `include_time=true`, the rendered dynamic prompt includes the latest time and the new CLI context:
 
 ```xml
+<system-reminder>
+<time>
+  当前系统时间为：2026-05-29 14:03:00 Asia/Shanghai
+</time>
+
 <cli-context>
   <new-bash-cli>
     <pyright>
@@ -211,6 +232,7 @@ Instead:
     </pyright>
   </new-bash-cli>
 </cli-context>
+</system-reminder>
 ```
 
 This satisfies the requirement that, if the reminder is placed near tool prompt context, it is inserted after tool execution and before the next model call.
@@ -219,7 +241,7 @@ This satisfies the requirement that, if the reminder is placed near tool prompt 
 
 Recommended modules:
 
-- `runtime.system_reminder`: time plus CLI context wrapper.
+- `runtime.system_reminder`: triggered reminder wrapper that may include time and one or more reminder payloads.
 - `runtime.cli_context`: optional internal renderer used by `runtime.system_reminder`.
 
 Keep existing modules:
@@ -242,6 +264,7 @@ No new policy category is required at first.
 - rendered only when `PromptInjectionPolicy` allows dynamic modules
 - included for `agent_turn` and `case_run`
 - omitted from static prompt cache
+- enabled only when pending reminder state exists
 
 If later summary/evaluation requests need time but not CLI reminders, add request-type filtering through the module's `enabled` function or a policy-level module allowlist.
 
@@ -269,28 +292,33 @@ Unit tests:
 - `wrap_user_message()` returns the exact expected `<user-context>` structure and escapes special characters.
 - default user identity is `"default"`.
 - config parser accepts `user.identity` and `cli.bash.presets`.
-- `runtime.system_reminder` renders current time and first-request CLI presets.
+- `runtime.system_reminder` renders nothing when no reminder state is pending.
+- `runtime.system_reminder` renders current time only when the pending reminder has `include_time=true`.
+- `runtime.system_reminder` omits time when the pending reminder has `include_time=false`.
+- first-request CLI preset reminder defaults to `include_time=true`.
 - full `available-bash-cli` is not rendered on the second request in the same session.
-- pending `new-bash-cli` is rendered once and then cleared.
+- pending `new-bash-cli` is rendered once with time by default and then cleared.
 
 Runtime tests:
 
 - `AgentRuntimeAdapter.run_turn()` stores wrapped user content in history and raw content in event payload.
-- `prompt.rendered` includes `runtime.system_reminder` in dynamic module ids.
+- `prompt.rendered` includes `runtime.system_reminder` in dynamic module ids only when reminder state is pending.
 - static prompt cache does not contain `<system-reminder>`, `<time>`, `<cli-context>`, or `<user-context>`.
 - after a simulated tool result marks a new CLI pending, the next rendered prompt includes `<new-bash-cli>`.
+- ordinary events that do not create pending reminder state do not cause `<system-reminder>` to render.
 
 Scenario tests:
 
-- `lora chat --message "hello"` produces a rendered prompt with time reminder and a history message containing `<user-context>`.
+- `lora chat --message "hello"` produces a history message containing `<user-context>` and, on the first session request, a CLI reminder with time.
 - repeated turns in one session inject full CLI preset context only on the first turn.
+- a later CLI-installing tool result produces a one-shot `<new-bash-cli>` reminder with latest time.
 
 ## Implementation Order
 
 1. Add config fields and defaults for `user.identity` and CLI presets.
 2. Add user message wrapper helper and use it in `AgentRuntimeAdapter.run_turn()`.
 3. Add CLI session state reader/writer.
-4. Add `runtime.system_reminder` dynamic module.
+4. Add triggered `runtime.system_reminder` dynamic module with `include_time` support.
 5. Add first-request CLI preset rendering and one-shot pending new CLI rendering.
 6. Add conservative CLI change detection after bash/tool results.
 7. Add unit and scenario tests for wrapper, dynamic reminder, and one-shot CLI behavior.
@@ -300,3 +328,4 @@ Scenario tests:
 - Case replay raw fidelity: default should wrap case user messages, but cases may need an opt-out flag if they test exact prompt text.
 - New CLI discovery breadth: initial implementation should track configured presets and explicit install results; full PATH diffing can wait.
 - Local time source: use local timezone-aware time where available, otherwise include UTC.
+- Reminder trigger schema: initial implementation can store CLI reminders in `cli_context.json`; a later generic reminder store can support non-CLI reminder modules with independent `include_time` defaults.
