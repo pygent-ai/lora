@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,7 +20,7 @@ from pygent.module.tool import BaseTool, ToolManager
 from pygent.toolkits import BashToolkits, FileToolkits
 
 from .runtime import RuntimeContext
-from .schema import CaseRunRef, RunConfig
+from .schema import BashCliPreset, CaseRunRef, ResolvedAgentConfig, RunConfig
 from .tools import FileStateTracker, ToolContext, ToolInterceptor
 from .trace import EventStore
 
@@ -94,6 +96,7 @@ class PromptRenderContext:
     tool_names: list[str]
     request_id: str | None = None
     request_type: str = "agent_turn"
+    cli_bash_presets: list[BashCliPreset] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -210,6 +213,15 @@ class PromptRegistry:
                 cache_scope="session",
                 order=50,
                 render=_render_system_output_style_prompt,
+            ),
+            PromptModule(
+                id="runtime.system_reminder",
+                phase="dynamic",
+                type="runtime",
+                cache_scope="request",
+                order=95,
+                render=_render_system_reminder_prompt,
+                enabled=_system_reminder_enabled,
             ),
             PromptModule(
                 id="runtime.env_info",
@@ -399,6 +411,7 @@ class StaticPromptSessionCache:
                 tool_names=[],
                 request_id=None,
                 request_type=ctx.request_type,
+                cli_bash_presets=[],
             )
             text, modules = self.composer.compose_static(static_ctx)
             prompt_hash = _hash_text(text)
@@ -493,6 +506,7 @@ class AgentContextManager:
         store: EventStore | None = None,
         prompt_registry: PromptRegistry | None = None,
         prompt_composer: PromptComposer | None = None,
+        cli_bash_presets: list[BashCliPreset] | None = None,
     ) -> None:
         self.session_dir = session_dir
         self.workspace_root = workspace_root
@@ -501,6 +515,7 @@ class AgentContextManager:
         self.prompt_composer = prompt_composer or PromptComposer(prompt_registry)
         self.static_prompt_cache = StaticPromptSessionCache(session_dir, self.prompt_composer)
         self.injection_policy = PromptInjectionPolicy()
+        self.cli_bash_presets = list(cli_bash_presets or [])
 
     def projection(self, history: list[dict[str, Any]], limit: int = 8) -> dict[str, Any]:
         recent_messages = [
@@ -533,6 +548,7 @@ class AgentContextManager:
             tool_names=[],
             request_id=None,
             request_type="agent_turn",
+            cli_bash_presets=[],
         )
         return self.static_prompt_cache.get_or_create(render_ctx)
 
@@ -573,6 +589,7 @@ class AgentContextManager:
             tool_names=tool_names,
             request_id=request_id,
             request_type=request_type,
+            cli_bash_presets=self.cli_bash_presets,
         )
         static_prompt = self.static_prompt_cache.get_or_create(render_ctx)
         dynamic_modules = self.prompt_composer.resolve_dynamic_modules(render_ctx)
@@ -613,7 +630,7 @@ class AgentContextManager:
         prompt_hash = _hash_text(prompt)
         modules = [*static_prompt.modules, *dynamic_rendered_modules]
         runtime_context.system_prompt = prompt
-        runtime_context.session.system_prompt = static_prompt.text
+        runtime_context.session.system_prompt = prompt
         model_prompt = ModelRequestPrompt(
             text=prompt,
             static_text=static_prompt.text,
@@ -643,6 +660,8 @@ class AgentContextManager:
                 },
                 turn_id=turn_id,
             )
+            if any(module["id"] == "runtime.system_reminder" for module in dynamic_rendered_modules):
+                _consume_system_reminder_state(render_ctx)
         return model_prompt
 
     def file_status(self) -> list[dict[str, Any]]:
@@ -658,15 +677,27 @@ class AgentContextManager:
 
 
 class LoraAgent(BaseAgent):
-    def __init__(self, config: RunConfig, prompt_registry: PromptRegistry | None = None) -> None:
+    def __init__(
+        self,
+        config: RunConfig,
+        resolved_agent: ResolvedAgentConfig | None = None,
+        prompt_registry: PromptRegistry | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
+        self.resolved_agent = resolved_agent or config.resolved_agent or ResolvedAgentConfig(
+            alias=config.agent_alias,
+            model_name=config.model_name or config.model or os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash",
+            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            api_key_source=config.api_key_source,
+            base_url=config.base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        )
         self.prompt_registry = prompt_registry
         self.workspace_root = Path(config.workspace_root)
         _load_env_file(self.workspace_root / ".env")
-        self.api_key = os.environ.get("DEEPSEEK_API_KEY")
-        self.model_name = config.model or os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash"
-        self.base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        self.api_key = self.resolved_agent.api_key
+        self.model_name = self.resolved_agent.model_name
+        self.base_url = self.resolved_agent.base_url or "https://api.deepseek.com"
         self.llm = (
             AsyncRequestsClient(
                 base_url=self.base_url,
@@ -693,6 +724,7 @@ class LoraAgent(BaseAgent):
             workspace_root=self.workspace_root,
             store=EventStore(case_run_ref),
             prompt_registry=self.prompt_registry,
+            cli_bash_presets=self.config.cli_bash_presets,
         )
         setattr(self.context_manager, "turn_id", turn_id)
         self.tool_manager = ToolManager()
@@ -709,20 +741,23 @@ class LoraAgent(BaseAgent):
         if max_steps != -1 and max_steps <= 0:
             raise ValueError("max_steps must be -1 or greater than 0")
 
-        system_prompt = self.context_manager.compose_prompt(
-            runtime_context=context,
-            turn_id=self.turn_id,
-            tool_names=list(self._tools),
-        )
         if self.llm is None:
+            self.context_manager.compose_prompt(
+                runtime_context=context,
+                turn_id=self.turn_id,
+                tool_names=list(self._tools),
+            )
             yield {
                 "role": "assistant",
-                "content": "Lora agent is wired into chat, but DEEPSEEK_API_KEY is not configured for a model call.",
+                "content": (
+                    "Lora agent is wired into chat, but API key is not configured "
+                    f"for agent alias {self.resolved_agent.alias!r}."
+                ),
                 "type": "conversation.assistant_message",
             }
             return
 
-        pygent_context = BaseContext(system_prompt=system_prompt)
+        pygent_context = BaseContext(system_prompt="")
         for message in context.history:
             converted = _to_pygent_message(message)
             if converted is not None:
@@ -737,6 +772,12 @@ class LoraAgent(BaseAgent):
         step_count = 0
         while max_steps == -1 or step_count < max_steps:
             step_count += 1
+            system_prompt = self.context_manager.compose_prompt(
+                runtime_context=context,
+                turn_id=self.turn_id,
+                tool_names=list(self._tools),
+            )
+            _set_pygent_system_prompt(pygent_context, system_prompt)
             assistant_parts: list[str] = []
             async for chunk in self.llm.stream_forward(pygent_context, tools=self.tools_param()):
                 content = _message_content(chunk)
@@ -771,19 +812,31 @@ class LoraAgent(BaseAgent):
                 if name not in self._tools:
                     raise RuntimeError(f"Unknown tool requested by model: {name}")
                 result = interceptor.call_tool(name, kwargs, tool_context, self._tools[name].forward)
+                new_cli_entries: list[dict[str, Any]] = []
+                if name == "bash" and self.context_manager is not None:
+                    new_cli_entries = _detect_new_bash_cli(
+                        self.context_manager.session_dir,
+                        self.config.cli_bash_presets,
+                        command=str(kwargs.get("command") or ""),
+                    )
                 payload = result.to_dict()
+                content = _serialize_tool_payload_for_model(payload)
+                reminder = _render_new_cli_tool_message_reminder(new_cli_entries)
+                if reminder:
+                    content = f"{content}\n\n{reminder}"
                 tool_message = ToolMessage(
-                    content=json.dumps(payload, ensure_ascii=False),
+                    content=content,
                     tool_call_id=tool_call.tool_call_id.data,
                 )
                 pygent_context.add_message(tool_message)
+                sent_tool_content = content
                 yield {
                     "role": "tool",
-                    "content": json.dumps(payload, ensure_ascii=False),
+                    "content": sent_tool_content,
                     "type": "conversation.tool_message",
                     "payload": {
                         "role": "tool",
-                        "content": json.dumps(payload, ensure_ascii=False),
+                        "content": sent_tool_content,
                         "tool_call_id": tool_call.tool_call_id.data,
                     },
                 }
@@ -879,6 +932,74 @@ def _render_system_output_style_prompt(ctx: PromptRenderContext) -> str | None:
             "- Avoid filler, invented certainty, and unnecessary time estimates.",
         ]
     )
+
+
+def _system_reminder_enabled(ctx: PromptRenderContext) -> bool:
+    state = _load_cli_context_state(ctx)
+    return _system_reminder_has_content(ctx, state)
+
+
+def _render_system_reminder_prompt(ctx: PromptRenderContext) -> str | None:
+    state = _load_cli_context_state(ctx)
+    if not _system_reminder_has_content(ctx, state):
+        return None
+
+    include_initial_cli = not bool(state.get("initial_available_cli_injected"))
+    pending_new_cli = list(state.get("pending_new_bash_cli") or [])
+    pending_reminders = list(state.get("pending_system_reminders") or [])
+    include_time = include_initial_cli or any(bool(item.get("include_time")) for item in pending_new_cli)
+    include_time = include_time or any(bool(item.get("include_time")) for item in pending_reminders)
+
+    lines = ["<system-reminder>"]
+    if include_time:
+        lines.extend(
+            [
+                "<time>",
+                f"  当前系统时间为：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
+                "</time>",
+                "",
+            ]
+        )
+
+    cli_lines: list[str] = []
+    if include_initial_cli:
+        cli_lines.append("<available-bash-cli>")
+        for preset in ctx.cli_bash_presets:
+            status = "installed" if shutil.which(preset.name) else "not installed"
+            cli_lines.extend(
+                [
+                    f"  <{preset.name}>",
+                    f"    {escape(preset.description, quote=False)}",
+                    f"    Status: {status}.",
+                    f"  </{preset.name}>",
+                ]
+            )
+        cli_lines.append("</available-bash-cli>")
+
+    if pending_new_cli:
+        if cli_lines:
+            cli_lines.append("")
+        cli_lines.append("<new-bash-cli>")
+        for item in pending_new_cli:
+            name = str(item.get("name") or "")
+            if not name:
+                continue
+            description = escape(str(item.get("description") or ""), quote=False)
+            status = "installed" if item.get("installed") is not False else "not installed"
+            cli_lines.extend(
+                [
+                    f"  <{name}>",
+                    f"    {description}",
+                    f"    Status: {status}.",
+                    f"  </{name}>",
+                ]
+            )
+        cli_lines.append("</new-bash-cli>")
+
+    if cli_lines:
+        lines.extend(["<cli-context>", *[f"  {line}" if line else "" for line in cli_lines], "</cli-context>"])
+    lines.append("</system-reminder>")
+    return "\n".join(lines)
 
 
 def _render_runtime_env_info_prompt(ctx: PromptRenderContext) -> str:
@@ -1024,6 +1145,176 @@ def _prompt_render_context_payload(ctx: PromptRenderContext) -> dict[str, Any]:
         "request_id": ctx.request_id,
         "request_type": ctx.request_type,
     }
+
+
+def _cli_context_state_path(ctx: PromptRenderContext) -> Path:
+    return ctx.session_dir / "state" / "cli_context.json"
+
+
+def _load_cli_context_state(ctx: PromptRenderContext) -> dict[str, Any]:
+    path = _cli_context_state_path(ctx)
+    if not path.exists():
+        return {
+            "initial_available_cli_injected": False,
+            "known_bash_cli": {},
+            "pending_new_bash_cli": [],
+            "pending_system_reminders": [],
+        }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        data = {}
+    return {
+        "initial_available_cli_injected": bool(data.get("initial_available_cli_injected")),
+        "known_bash_cli": dict(data.get("known_bash_cli") or {}),
+        "pending_new_bash_cli": list(data.get("pending_new_bash_cli") or []),
+        "pending_system_reminders": list(data.get("pending_system_reminders") or []),
+    }
+
+
+def _write_cli_context_state(ctx: PromptRenderContext, state: dict[str, Any]) -> None:
+    path = _cli_context_state_path(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(path, state)
+
+
+def _system_reminder_has_content(ctx: PromptRenderContext, state: dict[str, Any]) -> bool:
+    return (
+        (not bool(state.get("initial_available_cli_injected")) and bool(ctx.cli_bash_presets))
+        or bool(state.get("pending_new_bash_cli"))
+        or bool(state.get("pending_system_reminders"))
+    )
+
+
+def _consume_system_reminder_state(ctx: PromptRenderContext) -> None:
+    state = _load_cli_context_state(ctx)
+    known = dict(state.get("known_bash_cli") or {})
+    if not bool(state.get("initial_available_cli_injected")):
+        for preset in ctx.cli_bash_presets:
+            known[preset.name] = {
+                "name": preset.name,
+                "description": preset.description,
+                "installed": shutil.which(preset.name) is not None,
+                "detected_at": _now(),
+            }
+        state["initial_available_cli_injected"] = True
+    for item in state.get("pending_new_bash_cli") or []:
+        name = str(item.get("name") or "")
+        if name:
+            known[name] = dict(item)
+    state["known_bash_cli"] = known
+    state["pending_new_bash_cli"] = []
+    state["pending_system_reminders"] = []
+    _write_cli_context_state(ctx, state)
+
+
+def _detect_new_bash_cli(
+    session_dir: Path,
+    presets: list[BashCliPreset],
+    *,
+    command: str = "",
+) -> list[dict[str, Any]]:
+    state_path = session_dir / "state" / "cli_context.json"
+    if not state_path.exists() and not command:
+        return []
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except json.JSONDecodeError:
+        return []
+    known = dict(state.get("known_bash_cli") or {})
+    pending = list(state.get("pending_new_bash_cli") or [])
+    pending_names = {str(item.get("name") or "") for item in pending}
+    changed = False
+    candidates = list(presets)
+    for inferred in _infer_installed_cli_names(command):
+        if inferred not in {preset.name for preset in candidates}:
+            candidates.append(BashCliPreset(name=inferred, command=f"{inferred} --help", description="Newly installed CLI."))
+    new_entries: list[dict[str, Any]] = []
+    for preset in candidates:
+        record = known.get(preset.name)
+        if record and record.get("installed") is True:
+            continue
+        if preset.name in pending_names:
+            continue
+        if shutil.which(preset.name) is None:
+            continue
+        entry = {
+            "name": preset.name,
+            "description": preset.description,
+            "installed": True,
+            "detected_at": _now(),
+            "source": "tool_result",
+            "include_time": True,
+        }
+        pending.append(entry)
+        new_entries.append(entry)
+        changed = True
+    if not changed:
+        return []
+    state["pending_new_bash_cli"] = pending
+    reminders = list(state.get("pending_system_reminders") or [])
+    reminders.append({"kind": "cli_context", "include_time": True, "created_at": _now()})
+    state["pending_system_reminders"] = reminders
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(state_path, state)
+    return new_entries
+
+
+def _infer_installed_cli_names(command: str) -> list[str]:
+    parts = command.split()
+    if len(parts) >= 4 and parts[:3] == ["npm", "install", "-g"]:
+        return [part for part in parts[3:] if not part.startswith("-")]
+    if len(parts) >= 3 and parts[:2] == ["npm", "i"] and "-g" in parts:
+        global_index = parts.index("-g")
+        return [part for part in parts[global_index + 1 :] if not part.startswith("-")]
+    return []
+
+
+def _render_new_cli_tool_message_reminder(entries: list[dict[str, Any]]) -> str | None:
+    if not entries:
+        return None
+    lines = [
+        "<system-reminder>",
+        "<time>",
+        f"  当前系统时间为：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        "</time>",
+        "",
+        "<cli-context>",
+        "  <new-bash-cli>",
+    ]
+    for entry in entries:
+        name = str(entry.get("name") or "")
+        if not name:
+            continue
+        lines.extend(
+            [
+                f"    <{name}>",
+                f"      {escape(str(entry.get('description') or ''), quote=False)}",
+                "      Status: installed.",
+                f"    </{name}>",
+            ]
+        )
+    lines.extend(["  </new-bash-cli>", "</cli-context>", "</system-reminder>"])
+    return "\n".join(lines)
+
+
+def _serialize_tool_payload_for_model(payload: dict[str, Any]) -> str:
+    ordered = {
+        "status": payload.get("status"),
+        "result": payload.get("result"),
+        "error": payload.get("error"),
+        "tool_call_id": payload.get("tool_call_id"),
+    }
+    for key, value in payload.items():
+        if key not in ordered:
+            ordered[key] = value
+    return json.dumps(ordered, ensure_ascii=False)
+
+
+def _set_pygent_system_prompt(context: BaseContext, system_prompt: str) -> None:
+    context.system_prompt = system_prompt
+    if context.history.data and context.history.data[0].to_dict().get("role") == "system":
+        context.history.data[0].content = system_prompt
 
 
 def _latest_user_input_hash(history: list[dict[str, Any]]) -> str | None:

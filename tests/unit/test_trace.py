@@ -91,6 +91,62 @@ class EventStoreTests(unittest.TestCase):
             self.assertEqual(file_events[0]["type"], "file.read")
             self.assertEqual(file_events[0]["content_hash"], "abc123")
 
+    def test_persisted_tool_and_file_results_redact_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "events"
+            store = _store(tmp)
+            secret = "sk-1234567890abcdef1234567890abcdef"
+
+            call_id = store.append(
+                "tool.call",
+                actor="assistant",
+                payload={"tool_name": "read", "args": {"path": ".env"}},
+                turn_id="turn-0001",
+            )
+            store.append(
+                "tool.result",
+                actor="tool",
+                payload={
+                    "tool_call_id": call_id,
+                    "status": "success",
+                    "result": {"content": f"DEEPSEEK_API_KEY={secret}\nSAFE=value"},
+                },
+                turn_id="turn-0001",
+            )
+            store.append(
+                "file.read",
+                actor="tool",
+                payload={"path": ".env", "content_hash": "abc123", "returned_content": f"token={secret}"},
+                turn_id="turn-0001",
+            )
+
+            events_text = (run_dir / "events.jsonl").read_text(encoding="utf-8")
+            tool_results_text = (run_dir / "tool_results.jsonl").read_text(encoding="utf-8")
+            file_events_text = (run_dir / "file_events.jsonl").read_text(encoding="utf-8")
+            self.assertNotIn(secret, events_text)
+            self.assertNotIn(secret, tool_results_text)
+            self.assertNotIn(secret, file_events_text)
+            self.assertIn("DEEPSEEK_API_KEY=[REDACTED]", tool_results_text)
+            self.assertIn("token=[REDACTED]", file_events_text)
+
+    def test_rendered_prompt_text_redacts_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "events"
+            store = _store(tmp)
+            secret = "sk-1234567890abcdef1234567890abcdef"
+
+            store.append(
+                "prompt.rendered",
+                actor="system",
+                payload={"prompt": f"History:\nDEEPSEEK_API_KEY={secret}", "prompt_hash": "hash1"},
+                turn_id="turn-0001",
+            )
+
+            prompt_text = run_dir / "rendered_prompts" / "turn-0001.txt"
+            persisted = prompt_text.read_text(encoding="utf-8")
+            self.assertNotIn(secret, persisted)
+            self.assertIn("DEEPSEEK_API_KEY=[REDACTED]", persisted)
+
     def test_session_level_context_artifacts_are_written_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             session_dir = Path(tmp) / ".lora" / "sessions" / "s1"

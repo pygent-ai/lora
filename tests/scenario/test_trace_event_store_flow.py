@@ -7,6 +7,8 @@ from pathlib import Path
 from lora.schema import RunConfig
 from lora.session import SessionManager
 from lora.trace import DESIGN_EVENT_TYPES, EventStore
+from lora.regression import RegressionRunner
+from lora.case import CaseManager
 
 
 class TraceEventStoreScenarioTests(unittest.TestCase):
@@ -59,6 +61,24 @@ class TraceEventStoreScenarioTests(unittest.TestCase):
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))), 1)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))), 1)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))), 4)
+
+    def test_regression_run_records_started_and_finished_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".lora").mkdir()
+            manifest = root / ".lora" / "regression.json"
+            manifest.write_text('{"version": "1.0", "cases": []}', encoding="utf-8")
+            config = RunConfig(workspace_root=root, lora_root=root / ".lora")
+
+            result = RegressionRunner(
+                config=config,
+                session_manager=SessionManager(config),
+                case_manager=CaseManager(root),
+            ).run(manifest)
+
+            events = list(EventStore.iter_jsonl(Path(result["run_dir"]) / "events.jsonl"))
+            self.assertEqual([event["type"] for event in events], ["regression.started", "regression.finished"])
+            self.assertEqual(events[-1]["payload"]["status"], "skipped")
 
 
 def _actor_for(event_type: str) -> str:

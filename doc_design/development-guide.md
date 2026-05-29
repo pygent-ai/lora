@@ -772,15 +772,15 @@ load
   - `role` 只能是 `user` 或 `assistant`。
   - 必须有 `content`。
 - `expect.tool_calls.required` 中每项必须有 `name`。
-- `expect.files.unchanged` 如果存在，必须是 list。
+- `expect.files.unchanged` 如果存在，必须是 list，且每个路径必须解析在 `workspace_root` 内。
 
 ### 8.4 `prepare_workspace(case, case_run_ref) -> WorkspaceRef`
 
 职责：
 
 - 读取 `case.workspace.setup`，默认空 list。
-- 当前只支持 setup step：`type: copy_fixture`。
-- 执行 fixture 拷贝。
+- 支持 `copy_fixture`、`write_file`、`mkdir`、`delete_path`、`run_command` setup step。
+- 执行 workspace setup，并把动作记录到 `workspace/setup_actions.jsonl`。
 - 对 `expect.files.unchanged` 中的文件写入 baseline hash。
 - 返回 `WorkspaceRef`。
 
@@ -792,7 +792,16 @@ workspace:
     - type: copy_fixture
       from: fixtures/case-a
       to: work/case-a
+    - type: write_file
+      path: work/input.txt
+      content: hello
+    - type: mkdir
+      path: work/output
+    - type: delete_path
+      path: work/stale.txt
 ```
+
+所有 workspace setup 路径和 `expect.files.unchanged` 路径都会通过 workspace 安全解析：相对路径以 `workspace_root` 为基准，绝对路径必须仍位于 `workspace_root` 内；空路径或 `..`/绝对路径逃逸会在 agent 执行前报 `ValueError`。如果未来需要外部只读 fixtures，应增加显式 allowlist，不要默认允许。
 
 ### 8.5 `case_hash(case) -> str`
 
@@ -805,13 +814,14 @@ workspace:
 | `_copy_fixture(step)` | 将 `from` 拷贝到 `to`，目录会先删除目标再复制 |
 | `_write_baseline(case, case_run_ref)` | 写 `workspace/before_hashes.json` |
 | `_required_tools(case)` | 返回 `expect.tool_calls.required` |
-| `_resolve_under_root(root, value)` | 将相对路径解析到 workspace 下；当前不拒绝绝对路径 |
+| `_resolve_workspace_path(root, value, field_name=...)` | 将路径解析到 workspace 下，并拒绝逃逸到 `workspace_root` 外 |
+| `_resolve_under_root(root, value)` | 兼容包装，内部委托 `_resolve_workspace_path` |
 | `_file_snapshot(path)` | 返回 `{exists, content_hash, size}` |
 
 开发注意：
 
 - 新增 workspace setup 类型时，只扩展 `prepare_workspace` 和测试，不要把准备逻辑放进 CLI。
-- 如果未来要限制绝对路径逃逸，需要加强 `_resolve_under_root`。
+- 新增 workspace setup 类型必须复用 `_resolve_workspace_path`，并在错误信息里保留字段名。
 
 ## 9. Trace 模块 `trace.py`
 
@@ -1874,7 +1884,7 @@ WorkspaceRef
 | `test_session_manager.py` | 创建/加载 session、多 run、finish metadata、fork |
 | `test_case_manager.py` | case 加载校验、hash、fixture copy、baseline |
 | `test_runtime_adapter.py` | run_case 事件记录、失败保留、run_turn chat |
-| `test_tools.py` | 文件读取去重、hash 变化、工具拦截成功/失败 |
+| `test_tools.py` | 文件读取去重、hash 变化、工具拦截成功/失败、文件效果跟踪 |
 | `test_trace.py` | 事件 append、scope 校验、投影、查询、错误事件 |
 | `test_evaluation.py` | answer/tool/file 断言、失败详情 |
 
@@ -1884,6 +1894,7 @@ WorkspaceRef
 | --- | --- |
 | `test_cli_flow.py` | `session create/show`、`case run/replay`、`optimize`、`chat --message` |
 | `test_trace_event_store_flow.py` | append-only trace 和所有投影文件 |
+| `test_file_effect_tracking_flow.py` | `ToolInterceptor` 文件新增/编辑/删除净效果跟踪 |
 
 ### 15.3 推荐测试命令
 
@@ -1980,22 +1991,22 @@ def start_run(self, case_run_ref: CaseRunRef, turn_id: str | None) -> None:
 | --- | --- | --- |
 | YAML 解析 | 自研子集 | case 复杂后引入 PyYAML 或 ruamel.yaml |
 | `PromptModule.version_hash` | 已使用基于 SHA-256 的稳定 hash | 如需更强一致性，可把 render 函数版本也显式纳入 hash |
-| 文件路径安全 | Agent 工具限制 workspace，Case fixture 解析未强制限制绝对路径 | 对 case setup 加路径逃逸检查 |
-| regression | CLI 仅返回 skipped | 后续实现 manifest 和执行器 |
-| analysis | 规则化 root cause | 后续抽出独立 `FailureAnalyzer` |
-| repair | 未实现 | 后续增加 plan/apply/gate |
+| 文件路径安全 | Agent 工具和 case setup 路径都限制在 workspace 内 | 如需外部 fixture，后续增加显式 allowlist |
+| regression | 已实现 manifest 读取、suite 执行、汇总产物和 regression 事件 | 后续可增加选择性运行、标签过滤和历史对比 |
+| analysis | 已抽出独立 `FailureAnalyzer`，覆盖 runtime/tool/assertion/file/budget 等归因 | 后续可增加更细的 root cause 策略 |
+| repair | 已实现最小闭环 | `lora repair plan/apply/gate` 支持确定性计划、人工 patch 捕获和命令/regression gate |
 | prompt 落盘 | 已保存 session static prompt 和每次请求的 rendered prompt 文本/元数据 | 后续可增加保留策略和敏感信息过滤 |
-| agent 管理 | 当前只有默认 `LoraAgent` 和 DeepSeek 环境变量 | 增加 agent alias、profile 解析、模型请求配置和密钥脱敏 |
+| agent 管理 | 已支持 `--agent`、agent profile 解析、模型请求配置和密钥脱敏；运行时仍默认使用 `LoraAgent` | 后续增加 agent profile CRUD 和 adapter registry |
 
 ## 18. 推荐扩展路线
 
 短期：
 
-1. 补 README。
-2. 实现 agent profile 管理：alias、API key 来源、model name 和 `--model` 覆盖规则。
-3. 补齐 regression manifest 读取和执行。
-4. 将 `_root_causes` 从 CLI 抽到独立 analyzer 模块。
-5. 为 prompt rendered 增加文本落盘或可配置开关。
+1. 补齐完整 YAML 支持或引入标准 YAML 库。
+2. 增加 agent profile CRUD 命令，并为不同 Agent backend 引入 adapter registry。
+3. 扩展 regression runner：选择性运行、标签过滤、历史结果对比。
+4. 增强 `FailureAnalyzer`：更细 root cause、更多修复建议和证据链接。
+5. 为 prompt rendered 增加保留策略或可配置开关。
 
 中期：
 
@@ -2006,8 +2017,8 @@ def start_run(self, case_run_ref: CaseRunRef, turn_id: str | None) -> None:
 
 长期：
 
-1. 自动生成失败复现测试。
-2. repair plan + patch attempt + gate。
+1. 模型辅助生成失败复现测试。
+2. repair agent 自动生成 patch attempt。
 3. 多 session 对比和非确定性检测。
 4. 面向不同 Agent backend 的 adapter registry。
 

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora.schema import CaseDefinition, CaseRunRef, CaseRunResult, ContextEvent, RunConfig, SessionRef
+from lora.schema import CaseDefinition, CaseRunRef, CaseRunResult, ContextEvent, ResolvedAgentConfig, RunConfig, SessionRef
 
 
 class SchemaTests(unittest.TestCase):
@@ -15,6 +15,34 @@ class SchemaTests(unittest.TestCase):
         self.assertTrue(Path(config.workspace_root).is_absolute())
         self.assertTrue(Path(config.lora_root).is_absolute())
         self.assertTrue(Path(config.case_file or "").is_absolute())
+
+    def test_run_config_round_trip_keeps_safe_agent_metadata_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(
+                workspace_root=tmp,
+                lora_root=Path(tmp) / ".lora",
+                agent_alias="dev",
+                model_name="profile-model",
+                api_key_source="env:DEV_API_KEY",
+                base_url="https://api.example/v1",
+                resolved_agent=ResolvedAgentConfig(
+                    alias="dev",
+                    model_name="profile-model",
+                    api_key="raw-secret",
+                    api_key_source="env:DEV_API_KEY",
+                    base_url="https://api.example/v1",
+                ),
+            )
+
+            data = config.to_dict()
+            restored = RunConfig.from_dict(data)
+
+        self.assertEqual(data["agent_alias"], "dev")
+        self.assertEqual(data["model_name"], "profile-model")
+        self.assertEqual(data["api_key_source"], "env:DEV_API_KEY")
+        self.assertNotIn("resolved_agent", data)
+        self.assertNotIn("raw-secret", str(data))
+        self.assertEqual(restored.agent_alias, "dev")
 
     def test_refs_round_trip(self) -> None:
         session = SessionRef(session_id="s1", session_dir=".", workspace_root=".")

@@ -1,10 +1,12 @@
 from .models import (
     AgentSession,
+    BashCliPreset,
     CaseDefinition,
     CaseRunRef,
     CaseRunResult,
     ContextEvent,
     EvaluationResult,
+    ResolvedAgentConfig,
     RunConfig,
     SessionRef,
     SessionSpec,
@@ -13,11 +15,13 @@ from .models import (
 
 __all__ = [
     "AgentSession",
+    "BashCliPreset",
     "CaseDefinition",
     "CaseRunRef",
     "CaseRunResult",
     "ContextEvent",
     "EvaluationResult",
+    "ResolvedAgentConfig",
     "RunConfig",
     "SessionRef",
     "SessionSpec",

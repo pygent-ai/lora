@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .redaction import redact_secrets
 from .schema import CaseRunRef, ContextEvent
 
 
@@ -134,26 +136,28 @@ class EventStore:
                     yield json.loads(line)
 
     def _append_event(self, event: ContextEvent) -> None:
-        if event.type == "prompt.rendered":
-            self._persist_rendered_prompt(event)
-        self._append_jsonl(self.events_path, event.to_dict())
+        persisted_source = _clone_event(event)
+        if persisted_source.type == "prompt.rendered":
+            self._persist_rendered_prompt(persisted_source)
+        persisted_event = redact_secrets(persisted_source.to_dict())
+        self._append_jsonl(self.events_path, persisted_event)
         if event.type.startswith("conversation."):
-            record = _message_record(event)
+            record = redact_secrets(_message_record(event))
             self._append_jsonl(
                 self.messages_path,
                 record,
             )
             self._append_session_history(record)
         elif event.type == "tool.call":
-            record = _tool_call_record(event)
+            record = redact_secrets(_tool_call_record(event))
             self._append_jsonl(self.tool_calls_path, record)
             self._append_session_log("tool_calls.jsonl", record)
         elif event.type == "tool.result":
-            record = _tool_result_record(event)
+            record = redact_secrets(_tool_result_record(event))
             self._append_jsonl(self.tool_results_path, record)
             self._append_session_log("tool_results.jsonl", record)
         elif event.type.startswith("file."):
-            record = _file_event_record(event)
+            record = redact_secrets(_file_event_record(event))
             self._append_jsonl(self.file_events_path, record)
             self._append_session_log("file_events.jsonl", record)
 
@@ -177,6 +181,7 @@ class EventStore:
             prompt = event.payload.pop("text", None)
         if not isinstance(prompt, str):
             return
+        persisted_prompt = redact_secrets(prompt)
 
         prompt_file_name = _turn_file_name(event.turn_id)
         run_prompt_dir = self.run_dir / "rendered_prompts"
@@ -194,7 +199,7 @@ class EventStore:
             "modules": event.payload.get("modules", []),
             "dynamic_inputs": event.payload.get("dynamic_inputs", {}),
         }
-        _write_text(run_text_path, prompt)
+        _write_text(run_text_path, persisted_prompt)
         _write_json(run_metadata_path, prompt_metadata)
         event.payload["prompt_text_path"] = str(run_text_path)
         event.payload["prompt_metadata_path"] = str(run_metadata_path)
@@ -204,7 +209,7 @@ class EventStore:
         session_prompt_dir = self.session_dir / "context" / "rendered_prompts" / str(event.case_run_id or "session")
         session_text_path = session_prompt_dir / f"{prompt_file_name}.txt"
         session_metadata_path = session_prompt_dir / f"{prompt_file_name}.json"
-        _write_text(session_text_path, prompt)
+        _write_text(session_text_path, persisted_prompt)
         _write_json(session_metadata_path, prompt_metadata)
         self._append_jsonl(
             self.session_dir / "logs" / "rendered_prompts.jsonl",
@@ -225,9 +230,11 @@ class EventStore:
     ) -> ContextEvent:
         if isinstance(event, ContextEvent):
             self._validate_event_scope(event)
+            self._validate_event_type(event.type)
             return event
         if actor is None:
             raise TypeError("actor is required when appending by event type")
+        self._validate_event_type(event)
         return ContextEvent(
             id=f"evt_{uuid.uuid4().hex}",
             session_id=self.case_run_ref.session_id,
@@ -250,6 +257,11 @@ class EventStore:
             raise ValueError("event case_run_id does not match this run")
 
     @staticmethod
+    def _validate_event_type(event_type: str) -> None:
+        if event_type not in LORA_EVENT_TYPES:
+            raise ValueError(f"Unsupported event type: {event_type}")
+
+    @staticmethod
     def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
@@ -267,6 +279,10 @@ def _tool_call_record(event: ContextEvent) -> dict[str, Any]:
         "args": event.payload.get("args", {}),
         "created_at": event.timestamp,
     }
+
+
+def _clone_event(event: ContextEvent) -> ContextEvent:
+    return ContextEvent.from_dict(deepcopy(event.to_dict()))
 
 
 def _message_record(event: ContextEvent) -> dict[str, Any]:

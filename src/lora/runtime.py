@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from html import escape
+from pathlib import Path
 from typing import Any, Callable
 
 from .schema import AgentSession, CaseDefinition, CaseRunRef, CaseRunResult, RunConfig
@@ -54,7 +57,7 @@ class AgentRuntimeAdapter:
         if agent is None:
             from .agent import LoraAgent
 
-            agent = LoraAgent(config)
+            agent = LoraAgent(config, resolved_agent=config.resolved_agent)
         self.agent = agent
         self.config = config
         self.session_manager = session_manager
@@ -80,11 +83,21 @@ class AgentRuntimeAdapter:
 
         try:
             _start_agent_run(self.agent, case_run_ref, resolved_turn_id)
-            context.add_message({"role": "user", "content": user_input})
+            wrapped_user_input = wrap_user_message(user_input, self.config.user_identity)
+            initial_reminder = _initial_user_system_reminder(session, self.config)
+            if initial_reminder:
+                wrapped_user_input = f"{wrapped_user_input}\n\n{initial_reminder}"
+            context.add_message({"role": "user", "content": wrapped_user_input})
             store.append(
                 "conversation.user_message",
                 actor="user",
-                payload={"role": "user", "content": user_input},
+                payload={
+                    "role": "user",
+                    "content": wrapped_user_input,
+                    "raw_content": user_input,
+                    "user_identity": self.config.user_identity,
+                    "wrapped": True,
+                },
                 turn_id=resolved_turn_id,
             )
             message_count += 1
@@ -93,6 +106,7 @@ class AgentRuntimeAdapter:
                 actor="system",
                 payload={
                     "agent": type(self.agent).__name__,
+                    **_agent_event_metadata(self.config),
                     "max_steps": self.config.max_steps,
                     "history_message_count": len(context.history),
                     "latest_user_input": user_input,
@@ -179,6 +193,7 @@ class AgentRuntimeAdapter:
                     actor="system",
                     payload={
                         "agent": type(self.agent).__name__,
+                        **_agent_event_metadata(self.config),
                         "status": status,
                         "error": error,
                         "assistant_text_length": len("".join(final_parts)),
@@ -247,6 +262,7 @@ class AgentRuntimeAdapter:
                 actor="system",
                 payload={
                     "agent": type(self.agent).__name__,
+                    **_agent_event_metadata(self.config),
                     "max_steps": self.config.max_steps,
                     "history_message_count": len(context.history),
                     "input_message_count": len(input_messages),
@@ -334,6 +350,7 @@ class AgentRuntimeAdapter:
                     actor="system",
                     payload={
                         "agent": type(self.agent).__name__,
+                        **_agent_event_metadata(self.config),
                         "status": status,
                         "error": error,
                         "assistant_text_length": len("".join(final_parts)),
@@ -413,8 +430,64 @@ def _latest_user_content(case: CaseDefinition) -> str:
     return messages[-1]["content"] if messages else ""
 
 
+def wrap_user_message(user_message: str, user_identity: str = "default") -> str:
+    identity = escape(user_identity or "default", quote=False)
+    message = escape(user_message, quote=False)
+    return "\n".join(
+        [
+            "<user-context>",
+            f"  <user-identity>{identity}</user-identity>",
+            f"  <user-message>{message}</user-message>",
+            "</user-context>",
+        ]
+    )
+
+
+def _initial_user_system_reminder(session: AgentSession, config: RunConfig) -> str | None:
+    state_path = Path(session.session_dir) / "state" / "cli_context.json"
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            state = {}
+        if state.get("initial_available_cli_injected"):
+            return None
+    if not config.cli_bash_presets:
+        return None
+    lines = [
+        "<system-reminder>",
+        "<time>",
+        f"  当前系统时间为：{__import__('datetime').datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        "</time>",
+        "",
+        "<cli-context>",
+        "  <available-bash-cli>",
+    ]
+    for preset in config.cli_bash_presets:
+        status = "installed" if shutil.which(preset.name) else "not installed"
+        lines.extend(
+            [
+                f"    <{preset.name}>",
+                f"      {escape(preset.description, quote=False)}",
+                f"      Status: {status}.",
+                f"    </{preset.name}>",
+            ]
+        )
+    lines.extend(["  </available-bash-cli>", "</cli-context>", "</system-reminder>"])
+    return "\n".join(lines)
+
+
 def _case_carry_context(case: CaseDefinition) -> bool:
     return case.session.get("carry_context") is not False
+
+
+def _agent_event_metadata(config: RunConfig) -> dict[str, Any]:
+    return {
+        "agent_alias": config.agent_alias,
+        "model_name": config.model_name,
+        "api_key_source": config.api_key_source,
+        "base_url": config.base_url,
+    }
 
 
 def _normalize_output(output: Any) -> RuntimeMessage:
@@ -461,7 +534,11 @@ def _append_runtime_message(
     event_type = runtime_message.type or _event_type_for_role(runtime_message.role)
     actor = _actor_for_role(runtime_message.role)
     payload = runtime_message.payload or {"role": runtime_message.role, "content": runtime_message.content}
-    context.add_message({"role": runtime_message.role, "content": runtime_message.content, **payload})
+    if runtime_message.role == "tool":
+        content = _canonical_tool_content(runtime_message.content)
+        payload = {**payload, "content": content}
+        runtime_message.content = content
+    context.add_message({**payload, "role": runtime_message.role, "content": runtime_message.content})
     store.append(event_type, actor=actor, payload=payload, turn_id=turn_id)
     if runtime_message.role == "assistant":
         final_parts.append(runtime_message.content)
@@ -515,6 +592,25 @@ def _message_to_history(message: dict[str, Any] | Any) -> dict[str, Any]:
     role = _value(getattr(message, "role", None)) or "user"
     content = _value(getattr(message, "content", None)) or ""
     return {"role": str(role), "content": str(content)}
+
+
+def _canonical_tool_content(content: str) -> str:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return content
+    if not isinstance(payload, dict) or not {"status", "result", "error", "tool_call_id"}.issubset(payload):
+        return content
+    ordered = {
+        "status": payload.get("status"),
+        "result": payload.get("result"),
+        "error": payload.get("error"),
+        "tool_call_id": payload.get("tool_call_id"),
+    }
+    for key, value in payload.items():
+        if key not in ordered:
+            ordered[key] = value
+    return json.dumps(ordered, ensure_ascii=False)
 
 
 def _message_payload(message: Any) -> dict[str, Any] | None:

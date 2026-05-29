@@ -16,6 +16,61 @@ def _require(value: str, field_name: str) -> str:
 
 
 @dataclass(slots=True)
+class ResolvedAgentConfig:
+    alias: str
+    model_name: str
+    api_key: str | None = None
+    api_key_source: str = "missing"
+    base_url: str | None = None
+
+    def __post_init__(self) -> None:
+        self.alias = _require(self.alias, "alias")
+        self.model_name = _require(self.model_name, "model_name")
+        if self.api_key is not None and not isinstance(self.api_key, str):
+            raise ValueError("api_key must be a string or None")
+        self.api_key_source = _require(self.api_key_source, "api_key_source")
+        if self.base_url is not None:
+            self.base_url = _require(self.base_url, "base_url")
+
+    def safe_dict(self) -> dict[str, Any]:
+        return {
+            "alias": self.alias,
+            "model_name": self.model_name,
+            "api_key_source": self.api_key_source,
+            "base_url": self.base_url,
+        }
+
+
+@dataclass(slots=True)
+class BashCliPreset:
+    name: str
+    command: str = ""
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        self.name = _require(self.name, "name")
+        if self.command is None:
+            self.command = ""
+        if self.description is None:
+            self.description = ""
+
+
+def _default_cli_bash_presets() -> list[BashCliPreset]:
+    return [
+        BashCliPreset(
+            name="rg",
+            command="rg --help",
+            description="Fast recursive text search. Prefer it for code and file text search.",
+        ),
+        BashCliPreset(
+            name="pyright",
+            command="pyright --help",
+            description="Python type checker. Use it for static type validation when available.",
+        ),
+    ]
+
+
+@dataclass(slots=True)
 class RunConfig:
     workspace_root: str
     lora_root: str
@@ -23,6 +78,13 @@ class RunConfig:
     case_file: str | None = None
     model: str | None = None
     max_steps: int = -1
+    agent_alias: str = "default"
+    model_name: str | None = None
+    api_key_source: str = "missing"
+    base_url: str | None = None
+    resolved_agent: ResolvedAgentConfig | None = field(default=None, repr=False, compare=False)
+    user_identity: str = "default"
+    cli_bash_presets: list[BashCliPreset] = field(default_factory=_default_cli_bash_presets)
 
     def __post_init__(self) -> None:
         self.workspace_root = _abs_path(self.workspace_root)
@@ -31,13 +93,27 @@ class RunConfig:
             self.case_file = _abs_path(self.case_file)
         if self.max_steps != -1 and self.max_steps <= 0:
             raise ValueError("max_steps must be -1 or greater than 0")
+        self.agent_alias = _require(self.agent_alias, "agent_alias")
+        if self.model_name is not None:
+            self.model_name = _require(self.model_name, "model_name")
+        if self.base_url is not None:
+            self.base_url = _require(self.base_url, "base_url")
+        self.user_identity = _require(self.user_identity or "default", "user_identity")
+        self.cli_bash_presets = [
+            preset if isinstance(preset, BashCliPreset) else BashCliPreset(**preset)
+            for preset in self.cli_bash_presets
+        ]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data.pop("resolved_agent", None)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunConfig":
-        return cls(**data)
+        clean = dict(data)
+        clean.pop("resolved_agent", None)
+        return cls(**clean)
 
 
 @dataclass(slots=True)

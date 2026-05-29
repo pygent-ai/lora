@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .redaction import redact_secrets
 from .schema import AgentSession, CaseRunRef, RunConfig, SessionRef, SessionSpec
 
 
@@ -18,6 +19,7 @@ class SessionManager:
         self.sessions_root = self.lora_root / "sessions"
 
     def create(self, case_id: str, mode: str = "e2e") -> SessionRef:
+        _validate_path_id(case_id, "case_id")
         session_id = self._new_session_id(case_id, mode)
         session_dir = self.sessions_root / session_id
         session_dir.mkdir(parents=True, exist_ok=False)
@@ -99,6 +101,7 @@ class SessionManager:
         return target
 
     def start_case_run(self, session_id: str, case_id: str, run_config: RunConfig | None = None) -> CaseRunRef:
+        _validate_path_id(case_id, "case_id")
         self.load(session_id)
         case_run_id = self._new_case_run_id(session_id, case_id)
         run_dir = self._session_dir(session_id) / "cases" / case_id / "runs" / case_run_id
@@ -147,14 +150,21 @@ class SessionManager:
         self._save_session(session)
 
     def _save_session(self, session: AgentSession) -> None:
+        _validate_path_id(session.session_id, "session_id")
         session_dir = self._session_dir(session.session_id)
-        self._write_json(session_dir / "session.json", session.to_dict())
-        self._write_json(self._pygent_session_path(session.session_id), session.to_dict())
+        session_data = redact_secrets(session.to_dict())
+        self._write_json(session_dir / "session.json", session_data)
+        self._write_json(self._pygent_session_path(session.session_id), session_data)
 
     def _session_dir(self, session_id: str) -> Path:
-        return self.sessions_root / session_id
+        _validate_path_id(session_id, "session_id")
+        session_dir = (self.sessions_root / session_id).resolve()
+        if not session_dir.is_relative_to(self.sessions_root.resolve()):
+            raise ValueError("session_id escapes sessions root")
+        return session_dir
 
     def _pygent_session_path(self, session_id: str) -> Path:
+        _validate_path_id(session_id, "session_id")
         return self.workspace_root / "sessions" / session_id / "session.json"
 
     def _new_session_id(self, case_id: str, mode: str) -> str:
@@ -191,3 +201,9 @@ def _now() -> str:
 def _slug(value: str) -> str:
     clean = "".join(ch if ch.isalnum() else "-" for ch in value.lower()).strip("-")
     return clean or "case"
+
+
+def _validate_path_id(value: str, field_name: str) -> None:
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts or "/" in value or "\\" in value:
+        raise ValueError(f"{field_name} must not contain path traversal")

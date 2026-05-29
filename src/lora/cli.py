@@ -3,17 +3,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import shutil
 import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from .analysis import FailureAnalyzer
 from .case import CaseManager
 from .config import load_run_config
 from .evaluation import Evaluator
+from .regression import RegressionRunner
+from .repair import RepairWorkflow
+from .runner import execute_case_run
 from .runtime import AgentRuntimeAdapter
-from .schema import SessionSpec
 from .session import SessionManager
+from .test_generation import RegressionRegistrar, TestGenerator
 from .trace import EventStore
 
 
@@ -27,7 +30,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"lora: error: {exc}", file=sys.stderr)
         return 2
     if result is not None:
-        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))
     return 0
 
 
@@ -46,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lora", description="Agent self-optimization harness CLI")
     parser.add_argument("--workspace-root", default=None, help="Workspace root. Defaults to cwd or LORA_WORKSPACE_ROOT.")
     parser.add_argument("--config", default=None, help="Path to lora.yaml.")
+    parser.add_argument("--agent", dest="agent_alias", default=None, help="Agent profile alias.")
     parser.add_argument("--model", default=None, help="Model override.")
     parser.add_argument("--max-steps", type=int, default=None, help="Maximum agent steps; -1 means unlimited.")
 
@@ -89,6 +93,34 @@ def build_parser() -> argparse.ArgumentParser:
     regression_run = regression_sub.add_parser("run")
     regression_run.set_defaults(handler=_regression_run)
 
+    test = sub.add_parser("test", help="Generate and register regression tests")
+    test_sub = test.add_subparsers(dest="test_command", required=True)
+
+    test_generate = test_sub.add_parser("generate", help="Generate a deterministic regression case from a failed run")
+    test_generate.add_argument("session_id")
+    test_generate.add_argument("case_run_id")
+    test_generate.set_defaults(handler=_test_generate)
+
+    test_register = test_sub.add_parser("register", help="Register a case file in the regression manifest")
+    test_register.add_argument("case_file")
+    test_register.set_defaults(handler=_test_register)
+
+    repair = sub.add_parser("repair", help="Plan, capture, and gate repair attempts")
+    repair_sub = repair.add_subparsers(dest="repair_command", required=True)
+
+    repair_plan = repair_sub.add_parser("plan", help="Create a deterministic repair plan for a failed run")
+    repair_plan.add_argument("session_id")
+    repair_plan.add_argument("case_run_id")
+    repair_plan.set_defaults(handler=_repair_plan)
+
+    repair_apply = repair_sub.add_parser("apply", help="Capture the current workspace diff as a repair attempt")
+    repair_apply.add_argument("repair_plan_path")
+    repair_apply.set_defaults(handler=_repair_apply)
+
+    repair_gate = repair_sub.add_parser("gate", help="Run checks for a repair attempt")
+    repair_gate.add_argument("repair_attempt_id")
+    repair_gate.set_defaults(handler=_repair_gate)
+
     optimize = sub.add_parser("optimize", help="Run full optimize flow")
     optimize.add_argument("case_file")
     optimize.set_defaults(handler=_optimize)
@@ -117,39 +149,18 @@ def _case_run(args: argparse.Namespace) -> dict[str, Any]:
         session_id=getattr(args, "session_id", None),
         case_file=args.case_file,
         model=args.model,
+        agent_alias=args.agent_alias,
         max_steps=args.max_steps,
     )
     manager = SessionManager(config)
     case_manager = CaseManager(config.workspace_root)
-    case = case_manager.load(args.case_file)
-    session = _load_case_session(manager, case, getattr(args, "session_id", None))
-    session_id = session.session_id
-
-    ref = manager.start_case_run(session_id, case.id, run_config=config)
-    run_dir = Path(ref.run_dir)
-    shutil.copy2(config.case_file or args.case_file, run_dir / "case.yaml")
-    case_manager.prepare_workspace(case, ref)
-    result = asyncio.run(
-        AgentRuntimeAdapter(config=config, session_manager=manager).run_case(
-            session=session,
-            case=case,
-            case_run_ref=ref,
-        )
+    return execute_case_run(
+        config=config,
+        manager=manager,
+        case_manager=case_manager,
+        case_file=config.case_file or args.case_file,
+        session_id=getattr(args, "session_id", None),
     )
-    evaluation = Evaluator().evaluate(case, ref)
-    if result.status != "error":
-        result.status = evaluation.status  # type: ignore[assignment]
-    (run_dir / "result.json").write_text(
-        json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    manager.finish_case_run(ref, result.status)
-    return {
-        **ref.to_dict(),
-        **result.to_dict(),
-        "metrics": evaluation.metrics,
-        "verdict": evaluation.verdict,
-    }
 
 
 def _case_replay(args: argparse.Namespace) -> dict[str, Any]:
@@ -167,13 +178,12 @@ def _case_analyze(args: argparse.Namespace) -> dict[str, Any]:
         Evaluator().evaluate(case, ref)
     verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
     events = EventStore(ref).list_by_run()
-    root_causes = _root_causes(verdict, events)
+    result = FailureAnalyzer().analyze(verdict=verdict, events=events, run_dir=run_dir).to_dict()
     analysis = {
         "session_id": ref.session_id,
         "case_id": ref.case_id,
         "case_run_id": ref.case_run_id,
-        "status": verdict.get("status", "error"),
-        "root_causes": root_causes,
+        **result,
     }
     (run_dir / "analysis.json").write_text(
         json.dumps(analysis, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -188,7 +198,37 @@ def _regression_run(args: argparse.Namespace) -> dict[str, Any]:
     manifest = Path(manager.config.lora_root) / "regression.json"
     if not manifest.exists():
         return {"status": "skipped", "reason": "regression manifest not found", "manifest": str(manifest)}
-    return {"status": "skipped", "reason": "regression execution is not configured in MVP", "manifest": str(manifest)}
+    return RegressionRunner(
+        config=manager.config,
+        session_manager=manager,
+        case_manager=CaseManager(manager.config.workspace_root),
+        evaluator=Evaluator(),
+    ).run(manifest)
+
+
+def _test_generate(args: argparse.Namespace) -> dict[str, Any]:
+    manager = _manager(args)
+    return TestGenerator(config=manager.config, session_manager=manager).generate(
+        args.session_id,
+        args.case_run_id,
+    ).to_dict()
+
+
+def _test_register(args: argparse.Namespace) -> dict[str, Any]:
+    manager = _manager(args)
+    return RegressionRegistrar(config=manager.config).register(args.case_file)
+
+
+def _repair_plan(args: argparse.Namespace) -> dict[str, Any]:
+    return _repair_workflow(args).plan(args.session_id, args.case_run_id)
+
+
+def _repair_apply(args: argparse.Namespace) -> dict[str, Any]:
+    return _repair_workflow(args).apply(args.repair_plan_path)
+
+
+def _repair_gate(args: argparse.Namespace) -> dict[str, Any]:
+    return _repair_workflow(args).gate(args.repair_attempt_id)
 
 
 def _optimize(args: argparse.Namespace) -> dict[str, Any]:
@@ -211,6 +251,7 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
         config_file=args.config,
         session_id=getattr(args, "session_id", None),
         model=args.model,
+        agent_alias=args.agent_alias,
         max_steps=args.max_steps,
     )
     manager = SessionManager(config)
@@ -287,39 +328,15 @@ def _manager(args: argparse.Namespace) -> SessionManager:
             workspace_root=args.workspace_root,
             config_file=args.config,
             model=args.model,
+            agent_alias=args.agent_alias,
             max_steps=args.max_steps,
         )
     )
 
 
-def _load_case_session(manager: SessionManager, case: Any, cli_session_id: str | None):
-    case_session = case.session
-    mode = str(case_session.get("mode") or "new")
-    if mode not in {"new", "resume", "fork", "shared"}:
-        raise ValueError("case.session.mode must be one of new, resume, fork, shared")
-
-    if cli_session_id:
-        if mode == "fork":
-            return manager.load_or_create(
-                SessionSpec(case_id=case.id, mode="fork", source_session_id=cli_session_id)
-            )
-        return manager.load_or_create(SessionSpec(case_id=case.id, mode="resume", session_id=cli_session_id))
-
-    if mode == "new":
-        return manager.load(manager.create(case.id, mode=case.type).session_id)
-    if mode in {"resume", "shared"}:
-        session_id = case_session.get("session_id") or case_session.get("id")
-        return manager.load_or_create(SessionSpec(case_id=case.id, mode=mode, session_id=session_id))
-
-    source_session_id = (
-        case_session.get("source_session_id")
-        or case_session.get("source")
-        or case_session.get("session_id")
-        or case_session.get("id")
-    )
-    return manager.load_or_create(
-        SessionSpec(case_id=case.id, mode="fork", source_session_id=source_session_id)
-    )
+def _repair_workflow(args: argparse.Namespace) -> RepairWorkflow:
+    manager = _manager(args)
+    return RepairWorkflow(config=manager.config, session_manager=manager)
 
 
 def _find_case_run(manager: SessionManager, session_id: str, case_run_id: str):
@@ -340,24 +357,4 @@ def _find_case_run(manager: SessionManager, session_id: str, case_run_id: str):
 
 
 def _root_causes(verdict: dict[str, Any], events: list[Any]) -> list[dict[str, Any]]:
-    if verdict.get("status") == "passed":
-        return []
-    if verdict.get("errors"):
-        return [
-            {
-                "type": "TOOL_EXECUTION_ERROR" if any(event.type == "tool.result" for event in events) else "ASSERTION_FAILED",
-                "summary": "Run produced an error event.",
-                "evidence": [json.dumps(item, ensure_ascii=False, sort_keys=True) for item in verdict["errors"]],
-                "suspected_modules": ["runtime"],
-                "recommended_tests": [{"kind": "scenario", "description": "Replay the failing case and assert the error is preserved."}],
-            }
-        ]
-    return [
-        {
-            "type": "ASSERTION_FAILED",
-            "summary": "Run output did not satisfy deterministic case assertions.",
-            "evidence": [failure.get("message", str(failure)) for failure in verdict.get("failures", [])],
-            "suspected_modules": ["evaluation", "runtime"],
-            "recommended_tests": [{"kind": "unit", "description": "Cover the failed assertion in Evaluator."}],
-        }
-    ]
+    return FailureAnalyzer().analyze(verdict=verdict, events=events, run_dir=Path(".")).to_dict()["root_causes"]

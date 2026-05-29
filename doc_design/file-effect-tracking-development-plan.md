@@ -35,20 +35,20 @@
 
 ## 2. 当前状态
 
-已有代码状态：
+当前代码状态：
 
 - `src/lora/trace.py` 的 `EventStore` 已支持所有 `file.*` 事件类型，并会把它们投影到 `file_events.jsonl`。
 - `src/lora/tools.py` 中已有 `FileStateTracker`，用于读取去重和部分 `file.read` 事件记录。
-- `ToolInterceptor` 当前只接受 `store`，只记录 `tool.call` 和 `tool.result`。
-- `FileEffectTracker` 尚未实现。
-- `src/lora/agent.py` 中 `LoraAgent.stream()` 当前创建的是 `ToolInterceptor(EventStore(self.case_run_ref))`，还没有传入 workspace tracking 参数。
+- `src/lora/tools.py` 已实现 `FileEffectTracker`，支持 workspace 快照、工具参数声明效果、snapshot diff、效果合并和去重写入。
+- `ToolInterceptor` 兼容旧的 `ToolInterceptor(store)` 调用，也支持 `workspace_root` 和 `track_file_effects=True` 开启文件效果跟踪。
+- `src/lora/agent.py` 中 `LoraAgent.stream()` 已使用 `ToolInterceptor(EventStore(self.case_run_ref), workspace_root=self.workspace_root, track_file_effects=True)`，真实 agent 工具调用默认开启 tracking。
 
-已有红灯测试：
+已有回归测试：
 
 - `tests.unit.test_tools.FileEffectTrackerSpecTests`
 - `tests.scenario.test_file_effect_tracking_flow.FileEffectTrackingScenarioTests`
 
-实现完成后，这些测试应从失败变为通过。
+这些测试当前应保持通过，用于防止文件效果跟踪语义回退。
 
 ## 3. 实现设计
 

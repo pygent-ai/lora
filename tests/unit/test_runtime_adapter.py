@@ -7,13 +7,14 @@ import unittest
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from pygent.message import AssistantMessage, AssistantMessageChunk, ToolCall
 from pygent.module.tool import BaseTool, ToolCategory
 
 from lora.agent import LoraAgent, _to_pygent_message
 from lora.runtime import AgentRuntimeAdapter
-from lora.schema import CaseDefinition, RunConfig
+from lora.schema import BashCliPreset, CaseDefinition, ResolvedAgentConfig, RunConfig
 from lora.session import SessionManager
 
 
@@ -70,9 +71,11 @@ class DirectPygentMessageAgent:
 class ToolCallingLLM:
     def __init__(self) -> None:
         self.request_messages: list[list[dict[str, Any]]] = []
+        self.request_system_prompts: list[str] = []
 
     async def stream_forward(self, context: Any, **kwargs: Any) -> AsyncIterator[AssistantMessageChunk]:
         self.request_messages.append([message.to_dict() for message in context.history.data])
+        self.request_system_prompts.append(str(context.system_prompt))
         if len(self.request_messages) == 1:
             context.add_message(
                 AssistantMessage(
@@ -126,6 +129,31 @@ class RepeatedToolCallingLLM:
         context.add_message(AssistantMessage(content="done"))
 
 
+class BashThenAnswerLLM:
+    def __init__(self) -> None:
+        self.request_count = 0
+
+    async def stream_forward(self, context: Any, **kwargs: Any) -> AsyncIterator[AssistantMessageChunk]:
+        self.request_count += 1
+        if self.request_count == 1:
+            context.add_message(
+                AssistantMessage(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            tool_call_id="call_bash",
+                            tool_name="bash",
+                            arguments={"command": "npm install -g typescript-language-server"},
+                        )
+                    ],
+                )
+            )
+            return
+
+        yield AssistantMessageChunk(content="noticed")
+        context.add_message(AssistantMessage(content="noticed"))
+
+
 class AddNumbersTool(BaseTool):
     def __init__(self) -> None:
         super().__init__(
@@ -146,7 +174,52 @@ class ToolEnabledLoraAgent(LoraAgent):
         self._register_tool(AddNumbersTool())
 
 
+class FakeBashTool(BaseTool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="bash",
+            description="Run a fake shell command.",
+            category=ToolCategory.SYSTEM,
+        )
+        self.parameters.data["command"]["description"] = "Command to run."
+
+    def forward(self, command: str) -> dict[str, Any]:
+        return {"command": command, "stdout": "added 1 package", "exit_code": 0}
+
+
+class FakeBashLoraAgent(LoraAgent):
+    def start_run(self, case_run_ref: Any, turn_id: str | None) -> None:
+        super().start_run(case_run_ref, turn_id)
+        self._tools["bash"] = FakeBashTool()
+
+
 class AgentRuntimeAdapterTests(unittest.TestCase):
+    def test_default_lora_agent_receives_resolved_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = ResolvedAgentConfig(
+                alias="dev",
+                model_name="profile-model",
+                api_key=None,
+                api_key_source="missing",
+                base_url="https://profile.example/v1",
+            )
+            config = RunConfig(
+                workspace_root=tmp,
+                lora_root=Path(tmp) / ".lora",
+                agent_alias="dev",
+                model_name="profile-model",
+                api_key_source="missing",
+                base_url="https://profile.example/v1",
+                resolved_agent=profile,
+            )
+            manager = SessionManager(config)
+
+            adapter = AgentRuntimeAdapter(config=config, session_manager=manager)
+
+        self.assertEqual(adapter.agent.resolved_agent.alias, "dev")
+        self.assertEqual(adapter.agent.model_name, "profile-model")
+        self.assertEqual(adapter.agent.base_url, "https://profile.example/v1")
+
     def test_lora_agent_registers_selected_pygent_tools_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora")
@@ -321,6 +394,12 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertEqual(llm.request_messages[1][-2]["reasoning_content"], "Need to call the calculator.")
             self.assertEqual(llm.request_messages[1][-2]["usage"]["total_tokens"], 15)
             self.assertEqual(llm.request_messages[1][-1]["tool_call_id"], "call_add")
+            self.assertEqual(loaded.system_prompt, llm.request_system_prompts[-1])
+            self.assertIn("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", loaded.system_prompt)
+            self.assertEqual(
+                [message["content"] for message in loaded.history[:-1]],
+                [message["content"] for message in llm.request_messages[-1][1:]],
+            )
 
     def test_lora_agent_allows_unlimited_steps_until_no_tool_calls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -443,9 +522,28 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 "Tools currently available for this request: bash, read, write, edit, glob, grep.",
                 rendered_prompt,
             )
+            self.assertIn("runtime.system_reminder", prompt_event["payload"]["dynamic_module_ids"])
+            self.assertIn("<system-reminder>", rendered_prompt)
+            self.assertIn("当前系统时间为：", rendered_prompt)
+            self.assertIn("<available-bash-cli>", rendered_prompt)
+            self.assertIn("<rg>", rendered_prompt)
             self.assertTrue(prompt_event["payload"]["static_prompt_created"])
             self.assertEqual(prompt_event["payload"]["injection_decision"]["reason"], "before_model_request")
             self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant"])
+            self.assertIn(
+                "<user-context>\n"
+                "  <user-identity>default</user-identity>\n"
+                "  <user-message>hello chat</user-message>\n"
+                "</user-context>",
+                loaded.history[0]["content"],
+            )
+            self.assertIn("<system-reminder>", loaded.history[0]["content"])
+            self.assertIn("<available-bash-cli>", loaded.history[0]["content"])
+            self.assertIn("当前系统时间为：", loaded.history[0]["content"])
+            user_event = next(event for event in events if event["type"] == "conversation.user_message")
+            self.assertEqual(user_event["payload"]["raw_content"], "hello chat")
+            self.assertEqual(user_event["payload"]["user_identity"], "default")
+            self.assertTrue(user_event["payload"]["wrapped"])
             self.assertEqual(
                 [event["type"] for event in events],
                 [
@@ -458,6 +556,27 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                     "context.checkpoint",
                 ],
             )
+
+    def test_run_turn_user_context_wrapper_escapes_user_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", user_identity="dev<ops>")
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+
+            asyncio.run(
+                AgentRuntimeAdapter(agent=RecordingAgent(), config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="search <src> & report",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            loaded = manager.load(ref.session_id)
+            self.assertIn("<user-identity>dev&lt;ops&gt;</user-identity>", loaded.history[0]["content"])
+            self.assertIn("<user-message>search &lt;src&gt; &amp; report</user-message>", loaded.history[0]["content"])
 
     def test_static_prompt_is_cached_per_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -509,6 +628,218 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertTrue(first_prompt_event["payload"]["static_prompt_created"])
             self.assertFalse(second_prompt_event["payload"]["static_prompt_created"])
             self.assertIn("tool.available", second_prompt_event["payload"]["dynamic_module_ids"])
+            self.assertIn("runtime.system_reminder", first_prompt_event["payload"]["dynamic_module_ids"])
+            self.assertNotIn("runtime.system_reminder", second_prompt_event["payload"]["dynamic_module_ids"])
+            first_rendered = Path(first_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            self.assertIn("<available-bash-cli>", first_rendered)
+
+    def test_pending_new_cli_is_rendered_once_with_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora")
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            state_dir = Path(ref.session_dir) / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "cli_context.json").write_text(
+                json.dumps(
+                    {
+                        "initial_available_cli_injected": True,
+                        "known_bash_cli": {},
+                        "pending_new_bash_cli": [
+                            {
+                                "name": "pyright",
+                                "description": "Python type checker.",
+                                "installed": True,
+                                "detected_at": "2026-05-29T06:05:00Z",
+                                "source": "tool_result",
+                                "include_time": True,
+                            }
+                        ],
+                        "pending_system_reminders": [
+                            {
+                                "kind": "cli_context",
+                                "include_time": True,
+                                "created_at": "2026-05-29T06:05:00Z",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            first_run = manager.start_case_run(ref.session_id, "chat")
+            first_session = manager.load(ref.session_id)
+            asyncio.run(
+                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                    session=first_session,
+                    user_input="notice new cli",
+                    case_run_ref=first_run,
+                    turn_id="turn-0001",
+                )
+            )
+            second_run = manager.start_case_run(ref.session_id, "chat")
+            second_session = manager.load(ref.session_id)
+            asyncio.run(
+                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                    session=second_session,
+                    user_input="no repeat",
+                    case_run_ref=second_run,
+                    turn_id="turn-0002",
+                )
+            )
+
+            first_prompt_event = next(
+                event for event in _read_jsonl(Path(first_run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
+            )
+            second_prompt_event = next(
+                event
+                for event in _read_jsonl(Path(second_run.run_dir) / "events.jsonl")
+                if event["type"] == "prompt.rendered"
+            )
+            first_rendered = Path(first_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            second_rendered = Path(second_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            state = json.loads((state_dir / "cli_context.json").read_text(encoding="utf-8"))
+
+            self.assertIn("<new-bash-cli>", first_rendered)
+            self.assertIn("<pyright>", first_rendered)
+            self.assertIn("当前系统时间为：", first_rendered)
+            self.assertNotIn("<new-bash-cli>", second_rendered)
+            self.assertEqual(state["pending_new_bash_cli"], [])
+            self.assertEqual(state["pending_system_reminders"], [])
+
+    def test_bash_tool_detects_new_cli_before_next_model_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(
+                workspace_root=tmp,
+                lora_root=Path(tmp) / ".lora",
+                max_steps=3,
+                cli_bash_presets=[
+                    BashCliPreset(
+                        name="madeupcli",
+                        command="madeupcli --help",
+                        description="Newly installed CLI.",
+                    )
+                ],
+            )
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            state_dir = Path(ref.session_dir) / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "cli_context.json").write_text(
+                json.dumps(
+                    {
+                        "initial_available_cli_injected": True,
+                        "known_bash_cli": {
+                            "madeupcli": {
+                                "name": "madeupcli",
+                                "description": "Newly installed CLI.",
+                                "installed": False,
+                                "detected_at": "2026-05-29T06:00:00Z",
+                            }
+                        },
+                        "pending_new_bash_cli": [],
+                        "pending_system_reminders": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            agent = FakeBashLoraAgent(config)
+            agent.llm = BashThenAnswerLLM()
+
+            with patch("lora.agent.shutil.which", return_value="C:/tools/madeupcli.exe"):
+                result = asyncio.run(
+                    AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                        session=session,
+                        user_input="install the cli",
+                        case_run_ref=run,
+                        turn_id="turn-0001",
+                    )
+                )
+
+            prompt_events = [
+                event for event in _read_jsonl(Path(run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
+            ]
+            second_rendered = Path(prompt_events[1]["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(len(prompt_events), 2)
+            self.assertIn("<new-bash-cli>", second_rendered)
+            self.assertIn("<madeupcli>", second_rendered)
+            self.assertIn("当前系统时间为：", second_rendered)
+
+    def test_bash_install_appends_new_cli_reminder_to_tool_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", max_steps=3)
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            agent = FakeBashLoraAgent(config)
+            agent.llm = BashThenAnswerLLM()
+
+            with patch("lora.agent.shutil.which", return_value="C:/tools/typescript-language-server.cmd"):
+                asyncio.run(
+                    AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                        session=session,
+                        user_input="install typescript-language-server",
+                        case_run_ref=run,
+                        turn_id="turn-0001",
+                    )
+                )
+
+            loaded = manager.load(ref.session_id)
+            tool_messages = [message for message in loaded.history if message["role"] == "tool"]
+
+            self.assertEqual(len(tool_messages), 1)
+            self.assertIn("<system-reminder>", tool_messages[0]["content"])
+            self.assertIn("<new-bash-cli>", tool_messages[0]["content"])
+            self.assertIn("<typescript-language-server>", tool_messages[0]["content"])
+
+    def test_model_events_include_safe_agent_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = ResolvedAgentConfig(
+                alias="dev",
+                model_name="profile-model",
+                api_key=None,
+                api_key_source="missing",
+                base_url="https://profile.example/v1",
+            )
+            config = RunConfig(
+                workspace_root=tmp,
+                lora_root=Path(tmp) / ".lora",
+                agent_alias="dev",
+                model_name="profile-model",
+                api_key_source="missing",
+                base_url="https://profile.example/v1",
+                resolved_agent=profile,
+            )
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="hello",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            events = _read_jsonl(Path(run.run_dir) / "events.jsonl")
+            request = next(event for event in events if event["type"] == "model.request")
+            response = next(event for event in events if event["type"] == "model.response")
+
+            self.assertEqual(result["status"], "passed")
+            self.assertIn("agent alias 'dev'", result["final_answer"])
+            self.assertEqual(request["payload"]["agent_alias"], "dev")
+            self.assertEqual(request["payload"]["model_name"], "profile-model")
+            self.assertEqual(request["payload"]["api_key_source"], "missing")
+            self.assertEqual(response["payload"]["agent_alias"], "dev")
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

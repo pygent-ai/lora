@@ -44,6 +44,32 @@ class SessionManagerTests(unittest.TestCase):
             self.assertEqual(metadata["status"], "passed")
             self.assertEqual(loaded.metadata["last_case_run_id"], run.case_run_id)
 
+    def test_save_redacts_secrets_from_session_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = SessionManager(RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora"))
+            ref = manager.create("case-a")
+            session = manager.load(ref.session_id)
+            secret = "sk-1234567890abcdef1234567890abcdef"
+            session.history = [
+                {
+                    "role": "tool",
+                    "content": json.dumps(
+                        {"status": "success", "result": {"content": f"DEEPSEEK_API_KEY={secret}"}},
+                    ),
+                }
+            ]
+
+            manager.save(session)
+
+            lora_session_text = (Path(ref.session_dir) / "session.json").read_text(encoding="utf-8")
+            pygent_session_text = (Path(tmp) / "sessions" / ref.session_id / "session.json").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn(secret, lora_session_text)
+            self.assertNotIn(secret, pygent_session_text)
+            self.assertIn("DEEPSEEK_API_KEY=[REDACTED]", lora_session_text)
+            self.assertIn("DEEPSEEK_API_KEY=[REDACTED]", pygent_session_text)
+
     def test_load_or_create_resume_requires_session_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manager = SessionManager(RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora"))

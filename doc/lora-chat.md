@@ -58,7 +58,7 @@ lora chat --new
 
 ## Agent 管理配置
 
-当前最小实现只有默认 `LoraAgent`。Agent 管理功能落地后，`lora chat` 应支持通过别名选择 agent，并从 `lora.yaml` 或环境变量读取模型请求配置。
+当前实现支持通过全局 `--agent` 选择 `lora.yaml` 中的 agent profile。`AgentRuntimeAdapter` 仍默认创建 `LoraAgent`，但模型请求配置已经可以从 `agents[].model_request`、环境变量和 CLI 覆盖中解析，并以脱敏元数据写入运行产物。
 
 推荐配置结构：
 
@@ -85,19 +85,19 @@ agents:
 - `model_request.api_key`：本地明文 API key，仅适合个人未提交的本地配置；写入 run 产物时必须脱敏。
 - `model_request.model_name`：模型名称，例如 `deepseek-v4-flash`。
 
-解析优先级建议：
+解析优先级：
 
 1. CLI 显式选择的 agent alias。
 2. `agent.default_alias`。
 3. 内置默认 alias，例如 `default`。
 
-模型请求字段优先级建议：
+模型请求字段优先级：
 
 1. `--model` 覆盖选中 agent 的 `model_request.model_name`。
 2. `model_request.api_key_env` 指向的环境变量优先于明文 `model_request.api_key`。
 3. 兼容现有 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`。
 
-运行事件和 `run_config.json` 可以记录 `agent_alias`、`model_name` 和 `api_key_source`，但不能记录原始 API key。
+运行事件和 `run_config.json` 会记录 `agent_alias`、`model_name`、`api_key_source` 和 `base_url`，但不会记录原始 API key。
 
 ## 单轮输出
 
@@ -108,7 +108,7 @@ agents:
   "case_id": "chat",
   "case_run_id": "run-...",
   "error": null,
-  "final_answer": "Lora agent is wired into chat, but DEEPSEEK_API_KEY is not configured for a model call.",
+  "final_answer": "Lora agent is wired into chat, but API key is not configured for agent alias 'default'.",
   "message_count": 2,
   "run_dir": "...\\.lora\\sessions\\...\\cases\\chat\\runs\\...",
   "session_id": "chat-chat-...",
@@ -145,7 +145,7 @@ agents:
 
 ## 当前 agent 行为
 
-`AgentRuntimeAdapter` 默认会创建 `LoraAgent`。在 agent 管理功能落地前，`LoraAgent` 会加载工作区 `.env`，读取 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`，并从 `pygent.toolkits` 中注册一组白名单工具：
+`AgentRuntimeAdapter` 默认会创建 `LoraAgent`。`LoraAgent` 会加载工作区 `.env`，读取已解析的 agent profile，并兼容 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`。默认工具从 `pygent.toolkits` 中按白名单注册：
 
 - `bash`
 - `read`
@@ -156,10 +156,10 @@ agents:
 
 如果配置了 `DEEPSEEK_API_KEY`，`LoraAgent` 会通过 DeepSeek 兼容接口进行流式模型调用；当模型实际调用已注册工具时，调用会通过 `ToolInterceptor` 记录。
 
-如果没有配置 `DEEPSEEK_API_KEY`，它不会调用外部模型，而是返回固定提示：
+如果选中的 agent profile 没有可用 API key，它不会调用外部模型，而是返回包含 alias 的固定提示：
 
 ```text
-Lora agent is wired into chat, but DEEPSEEK_API_KEY is not configured for a model call.
+Lora agent is wired into chat, but API key is not configured for agent alias 'default'.
 ```
 
 `EchoAgent` 仍保留在 `runtime.py` 中用于测试和自定义适配示例，但它不是 `lora chat` 的默认 agent。

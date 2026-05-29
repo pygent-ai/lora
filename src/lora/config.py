@@ -4,7 +4,23 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .schema import RunConfig
+from .schema import BashCliPreset, ResolvedAgentConfig, RunConfig
+
+
+DEFAULT_MODEL_NAME = "deepseek-v4-flash"
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEFAULT_CLI_BASH_PRESETS = [
+    BashCliPreset(
+        name="rg",
+        command="rg --help",
+        description="Fast recursive text search. Prefer it for code and file text search.",
+    ),
+    BashCliPreset(
+        name="pyright",
+        command="pyright --help",
+        description="Python type checker. Use it for static type validation when available.",
+    ),
+]
 
 
 def load_run_config(
@@ -14,10 +30,14 @@ def load_run_config(
     session_id: str | None = None,
     case_file: str | Path | None = None,
     model: str | None = None,
+    agent_alias: str | None = None,
     max_steps: int | None = None,
 ) -> RunConfig:
     root = Path(workspace_root or os.environ.get("LORA_WORKSPACE_ROOT") or Path.cwd()).expanduser().resolve()
+    _load_env_file(root / ".env")
     config_path = Path(config_file or root / "lora.yaml").expanduser()
+    if not config_path.is_absolute():
+        config_path = root / config_path
     config_data = _read_config(config_path if config_path.exists() else None)
 
     configured_lora_root = _dig(config_data, "lora_root") or os.environ.get("LORA_ROOT") or ".lora"
@@ -35,6 +55,11 @@ def load_run_config(
     )
 
     resolved_case_file = str(case_file) if case_file is not None else None
+    resolved_agent = _resolve_agent_config(
+        config_data=config_data,
+        cli_agent_alias=agent_alias,
+        cli_model=model,
+    )
     return RunConfig(
         workspace_root=str(root),
         lora_root=str(lora_root),
@@ -42,6 +67,13 @@ def load_run_config(
         case_file=resolved_case_file,
         model=model or os.environ.get("LORA_MODEL") or _dig(config_data, "model") or _dig(config_data, "runtime.model"),
         max_steps=int(configured_max_steps),
+        agent_alias=resolved_agent.alias,
+        model_name=resolved_agent.model_name,
+        api_key_source=resolved_agent.api_key_source,
+        base_url=resolved_agent.base_url,
+        resolved_agent=resolved_agent,
+        user_identity=_non_empty(_dig(config_data, "user.identity")) or "default",
+        cli_bash_presets=_resolve_cli_bash_presets(config_data),
     )
 
 
@@ -67,11 +99,114 @@ def _dig(data: dict[str, Any], dotted_key: str) -> Any:
     return cur
 
 
+def _resolve_agent_config(
+    *,
+    config_data: dict[str, Any],
+    cli_agent_alias: str | None,
+    cli_model: str | None,
+) -> ResolvedAgentConfig:
+    alias = _non_empty(cli_agent_alias) or _non_empty(_dig(config_data, "agent.default_alias")) or "default"
+    profile = _agent_profile(config_data, alias)
+    model_request = profile.get("model_request") if isinstance(profile.get("model_request"), dict) else {}
+    assert isinstance(model_request, dict)
+
+    model_name = (
+        _non_empty(cli_model)
+        or _non_empty(model_request.get("model_name"))
+        or _non_empty(os.environ.get("LORA_MODEL"))
+        or _non_empty(os.environ.get("DEEPSEEK_MODEL"))
+        or _non_empty(_dig(config_data, "model"))
+        or _non_empty(_dig(config_data, "runtime.model"))
+        or DEFAULT_MODEL_NAME
+    )
+    api_key, api_key_source = _resolve_api_key(model_request)
+    base_url = (
+        _non_empty(model_request.get("base_url"))
+        or _non_empty(os.environ.get("DEEPSEEK_BASE_URL"))
+        or _non_empty(_dig(config_data, "base_url"))
+        or _non_empty(_dig(config_data, "runtime.base_url"))
+        or DEFAULT_BASE_URL
+    )
+    return ResolvedAgentConfig(
+        alias=alias,
+        model_name=model_name,
+        api_key=api_key,
+        api_key_source=api_key_source,
+        base_url=base_url,
+    )
+
+
+def _resolve_cli_bash_presets(config_data: dict[str, Any]) -> list[BashCliPreset]:
+    presets = _dig(config_data, "cli.bash.presets")
+    if presets is None:
+        return list(DEFAULT_CLI_BASH_PRESETS)
+    if not isinstance(presets, list):
+        raise ValueError("cli.bash.presets must be a list")
+    resolved: list[BashCliPreset] = []
+    for index, item in enumerate(presets):
+        if not isinstance(item, dict):
+            raise ValueError(f"cli.bash.presets[{index}] must be a mapping")
+        resolved.append(
+            BashCliPreset(
+                name=_non_empty(item.get("name")) or "",
+                command=str(item.get("command") or ""),
+                description=str(item.get("description") or ""),
+            )
+        )
+    return resolved
+
+
+def _agent_profile(config_data: dict[str, Any], alias: str) -> dict[str, Any]:
+    agents = config_data.get("agents")
+    if agents is None:
+        if alias == "default":
+            return {}
+        raise ValueError(f"Agent alias {alias!r} is not configured")
+    if not isinstance(agents, list):
+        raise ValueError("agents must be a list")
+    for item in agents:
+        if isinstance(item, dict) and item.get("alias") == alias:
+            return item
+    raise ValueError(f"Agent alias {alias!r} is not configured")
+
+
+def _resolve_api_key(model_request: dict[str, Any]) -> tuple[str | None, str]:
+    api_key_env = _non_empty(model_request.get("api_key_env"))
+    if api_key_env:
+        value = _non_empty(os.environ.get(api_key_env))
+        if value:
+            return value, f"env:{api_key_env}"
+    configured = _non_empty(model_request.get("api_key"))
+    if configured:
+        return configured, "config:model_request.api_key"
+    deepseek_key = _non_empty(os.environ.get("DEEPSEEK_API_KEY"))
+    if deepseek_key:
+        return deepseek_key, "env:DEEPSEEK_API_KEY"
+    return None, "missing"
+
+
+def _non_empty(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
 def _parse_yaml_subset(text: str) -> dict[str, Any]:
     """Parse the small YAML subset used by lora.yaml and MVP case files."""
     lines = []
     for raw in text.splitlines():
-        line = raw.split("#", 1)[0].rstrip()
+        line = _strip_yaml_comment(raw).rstrip()
         if line.strip():
             lines.append(line)
     if not lines:
@@ -158,6 +293,32 @@ def _split_key_value(text: str) -> tuple[str, str]:
     if not key:
         raise ValueError(f"Invalid YAML key: {text}")
     return key, value.strip()
+
+
+def _strip_yaml_comment(text: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(text):
+        if quote == '"':
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == quote:
+                quote = None
+            continue
+        if quote == "'":
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char == "#":
+            return text[:index]
+    return text
 
 
 def _indent(line: str) -> int:
