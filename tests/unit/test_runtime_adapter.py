@@ -157,10 +157,10 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
 
             agent.start_run(run, "turn-0001")
 
-            self.assertEqual(list(agent._tools), ["Edit", "Glob", "Read", "Write", "grep", "bash"])
+            self.assertEqual(list(agent._tools), ["bash", "read", "write", "edit", "glob", "grep"])
             self.assertEqual(
                 [tool["function"]["name"] for tool in agent.tools_param()],
-                ["Edit", "Glob", "Read", "Write", "grep", "bash"],
+                ["bash", "read", "write", "edit", "glob", "grep"],
             )
             self.assertNotIn("delete_file", agent._tools)
 
@@ -440,7 +440,7 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertIn("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", rendered_prompt)
             self.assertIn("# Available Tools", rendered_prompt)
             self.assertIn(
-                "Tools currently available for this request: Edit, Glob, Read, Write, grep, bash.",
+                "Tools currently available for this request: bash, read, write, edit, glob, grep.",
                 rendered_prompt,
             )
             self.assertTrue(prompt_event["payload"]["static_prompt_created"])

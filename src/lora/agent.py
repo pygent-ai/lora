@@ -23,7 +23,7 @@ from .tools import FileStateTracker, ToolContext, ToolInterceptor
 from .trace import EventStore
 
 SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
-DEFAULT_PYGENT_TOOL_NAMES = ("Edit", "Glob", "Read", "Write", "grep", "bash")
+DEFAULT_PYGENT_TOOL_NAMES = ("bash", "read", "write", "edit", "glob", "grep")
 
 
 def _always_enabled(ctx: "PromptRenderContext") -> bool:
@@ -728,7 +728,11 @@ class LoraAgent(BaseAgent):
             if converted is not None:
                 pygent_context.add_message(converted)
 
-        interceptor = ToolInterceptor(EventStore(self.case_run_ref))
+        interceptor = ToolInterceptor(
+            EventStore(self.case_run_ref),
+            workspace_root=self.workspace_root,
+            track_file_effects=True,
+        )
         tool_context = ToolContext(case_run_ref=self.case_run_ref, turn_id=self.turn_id)
         step_count = 0
         while max_steps == -1 or step_count < max_steps:

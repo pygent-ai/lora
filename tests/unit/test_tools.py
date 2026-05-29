@@ -73,5 +73,247 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(file_events[0]["payload"]["returned_content"], "b")
 
 
+class FileEffectTrackerSpecTests(unittest.TestCase):
+    """Specification tests for the planned workspace file-effect tracker."""
+
+    def test_file_effect_tracker_records_one_net_write_per_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            path = workspace / "demo.txt"
+            path.write_text("first\n", encoding="utf-8")
+            path.write_text("second\n", encoding="utf-8")
+            after = tracker.snapshot_workspace()
+
+            effects = tracker.observed_effects(before, after, tool_name="bash", tool_call_id="evt_tool")
+            tracker.append_effects(effects, turn_id="turn-0001")
+
+            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
+            self.assertEqual(len(file_events), 1)
+            self.assertEqual(file_events[0]["type"], "file.write")
+            self.assertEqual(file_events[0]["path"], str(path.resolve()))
+            self.assertEqual(file_events[0]["payload"]["after_exists"], True)
+            self.assertEqual(file_events[0]["payload"]["detected_by"], ["snapshot_diff"])
+
+    def test_file_effect_tracker_merges_declared_and_observed_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            path = workspace / "demo.txt"
+            path.write_text("old\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            declared = tracker.declared_effects(
+                "edit",
+                {"file_path": str(path), "old_string": "old", "new_string": "new"},
+                tool_call_id="evt_tool",
+            )
+            path.write_text("new\n", encoding="utf-8")
+            observed = tracker.observed_effects(
+                before,
+                tracker.snapshot_workspace(),
+                tool_name="edit",
+                tool_call_id="evt_tool",
+            )
+
+            merged = tracker.merge_effects(declared, observed)
+
+            self.assertEqual(len(merged), 1)
+            self.assertEqual(merged[0].type, "file.edit")
+            self.assertEqual(merged[0].confidence, "observed")
+            self.assertEqual(merged[0].detected_by, ["tool_args", "snapshot_diff"])
+
+    def test_file_effect_tracker_records_delete_once_and_ignores_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            path = workspace / "demo.txt"
+            path.write_text("bye\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before_delete = tracker.snapshot_workspace()
+
+            path.unlink()
+            after_delete = tracker.snapshot_workspace()
+            effects = tracker.observed_effects(before_delete, after_delete, tool_name="bash", tool_call_id="evt_tool")
+            tracker.append_effects(effects, turn_id="turn-0001")
+            noop_effects = tracker.observed_effects(after_delete, tracker.snapshot_workspace(), tool_name="bash", tool_call_id="evt_tool")
+            tracker.append_effects(noop_effects, turn_id="turn-0001")
+
+            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
+            self.assertEqual(len(file_events), 1)
+            self.assertEqual(file_events[0]["type"], "file.delete")
+            self.assertEqual(file_events[0]["payload"]["before_exists"], True)
+            self.assertEqual(file_events[0]["payload"]["after_exists"], False)
+
+    def test_file_effect_tracker_records_create_edit_delete_in_one_call_as_no_net_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            path = workspace / "transient.txt"
+            path.write_text("temporary\n", encoding="utf-8")
+            path.write_text("changed\n", encoding="utf-8")
+            path.unlink()
+            after = tracker.snapshot_workspace()
+
+            effects = tracker.observed_effects(before, after, tool_name="bash", tool_call_id="evt_tool")
+
+            self.assertEqual(effects, [])
+
+    def test_file_effect_tracker_records_existing_file_changed_back_to_original_as_no_net_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            path = workspace / "stable.txt"
+            path.write_text("original\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            path.write_text("temporary\n", encoding="utf-8")
+            path.write_text("original\n", encoding="utf-8")
+            after = tracker.snapshot_workspace()
+
+            effects = tracker.observed_effects(before, after, tool_name="bash", tool_call_id="evt_tool")
+
+            self.assertEqual(effects, [])
+
+    def test_file_effect_tracker_records_multiple_paths_once_each_in_stable_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            edited = workspace / "b.txt"
+            deleted = workspace / "c.txt"
+            edited.write_text("old\n", encoding="utf-8")
+            deleted.write_text("remove\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            (workspace / "a.txt").write_text("new\n", encoding="utf-8")
+            edited.write_text("new\n", encoding="utf-8")
+            deleted.unlink()
+            effects = tracker.observed_effects(before, tracker.snapshot_workspace(), tool_name="bash", tool_call_id="evt_tool")
+
+            self.assertEqual([effect.type for effect in effects], ["file.write", "file.edit", "file.delete"])
+            self.assertEqual([Path(effect.path).name for effect in effects], ["a.txt", "b.txt", "c.txt"])
+
+    def test_file_effect_tracker_normalizes_equivalent_declared_paths_before_merging(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            nested = workspace / "nested"
+            nested.mkdir(parents=True)
+            path = nested / "demo.txt"
+            path.write_text("old\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            declared = tracker.declared_effects(
+                "write",
+                {"file_path": str(workspace / "nested" / ".." / "nested" / "demo.txt"), "content": "new\n"},
+                tool_call_id="evt_tool",
+            )
+            path.write_text("new\n", encoding="utf-8")
+            observed = tracker.observed_effects(before, tracker.snapshot_workspace(), tool_name="write", tool_call_id="evt_tool")
+            merged = tracker.merge_effects(declared, observed)
+
+            self.assertEqual(len(merged), 1)
+            self.assertEqual(merged[0].path, str(path.resolve()))
+            self.assertEqual(merged[0].detected_by, ["tool_args", "snapshot_diff"])
+
+    def test_file_effect_tracker_ignores_runtime_and_dependency_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            for ignored in [".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"]:
+                ignored_dir = workspace / ignored
+                ignored_dir.mkdir()
+                (ignored_dir / "generated.txt").write_text("noise\n", encoding="utf-8")
+            after = tracker.snapshot_workspace()
+
+            self.assertEqual(tracker.observed_effects(before, after, tool_name="bash", tool_call_id="evt_tool"), [])
+
+    def test_file_effect_tracker_rejects_declared_paths_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            outside = Path(tmp) / "outside.txt"
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+
+            with self.assertRaises(ValueError):
+                tracker.declared_effects("write", {"file_path": str(outside), "content": "x"}, tool_call_id="evt_tool")
+
+    def test_file_effect_tracker_infers_bash_read_without_claiming_observed_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            path = workspace / "readme.txt"
+            path.write_text("hello\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            declared = tracker.declared_effects("bash", {"command": f"cat {path}"}, tool_call_id="evt_tool")
+            observed = tracker.observed_effects(before, tracker.snapshot_workspace(), tool_name="bash", tool_call_id="evt_tool")
+            merged = tracker.merge_effects(declared, observed)
+
+            self.assertEqual(len(merged), 1)
+            self.assertEqual(merged[0].type, "file.read")
+            self.assertEqual(merged[0].confidence, "inferred")
+            self.assertEqual(merged[0].detected_by, ["bash_command_parse"])
+
+    def test_file_effect_tracker_deduplicates_same_effect_key_across_append_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+            (workspace / "demo.txt").write_text("content\n", encoding="utf-8")
+            effects = tracker.observed_effects(before, tracker.snapshot_workspace(), tool_name="bash", tool_call_id="evt_tool")
+
+            tracker.append_effects(effects, turn_id="turn-0001")
+            tracker.append_effects(effects, turn_id="turn-0001")
+
+            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
+            self.assertEqual(len(file_events), 1)
+
+
+def _file_effect_tracker_class():
+    import lora.tools as tools
+
+    try:
+        return tools.FileEffectTracker
+    except AttributeError as exc:
+        raise AssertionError("FileEffectTracker is not implemented yet") from exc
+
+
 if __name__ == "__main__":
     unittest.main()

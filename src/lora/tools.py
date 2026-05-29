@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -12,15 +13,15 @@ from .schema import CaseRunRef
 from .trace import EventStore
 
 FILE_UNCHANGED_STUB = (
-    "File unchanged since last read. The content from the earlier Read tool_result in this conversation "
+    "File unchanged since last read. The content from the earlier read tool_result in this conversation "
     "is still current. Refer to that instead of re-reading."
 )
 FILE_RANGE_CONTAINED_STUB = (
-    "Requested range is contained in an earlier Read tool_result for the same file version. "
+    "Requested range is contained in an earlier read tool_result for the same file version. "
     "Refer to the earlier result instead of re-reading."
 )
 FILE_RANGE_OVERLAP_STUB = (
-    "Requested range partially overlaps an earlier Read tool_result for the same file version. "
+    "Requested range partially overlaps an earlier read tool_result for the same file version. "
     "Returning only the unread portion."
 )
 
@@ -69,6 +70,41 @@ class ToolResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(slots=True)
+class FileSnapshot:
+    path: str
+    exists: bool
+    kind: Literal["file", "dir", "other", "missing"]
+    size: int | None = None
+    mtime_ns: int | None = None
+    content_hash: str | None = None
+
+
+@dataclass(slots=True)
+class FileEffect:
+    type: Literal["file.read", "file.write", "file.edit", "file.delete"]
+    path: str
+    tool_call_id: str
+    tool_name: str
+    detected_by: list[Literal["tool_args", "snapshot_diff", "bash_command_parse"]]
+    confidence: Literal["declared", "observed", "inferred"]
+    before_hash: str | None = None
+    after_hash: str | None = None
+    before_exists: bool | None = None
+    after_exists: bool | None = None
+
+    def key(self) -> tuple[Any, ...]:
+        return (
+            self.tool_call_id,
+            self.path,
+            self.type,
+            self.before_hash,
+            self.after_hash,
+            self.before_exists,
+            self.after_exists,
+        )
 
 
 class FileStateTracker:
@@ -185,9 +221,321 @@ class FileStateTracker:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-class ToolInterceptor:
-    def __init__(self, store: EventStore):
+class FileEffectTracker:
+    IGNORED_DIRS = frozenset({".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"})
+    PATH_ARG_NAMES = ("file_path", "path", "relative_path")
+    WRITE_TYPES = frozenset({"file.write", "file.edit", "file.delete"})
+
+    def __init__(self, workspace_root: str | Path, store: EventStore):
+        self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.store = store
+        self._appended_keys: set[tuple[Any, ...]] = set()
+
+    def snapshot_workspace(self) -> dict[str, FileSnapshot]:
+        snapshots: dict[str, FileSnapshot] = {}
+        if not self.workspace_root.exists():
+            return snapshots
+        for path in sorted(self.workspace_root.rglob("*"), key=lambda item: str(item)):
+            if self._is_ignored(path):
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if not path.is_file():
+                continue
+            normalized = str(path.resolve())
+            try:
+                content_hash = _hash_file(path)
+            except OSError:
+                continue
+            snapshots[normalized] = FileSnapshot(
+                path=normalized,
+                exists=True,
+                kind="file",
+                size=stat.st_size,
+                mtime_ns=stat.st_mtime_ns,
+                content_hash=content_hash,
+            )
+        return snapshots
+
+    def declared_effects(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        tool_call_id: str,
+    ) -> list[FileEffect]:
+        if tool_name == "bash":
+            return self._bash_read_effects(args, tool_call_id)
+        path = self._path_from_args(args)
+        if path is None:
+            return []
+        if tool_name == "read":
+            return [
+                FileEffect(
+                    type="file.read",
+                    path=path,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    detected_by=["tool_args"],
+                    confidence="declared",
+                )
+            ]
+        if tool_name == "write":
+            return [
+                FileEffect(
+                    type="file.write",
+                    path=path,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    detected_by=["tool_args"],
+                    confidence="declared",
+                )
+            ]
+        if tool_name == "edit":
+            return [
+                FileEffect(
+                    type="file.edit",
+                    path=path,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    detected_by=["tool_args"],
+                    confidence="declared",
+                )
+            ]
+        return []
+
+    def observed_effects(
+        self,
+        before: dict[str, FileSnapshot],
+        after: dict[str, FileSnapshot],
+        *,
+        tool_name: str,
+        tool_call_id: str,
+    ) -> list[FileEffect]:
+        effects: list[FileEffect] = []
+        for path in sorted(set(before) | set(after)):
+            before_snapshot = before.get(path)
+            after_snapshot = after.get(path)
+            if before_snapshot is None and after_snapshot is not None:
+                effects.append(
+                    FileEffect(
+                        type="file.write",
+                        path=path,
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
+                        detected_by=["snapshot_diff"],
+                        confidence="observed",
+                        after_hash=after_snapshot.content_hash,
+                        before_exists=False,
+                        after_exists=True,
+                    )
+                )
+            elif before_snapshot is not None and after_snapshot is None:
+                effects.append(
+                    FileEffect(
+                        type="file.delete",
+                        path=path,
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
+                        detected_by=["snapshot_diff"],
+                        confidence="observed",
+                        before_hash=before_snapshot.content_hash,
+                        before_exists=True,
+                        after_exists=False,
+                    )
+                )
+            elif (
+                before_snapshot is not None
+                and after_snapshot is not None
+                and before_snapshot.content_hash != after_snapshot.content_hash
+            ):
+                effects.append(
+                    FileEffect(
+                        type="file.edit",
+                        path=path,
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
+                        detected_by=["snapshot_diff"],
+                        confidence="observed",
+                        before_hash=before_snapshot.content_hash,
+                        after_hash=after_snapshot.content_hash,
+                        before_exists=True,
+                        after_exists=True,
+                    )
+                )
+        return sorted(effects, key=lambda effect: (_effect_type_order(effect.type), effect.path))
+
+    def merge_effects(
+        self,
+        declared: list[FileEffect],
+        observed: list[FileEffect],
+    ) -> list[FileEffect]:
+        observed_by_path = {effect.path: effect for effect in observed}
+        declared_by_path: dict[str, FileEffect] = {}
+        for effect in declared:
+            declared_by_path.setdefault(effect.path, effect)
+
+        merged: list[FileEffect] = []
+        for path in sorted(set(declared_by_path) | set(observed_by_path)):
+            declared_effect = declared_by_path.get(path)
+            observed_effect = observed_by_path.get(path)
+            if observed_effect is None:
+                if declared_effect is not None:
+                    merged.append(declared_effect)
+                continue
+
+            if declared_effect is None:
+                merged.append(observed_effect)
+                continue
+
+            detected_by = _merge_detected_by(declared_effect.detected_by, observed_effect.detected_by)
+            merged.append(
+                FileEffect(
+                    type=observed_effect.type,
+                    path=observed_effect.path,
+                    tool_call_id=observed_effect.tool_call_id,
+                    tool_name=observed_effect.tool_name,
+                    detected_by=detected_by,
+                    confidence=observed_effect.confidence,
+                    before_hash=observed_effect.before_hash,
+                    after_hash=observed_effect.after_hash,
+                    before_exists=observed_effect.before_exists,
+                    after_exists=observed_effect.after_exists,
+                )
+            )
+
+        write_seen: set[str] = set()
+        deduped: list[FileEffect] = []
+        for effect in merged:
+            if effect.type in self.WRITE_TYPES:
+                if effect.path in write_seen:
+                    continue
+                write_seen.add(effect.path)
+            deduped.append(effect)
+        return sorted(deduped, key=lambda effect: (_effect_type_order(effect.type), effect.path))
+
+    def append_effects(
+        self,
+        effects: list[FileEffect],
+        *,
+        turn_id: str | None,
+    ) -> None:
+        for effect in effects:
+            key = effect.key()
+            if key in self._appended_keys:
+                continue
+            self._appended_keys.add(key)
+            self.store.append(
+                effect.type,
+                actor="tool",
+                payload={
+                    "path": effect.path,
+                    "tool_call_id": effect.tool_call_id,
+                    "tool_name": effect.tool_name,
+                    "detected_by": effect.detected_by,
+                    "confidence": effect.confidence,
+                    "before_exists": effect.before_exists,
+                    "after_exists": effect.after_exists,
+                    "before_hash": effect.before_hash,
+                    "after_hash": effect.after_hash,
+                    "content_hash": effect.after_hash or effect.before_hash,
+                },
+                turn_id=turn_id,
+            )
+
+    def _path_from_args(self, args: dict[str, Any]) -> str | None:
+        for name in self.PATH_ARG_NAMES:
+            value = args.get(name)
+            if isinstance(value, str) and value:
+                return self._resolve_workspace_path(value)
+        return None
+
+    def _resolve_workspace_path(self, path: str | Path) -> str:
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.workspace_root / candidate
+        resolved = candidate.resolve()
+        if not _is_relative_to(resolved, self.workspace_root):
+            raise ValueError(f"Path is outside workspace: {path}")
+        return str(resolved)
+
+    def _is_ignored(self, path: Path) -> bool:
+        try:
+            relative = path.relative_to(self.workspace_root)
+        except ValueError:
+            return True
+        return any(part in self.IGNORED_DIRS for part in relative.parts)
+
+    def _bash_read_effects(self, args: dict[str, Any], tool_call_id: str) -> list[FileEffect]:
+        command = args.get("command") or args.get("cmd")
+        if not isinstance(command, str) or not command.strip():
+            return []
+        paths = self._parse_bash_read_paths(command)
+        effects: list[FileEffect] = []
+        seen: set[str] = set()
+        for raw_path in paths:
+            path = self._resolve_workspace_path(raw_path)
+            if path in seen:
+                continue
+            seen.add(path)
+            effects.append(
+                FileEffect(
+                    type="file.read",
+                    path=path,
+                    tool_call_id=tool_call_id,
+                    tool_name="bash",
+                    detected_by=["bash_command_parse"],
+                    confidence="inferred",
+                )
+            )
+        return effects
+
+    @staticmethod
+    def _parse_bash_read_paths(command: str) -> list[str]:
+        paths: list[str] = []
+        separators = ("&&", "||", ";", "|")
+        normalized = command
+        for separator in separators:
+            normalized = normalized.replace(separator, "\n")
+        for line in normalized.splitlines():
+            try:
+                tokens = shlex.split(line, posix=True)
+            except ValueError:
+                try:
+                    tokens = shlex.split(line, posix=False)
+                except ValueError:
+                    continue
+            if not tokens:
+                continue
+            executable = Path(tokens[0]).name.lower()
+            if executable in {"cat", "type"}:
+                paths.extend(_non_option_tokens(tokens[1:]))
+            elif executable == "grep":
+                candidates = _non_option_tokens(tokens[1:])
+                if len(candidates) >= 2:
+                    paths.extend(candidates[1:])
+            elif executable in {"get-content", "gc"}:
+                paths.extend(_powershell_path_args(tokens[1:]))
+        return paths
+
+
+class ToolInterceptor:
+    def __init__(
+        self,
+        store: EventStore,
+        *,
+        workspace_root: str | Path | None = None,
+        track_file_effects: bool = False,
+    ):
+        self.store = store
+        if track_file_effects and workspace_root is None:
+            raise ValueError("workspace_root is required when track_file_effects=True")
+        self.file_effect_tracker = (
+            FileEffectTracker(workspace_root=workspace_root, store=store)
+            if track_file_effects and workspace_root is not None
+            else None
+        )
 
     def call_tool(self, name: str, args: dict[str, Any], ctx: ToolContext, tool: Callable[..., Any]) -> ToolResult:
         call_id = self.store.append(
@@ -196,13 +544,32 @@ class ToolInterceptor:
             payload={"tool_name": name, "args": args},
             turn_id=ctx.turn_id,
         )
+        before: dict[str, FileSnapshot] | None = None
+        declared: list[FileEffect] = []
+        if self.file_effect_tracker is not None:
+            before = self.file_effect_tracker.snapshot_workspace()
+            declared = self.file_effect_tracker.declared_effects(name, args, call_id)
         try:
             result = tool(**args)
         except Exception as exc:  # noqa: BLE001 - tool boundary records all failures.
+            self._append_file_effects_after_tool(
+                before,
+                declared,
+                tool_name=name,
+                tool_call_id=call_id,
+                turn_id=ctx.turn_id,
+            )
             payload = {"tool_call_id": call_id, "status": "error", "error": str(exc), "error_type": type(exc).__name__}
             self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
             return ToolResult(status="error", error=str(exc), tool_call_id=call_id)
 
+        self._append_file_effects_after_tool(
+            before,
+            declared,
+            tool_name=name,
+            tool_call_id=call_id,
+            turn_id=ctx.turn_id,
+        )
         status = "success"
         if isinstance(result, dict) and result.get("status") in {"stubbed", "partial"}:
             status = result["status"]
@@ -214,9 +581,87 @@ class ToolInterceptor:
         )
         return ToolResult(status=status, result=result, tool_call_id=call_id)  # type: ignore[arg-type]
 
+    def _append_file_effects_after_tool(
+        self,
+        before: dict[str, FileSnapshot] | None,
+        declared: list[FileEffect],
+        *,
+        tool_name: str,
+        tool_call_id: str,
+        turn_id: str | None,
+    ) -> None:
+        if self.file_effect_tracker is None or before is None:
+            return
+        after = self.file_effect_tracker.snapshot_workspace()
+        observed = self.file_effect_tracker.observed_effects(
+            before,
+            after,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+        )
+        self.file_effect_tracker.append_effects(
+            self.file_effect_tracker.merge_effects(declared, observed),
+            turn_id=turn_id,
+        )
+
 
 def _normalize(path: str | Path) -> str:
     return str(Path(path).expanduser().resolve())
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _merge_detected_by(
+    left: list[Literal["tool_args", "snapshot_diff", "bash_command_parse"]],
+    right: list[Literal["tool_args", "snapshot_diff", "bash_command_parse"]],
+) -> list[Literal["tool_args", "snapshot_diff", "bash_command_parse"]]:
+    order: tuple[Literal["tool_args", "snapshot_diff", "bash_command_parse"], ...] = (
+        "tool_args",
+        "snapshot_diff",
+        "bash_command_parse",
+    )
+    values = {*left, *right}
+    return [value for value in order if value in values]
+
+
+def _effect_type_order(effect_type: str) -> int:
+    return {"file.write": 0, "file.edit": 1, "file.delete": 2, "file.read": 3}.get(effect_type, 99)
+
+
+def _non_option_tokens(tokens: list[str]) -> list[str]:
+    return [token for token in tokens if token and not token.startswith("-")]
+
+
+def _powershell_path_args(tokens: list[str]) -> list[str]:
+    paths: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        lower = token.lower()
+        if lower in {"-path", "-literalpath"}:
+            skip_next = False
+            continue
+        if lower.startswith("-"):
+            skip_next = lower in {"-encoding", "-totalcount", "-tail", "-readcount"}
+            continue
+        paths.append(token)
+    return paths
 
 
 def _line_range(content: str, offset: int | None, limit: int | None) -> ReadRange:

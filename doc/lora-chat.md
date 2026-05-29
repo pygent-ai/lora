@@ -147,12 +147,12 @@ agents:
 
 `AgentRuntimeAdapter` 默认会创建 `LoraAgent`。在 agent 管理功能落地前，`LoraAgent` 会加载工作区 `.env`，读取 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`，并从 `pygent.toolkits` 中注册一组白名单工具：
 
-- `Edit`
-- `Glob`
-- `Read`
-- `Write`
-- `grep`
 - `bash`
+- `read`
+- `write`
+- `edit`
+- `glob`
+- `grep`
 
 如果配置了 `DEEPSEEK_API_KEY`，`LoraAgent` 会通过 DeepSeek 兼容接口进行流式模型调用；当模型实际调用已注册工具时，调用会通过 `ToolInterceptor` 记录。
 

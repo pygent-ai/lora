@@ -268,7 +268,7 @@ def load_run_config(
 - 确定 `lora_root`：配置 `lora_root` 优先，其次 `LORA_ROOT`，默认 `.lora`。
 - 确定 `session_id`：参数优先，其次 `LORA_SESSION_ID`，最后配置 `session_id`。
 - 确定 `model`：参数优先，其次 `LORA_MODEL`，最后配置 `model` 或 `runtime.model`。
-- 确定 `max_steps`：参数优先，其次 `LORA_MAX_STEPS`，然后配置 `max_steps` 或 `runtime.max_steps`，默认 `8`。
+- 确定 `max_steps`：参数优先，其次 `LORA_MAX_STEPS`，然后配置 `max_steps` 或 `runtime.max_steps`，默认 `-1`，表示不按步数主动截断，直到模型不再请求工具。
 - 返回 `RunConfig`，由 schema 层做路径绝对化和合法性检查。
 
 注意：
@@ -372,12 +372,12 @@ lora_root: str
 session_id: str | None = None
 case_file: str | None = None
 model: str | None = None
-max_steps: int = 8
+max_steps: int = -1
 ```
 
 方法：
 
-- `__post_init__`：规范化 `workspace_root`、`lora_root`、`case_file`；校验 `max_steps > 0`。
+- `__post_init__`：规范化 `workspace_root`、`lora_root`、`case_file`；校验 `max_steps == -1` 或 `max_steps > 0`。
 - `to_dict()`：返回 `asdict(self)`。
 - `from_dict(data)`：用 dict 反序列化。
 
@@ -1059,7 +1059,194 @@ call_tool
 - 所有模型触发的工具调用都应该经过 `ToolInterceptor`。
 - 真正的工具函数只负责业务结果，记录、错误包装、trace 写入都在 interceptor 做。
 
-### 10.8 其他内部方法
+### 10.8 文件效果跟踪方案
+
+背景：
+
+- 当前默认 `LoraAgent` 注册的是 pygent 的 `bash/read/write/edit/glob/grep` 白名单工具。
+- `read/write/edit` 的工具名和参数可以表达文件意图，但 `bash` 也可能通过 `cat`、`echo >`、`rm`、`python -c`、`sed -i` 等命令读取或修改文件。
+- 因此文件影响不能只从工具名推断；需要把 workspace 作为被观测对象，对每次工具调用产生的文件净效果做事实记录。
+
+#### 10.8.1 目标
+
+第一阶段目标：
+
+- 对每次工具调用完整跟踪 workspace 内的文件净变化：新增、编辑、删除。
+- 同一次工具调用中，同一路径最终只产生一条 file effect 事件。
+- 语义明确的工具参数和 snapshot diff 发现同一路径变化时，合并成一条事件，而不是重复写入。
+- `file.read` 仍以明确读工具和 `FileStateTracker.read_text_file()` 为主；对 `bash` 读命令只做最佳努力解析，不承诺完整。
+
+非目标：
+
+- 不记录同一次工具调用中 A -> B -> A 这种最终无净变化的中间过程。
+- 不在第一阶段实现 OS 级文件访问审计，例如 strace、eBPF、ETW 或 USN Journal。
+- 不跟踪 workspace 外文件，除非后续显式引入受控沙箱或审计后端。
+
+#### 10.8.2 新增模型
+
+建议在 `tools.py` 增加内部 dataclass：
+
+```python
+@dataclass(slots=True)
+class FileSnapshot:
+    path: str
+    exists: bool
+    kind: Literal["file", "dir", "other", "missing"]
+    size: int | None = None
+    mtime_ns: int | None = None
+    content_hash: str | None = None
+
+
+@dataclass(slots=True)
+class FileEffect:
+    type: Literal["file.read", "file.write", "file.edit", "file.delete"]
+    path: str
+    tool_call_id: str
+    tool_name: str
+    detected_by: list[Literal["tool_args", "snapshot_diff", "bash_command_parse"]]
+    confidence: Literal["declared", "observed", "inferred"]
+    before_hash: str | None = None
+    after_hash: str | None = None
+    before_exists: bool | None = None
+    after_exists: bool | None = None
+```
+
+`FileEffect.key()` 使用下面字段生成稳定去重键：
+
+```text
+case_run_id + tool_call_id + normalized_path + type + before_hash + after_hash + before_exists + after_exists
+```
+
+#### 10.8.3 `FileEffectTracker`
+
+建议新增：
+
+```python
+class FileEffectTracker:
+    def __init__(self, workspace_root: str | Path, store: EventStore):
+        ...
+
+    def snapshot_workspace(self) -> dict[str, FileSnapshot]:
+        ...
+
+    def declared_effects(self, tool_name: str, args: dict[str, Any], tool_call_id: str) -> list[FileEffect]:
+        ...
+
+    def observed_effects(
+        self,
+        before: dict[str, FileSnapshot],
+        after: dict[str, FileSnapshot],
+        *,
+        tool_name: str,
+        tool_call_id: str,
+    ) -> list[FileEffect]:
+        ...
+
+    def merge_effects(self, declared: list[FileEffect], observed: list[FileEffect]) -> list[FileEffect]:
+        ...
+
+    def append_effects(self, effects: list[FileEffect], *, turn_id: str | None) -> None:
+        ...
+```
+
+`snapshot_workspace()`：
+
+- 遍历 workspace，跳过 `.git`、`.lora`、`.venv`、`__pycache__`、`.pytest_cache`、`sessions` 等运行和依赖目录。
+- 对文件记录 `size`、`mtime_ns`、`content_hash`。
+- 后续可优化为先比较 `size/mtime_ns`，有变化时再计算 hash。
+
+`observed_effects()`：
+
+- before 不存在、after 存在：生成 `file.write`。
+- before 存在、after 不存在：生成 `file.delete`。
+- before/after 都存在但 hash 不同：生成 `file.edit`。
+- before/after 都不存在或 hash 相同：不生成事件。
+
+`declared_effects()` 第一阶段只处理明确工具：
+
+- `write`：`file.write` 或 `file.edit` 的声明意图，最终类型以 observed 为准。
+- `edit`：`file.edit` 的声明意图。
+- `read`：`file.read` 的声明意图。
+- `bash`：可选解析 `cat`、`type`、`Get-Content`、`grep` 等常见读命令，标记 `confidence="inferred"`。
+
+`merge_effects()`：
+
+- 以 normalized path 为主键合并 declared 和 observed。
+- 同一路径如果有 observed effect，保留 observed 的 type/hash/existence，并把 `detected_by` 合并为 `["tool_args", "snapshot_diff"]`。
+- 同一路径只有 declared read，则保留 `file.read`。
+- 同一次工具调用内每个 normalized path 最多一条最终写入类 effect。
+
+#### 10.8.4 `ToolInterceptor` 集成
+
+`ToolInterceptor` 增加可选参数：
+
+```python
+interceptor = ToolInterceptor(store, workspace_root=config.workspace_root, track_file_effects=True)
+```
+
+调用链调整为：
+
+```text
+call_tool
+  -> append tool.call and get tool_call_id
+  -> if tracking enabled: before = FileEffectTracker.snapshot_workspace()
+  -> declared = FileEffectTracker.declared_effects(tool_name, args, tool_call_id)
+  -> tool(**args)
+  -> if tracking enabled: after = FileEffectTracker.snapshot_workspace()
+  -> observed = FileEffectTracker.observed_effects(before, after, tool_name, tool_call_id)
+  -> effects = FileEffectTracker.merge_effects(declared, observed)
+  -> append file effects
+  -> append tool.result
+  -> return ToolResult
+```
+
+异常时也应做 after snapshot 并记录已发生的净变化，因为很多 shell 命令可能部分成功后返回非零状态。
+
+#### 10.8.5 事件 payload
+
+写入 `file.write/file.edit/file.delete/file.read` 时统一 payload：
+
+```json
+{
+  "path": "...",
+  "tool_call_id": "...",
+  "tool_name": "bash",
+  "detected_by": ["snapshot_diff"],
+  "confidence": "observed",
+  "before_hash": "...",
+  "after_hash": "...",
+  "before_exists": true,
+  "after_exists": true
+}
+```
+
+`EventStore` 现有 `file_events.jsonl` 投影可继续使用，不需要新增投影文件。
+
+#### 10.8.6 测试先行
+
+先新增会失败的 UT/ST 作为实现规格：
+
+UT 覆盖 `FileEffectTracker` 的纯逻辑：
+
+- 同一次工具调用内同一路径多次写入，只记录一次最终 `file.write`。
+- `write/edit` 声明效果和 snapshot diff 观察效果合并成一条 `file.edit`，`detected_by` 同时包含 `tool_args` 和 `snapshot_diff`。
+- 删除文件生成一条 `file.delete`，重复删除或最终无变化不重复。
+- 创建后又删除、编辑后又改回原内容，最终无净变化，不记录 file effect。
+- 一次工具调用影响多个路径时，每个路径最多一条事件，并保持稳定顺序。
+- 声明路径中的 `..`、相对路径和绝对路径先归一化，再和 snapshot diff 合并。
+- `.git`、`.lora`、`.venv`、`__pycache__`、`.pytest_cache`、`sessions` 等目录变动不进入 workspace effect。
+- workspace 外声明路径拒绝处理，避免把外部文件写进 trace。
+- `bash` 常见读命令只生成 `file.read` inferred 事件，不伪装成 observed。
+- 同一个 effect key 重复 append 时只写一次，防止重试或合并路径重复落盘。
+
+ST 覆盖 `ToolInterceptor` 集成：
+
+- 通过 `ToolInterceptor.call_tool("bash", ...)` 执行一个模拟 bash 工具，内部创建、编辑、删除文件，最终只在 `file_events.jsonl` 看到净效果。
+- 异常工具部分修改文件后抛错，仍记录已经发生的 file effect，并记录 `tool.result status=error`。
+- `write` 工具声明路径和实际文件变化合并为单条 `file.edit`，不重复记录。
+- 工具修改 workspace 外文件时，不写入 file events。
+
+### 10.9 其他内部方法
 
 | 方法 | 职责 |
 | --- | --- |
@@ -1111,7 +1298,7 @@ context = RuntimeContext(session)
 方法：
 
 ```python
-async def stream(self, context: RuntimeContext, max_steps: int = 8)
+async def stream(self, context: RuntimeContext, max_steps: int = -1)
 ```
 
 行为：
@@ -1239,7 +1426,7 @@ run_case
 
 ## 12. Agent 模块 `agent.py`
 
-`agent.py` 包含当前默认 Agent、prompt 模块系统和三个工具。
+`agent.py` 包含当前默认 Agent、prompt 模块系统和 pygent 工具白名单注册。
 
 ### 12.1 `PromptModule`
 
@@ -1247,19 +1434,19 @@ run_case
 
 ```python
 id: str
-type: Literal["system", "project", "runtime", "tool", "memory"]
-cache_scope: Literal["global", "project", "session", "turn"]
+phase: Literal["static", "dynamic"]
+type: Literal["system", "project", "runtime", "tool", "memory", "policy"]
+cache_scope: Literal["session", "request", "turn", "none"]
 order: int
 render: Callable[[PromptRenderContext], str | None]
+required: bool = False
+depends_on: tuple[str, ...] = ()
+enabled: Callable[[PromptRenderContext], bool] = _always_enabled
 ```
 
 属性：
 
-- `version_hash`：基于 `id/type/cache_scope/order` 的短 hash 字符串。
-
-注意：
-
-- 当前 `version_hash` 使用 Python 内置 `hash`，跨进程不保证稳定；如果 prompt cache 需要强一致，应改为 SHA-256。
+- `version_hash`：基于 `id/phase/type/cache_scope/order/depends_on` 的 SHA-256 hash 字符串。
 
 ### 12.2 `PromptRenderContext`
 
@@ -1272,6 +1459,8 @@ session_dir: Path
 turn_id: str | None
 projection: dict[str, Any]
 tool_names: list[str]
+request_id: str | None = None
+request_type: str = "agent_turn"
 ```
 
 用于 prompt module 渲染。
@@ -1280,18 +1469,24 @@ tool_names: list[str]
 
 初始化时注册默认模块：
 
-| id | type | cache_scope | order | 内容 |
-| --- | --- | --- | --- | --- |
-| `system.identity` | system | global | 10 | Lora 身份和回答语言 |
-| `system.tool_policy` | system | global | 20 | 工具调用和 prompt injection 提醒 |
-| `runtime.boundary_note` | runtime | turn | 100 | UTC 时间、workspace、session、turn |
-| `project.file_status` | project | session | 110 | 文件读取状态 |
-| `tool.available` | tool | turn | 120 | 当前工具名 |
-| `memory.recent_projection` | memory | turn | 130 | 最近历史摘要 |
+| id | phase | type | cache_scope | order | 内容 |
+| --- | --- | --- | --- | --- | --- |
+| `system.identity` | static | system | session | 10 | Lora 身份和回答语言 |
+| `system.tool_policy` | static | policy | session | 20 | 工具调用策略 |
+| `system.injection_guard` | static | policy | session | 30 | 非可信内容和 prompt injection 防护 |
+| `system.coding_rules` | static | system | session | 40 | 编码工作规则 |
+| `system.output_style` | static | system | session | 50 | 输出风格 |
+| `runtime.env_info` | dynamic | runtime | turn | 100 | UTC 时间、workspace、session、turn、request |
+| `project.file_status` | dynamic | project | request | 110 | 文件读取状态 |
+| `tool.available` | dynamic | tool | turn | 120 | 当前工具名 |
+| `memory.recent_projection` | dynamic | memory | turn | 130 | 最近历史摘要 |
+| `runtime.tool_result_reminders` | dynamic | runtime | request | 140 | 工具结果处理提醒 |
+| `runtime.token_budget` | dynamic | runtime | request | 150 | 上下文预算提醒 |
 
 方法：
 
-- `resolve()`：按 `order` 排序返回模块列表。
+- `resolve()`：可按 `phase/include/exclude/enabled` 过滤模块，并按 `order`、`id` 排序返回。
+- `register()` / `replace()` / `upsert()`：注册、替换或插入 prompt module，供示例和后续扩展使用。
 
 ### 12.4 `PromptComposer`
 
@@ -1305,19 +1500,29 @@ composer = PromptComposer(registry=None)
 
 行为：
 
-- 从 registry 获取模块。
-- `cache_scope == "global"` 的模块先渲染。
-- 如果存在动态模块，插入边界常量 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`。
-- 再渲染非 global 模块。
-- 返回 prompt 文本和 rendered module 元数据。
+- 调用 `compose_static()` 渲染 static 模块。
+- 调用 `compose_dynamic()` 渲染 dynamic 模块。
+- 如果存在 dynamic prompt，插入边界常量 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`。
+- 返回最终 prompt 文本和 rendered module 元数据。
+
+#### `compose_static(ctx)` / `compose_dynamic(ctx, module_ids=None)`
+
+- `compose_static()` 只渲染 `phase == "static"` 的模块。
+- `compose_dynamic()` 只渲染 `phase == "dynamic"` 的模块，可按 `module_ids` 精确选择。
+- 两者都会为 module metadata 记录 input hash、content hash 和 render time。
 
 module metadata 包含：
 
 ```python
 id
+phase
 type
+order
 cache_scope
 version_hash
+input_hash
+content_hash
+rendered_at
 ```
 
 ### 12.5 `AgentContextManager`
@@ -1335,6 +1540,8 @@ manager = AgentContextManager(session_dir=..., workspace_root=..., store=...)
 - `store`
 - `file_state = FileStateTracker(session_dir / "state")`
 - `prompt_composer = PromptComposer()`
+- `static_prompt_cache = StaticPromptSessionCache(session_dir, prompt_composer)`
+- `injection_policy = PromptInjectionPolicy()`
 
 #### `projection(history, limit=8) -> dict`
 
@@ -1353,20 +1560,54 @@ manager = AgentContextManager(session_dir=..., workspace_root=..., store=...)
 
 ```text
 compose_prompt
+  -> build_model_request_prompt
+  -> return prompt.text
+```
+
+`build_model_request_prompt(...)` 是模型请求前的主入口：
+
+```text
+build_model_request_prompt
   -> AgentContextManager.projection
   -> if store exists: append context.projection_created
   -> PromptRenderContext
-  -> PromptComposer.compose
+  -> StaticPromptSessionCache.get_or_create
+  -> PromptComposer.resolve_dynamic_modules
+  -> PromptInjectionPolicy.decide
+  -> PromptComposer.compose_dynamic
+  -> join static prompt, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, dynamic prompt
   -> if store exists: append prompt.rendered
-  -> return prompt
+  -> return ModelRequestPrompt
 ```
 
 `prompt.rendered` payload 包含：
 
 - `module_ids`
+- `static_module_ids`
+- `dynamic_module_ids`
 - `modules`
 - `prompt_hash`
+- `static_prompt_hash`
+- `dynamic_prompt_hash`
+- `static_prompt_created`
+- `injection_decision`
 - `dynamic_inputs`
+
+`StaticPromptSessionCache` 会把 session 级 static prompt 写入：
+
+```text
+.lora/sessions/{session_id}/context/prompts/static_prompt.txt
+.lora/sessions/{session_id}/context/prompts/static_prompt.json
+```
+
+`EventStore` 收到 `prompt.rendered` 事件时，会把本次模型请求的完整 rendered prompt 文本写入 run 目录和 session 目录：
+
+```text
+{run_dir}/rendered_prompts/{turn_id}.txt
+{run_dir}/rendered_prompts/{turn_id}.json
+.lora/sessions/{session_id}/context/rendered_prompts/{case_run_id}/{turn_id}.txt
+.lora/sessions/{session_id}/context/rendered_prompts/{case_run_id}/{turn_id}.json
+```
 
 #### `file_status() -> list[dict]`
 
@@ -1376,39 +1617,27 @@ compose_prompt
 {"path": ..., "status": "read" | "deleted", "content_hash": ...}
 ```
 
-### 12.6 内置工具
+### 12.6 默认工具注册
 
-#### `ListFilesTool`
+当前 `LoraAgent` 不再内置 `list_files/read_text_file/add_numbers` 三个自定义工具，而是从 `pygent.toolkits` 加载工具集，并只注册白名单工具：
 
-继承 `pygent.module.tool.BaseTool`。
+- `bash`
+- `read`
+- `write`
+- `edit`
+- `glob`
+- `grep`
 
-方法：
+实现位置：
 
-- `forward(relative_path=".") -> dict`：
-  - 解析 workspace 内安全路径。
-  - 路径不存在抛 `FileNotFoundError`。
-  - 非目录抛 `NotADirectoryError`。
-  - 返回 `{path, entries}`。
-- `_safe_path(relative_path) -> Path`：
-  - 确保目标不逃逸 `workspace_root`。
+- `DEFAULT_PYGENT_TOOL_NAMES` 定义白名单。
+- `_register_default_tools()` 创建 `FileToolkits(session_id, workspace_root)` 和 `BashToolkits(session_id, workspace_root)`。
+- 从 toolkit 的 `get_all_tools()` 中按名称取出白名单工具，并通过 `_register_tool()` 同时注册到 `ToolManager` 和本地 `_tools` dict。
 
-#### `ReadTextFileTool`
+注意：
 
-方法：
-
-- `forward(relative_path, offset=None, limit=None) -> dict`：
-  - 解析安全路径。
-  - 调用 `AgentContextManager.file_state.read_text_file`。
-  - 使用 `dedup_level="contained"`。
-  - 传入 event store 和 turn id。
-- `_safe_path(relative_path) -> Path`：
-  - 同样限制 workspace 内。
-
-#### `AddNumbersTool`
-
-方法：
-
-- `forward(a, b) -> float`：返回 `a + b`。
+- 这些工具调用会通过 `ToolInterceptor.call_tool` 记录 `tool.call` 和 `tool.result`。
+- `tools.py` 中仍保留 `FileStateTracker.read_text_file()`，用于文件读取去重和 `file.read` 事件记录；但当前默认 `LoraAgent` 使用 pygent 的 `read/write/edit` 工具，文件工具不会自动转成 `file.read/file.write/file.edit` 事件。
 
 ### 12.7 `LoraAgent`
 
@@ -1431,6 +1660,7 @@ agent = LoraAgent(config)
 - 确定 base URL：`DEEPSEEK_BASE_URL` 或 `https://api.deepseek.com`。
 - 如果有 API key，创建 `AsyncRequestsClient`；否则 `llm=None`。
 - 初始化工具管理器。
+- 当前默认工具来自 `pygent.toolkits.FileToolkits` 和 `pygent.toolkits.BashToolkits`，注册白名单为 `bash/read/write/edit/glob/grep`。
 
 Agent 管理扩展落地后的目标职责：
 
@@ -1448,10 +1678,13 @@ Agent 管理扩展落地后的目标职责：
 - 根据 run 目录向上查找 session 目录。
 - 创建 `AgentContextManager`。
 - 重建 `ToolManager` 和 `_tools`。
-- 注册：
-  - `list_files`
-  - `read_text_file`
-  - `add_numbers`
+- 调用 `_register_default_tools()`，注册 pygent 工具白名单：
+  - `bash`
+  - `read`
+  - `write`
+  - `edit`
+  - `glob`
+  - `grep`
 
 #### `tools_param() -> list[dict]`
 
@@ -1461,7 +1694,7 @@ Agent 管理扩展落地后的目标职责：
 {"type": "function", "function": function}
 ```
 
-#### `stream(context, max_steps=8) -> AsyncIterator[dict]`
+#### `stream(context, max_steps=-1) -> AsyncIterator[dict]`
 
 调用链：
 
@@ -1709,7 +1942,7 @@ $env:PYTHONPATH = "src"
 
 ```python
 class MyAgent:
-    async def stream(self, context: RuntimeContext, max_steps: int = 8):
+    async def stream(self, context: RuntimeContext, max_steps: int = -1):
         yield {"role": "assistant", "content": "..."}
 ```
 
@@ -1746,12 +1979,12 @@ def start_run(self, case_run_ref: CaseRunRef, turn_id: str | None) -> None:
 | 区域 | 当前状态 | 后续建议 |
 | --- | --- | --- |
 | YAML 解析 | 自研子集 | case 复杂后引入 PyYAML 或 ruamel.yaml |
-| `PromptModule.version_hash` | 使用 Python `hash` | 改为稳定 hash |
+| `PromptModule.version_hash` | 已使用基于 SHA-256 的稳定 hash | 如需更强一致性，可把 render 函数版本也显式纳入 hash |
 | 文件路径安全 | Agent 工具限制 workspace，Case fixture 解析未强制限制绝对路径 | 对 case setup 加路径逃逸检查 |
 | regression | CLI 仅返回 skipped | 后续实现 manifest 和执行器 |
 | analysis | 规则化 root cause | 后续抽出独立 `FailureAnalyzer` |
 | repair | 未实现 | 后续增加 plan/apply/gate |
-| prompt 落盘 | 只记录 prompt hash 和 module 元数据 | 如需 debug，可保存 rendered prompt 文本 |
+| prompt 落盘 | 已保存 session static prompt 和每次请求的 rendered prompt 文本/元数据 | 后续可增加保留策略和敏感信息过滤 |
 | agent 管理 | 当前只有默认 `LoraAgent` 和 DeepSeek 环境变量 | 增加 agent alias、profile 解析、模型请求配置和密钥脱敏 |
 
 ## 18. 推荐扩展路线
