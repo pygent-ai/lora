@@ -10,6 +10,7 @@ from html import escape
 from pathlib import Path
 from typing import Any, Callable
 
+from .io import plain_data
 from .schema import AgentSession, CaseDefinition, CaseRunRef, CaseRunResult, RunConfig
 from .session import SessionManager
 from .trace import EventStore
@@ -626,7 +627,7 @@ def _canonical_tool_content(content: str) -> str:
 def _message_payload(message: Any) -> dict[str, Any] | None:
     if not hasattr(message, "to_dict"):
         return None
-    payload = _plain_data(message.to_dict())
+    payload = plain_data(message.to_dict())
     return payload if isinstance(payload, dict) else None
 
 
@@ -646,16 +647,6 @@ def _actor_for_role(role: str) -> str:
 
 def _value(value: Any) -> Any:
     return getattr(value, "data", value)
-
-
-def _plain_data(value: Any) -> Any:
-    if hasattr(value, "data") and not isinstance(value, type):
-        return _plain_data(value.data)
-    if isinstance(value, dict):
-        return {key: _plain_data(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_plain_data(item) for item in value]
-    return value
 
 
 def _stringify(value: Any) -> str:

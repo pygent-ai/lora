@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
+from .io import file_snapshot, write_json
 from .schema import CaseDefinition, CaseRunRef, EvaluationResult
 from .trace import EventStore
 
@@ -85,8 +85,8 @@ class Evaluator:
             "failures": failures,
             "errors": [event.payload for event in errors],
         }
-        _write_json(run_dir / "metrics.json", metrics)
-        _write_json(run_dir / "verdict.json", verdict)
+        write_json(run_dir / "metrics.json", metrics)
+        write_json(run_dir / "verdict.json", verdict)
         return EvaluationResult(status=status, metrics=metrics, verdict=verdict)
 
 
@@ -122,7 +122,7 @@ def _file_failures(case: CaseDefinition, run_dir: Path) -> list[dict[str, Any]]:
     workspace_root = Path(workspace_root_value or ".").expanduser().resolve()
     failures: list[dict[str, Any]] = []
     for raw_path in case.expect.get("files", {}).get("unchanged", []) or []:
-        current = _file_snapshot((workspace_root / str(raw_path)).resolve())
+        current = file_snapshot((workspace_root / str(raw_path)).resolve())
         expected = baseline.get(str(raw_path))
         if expected is not None and current != expected:
             failures.append(
@@ -135,15 +135,3 @@ def _file_failures(case: CaseDefinition, run_dir: Path) -> list[dict[str, Any]]:
                 }
             )
     return failures
-
-
-def _file_snapshot(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"exists": False, "content_hash": None, "size": None}
-    data = path.read_bytes()
-    return {"exists": True, "content_hash": hashlib.sha256(data).hexdigest(), "size": len(data)}
-
-
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

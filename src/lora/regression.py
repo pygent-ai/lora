@@ -9,6 +9,7 @@ from typing import Any, Literal
 from .case import CaseManager
 from .config import load_mapping_file
 from .evaluation import Evaluator
+from .io import append_jsonl, write_json
 from .runner import execute_case_run
 from .runtime import AgentRuntimeAdapter
 from .schema import CaseRunRef, RunConfig
@@ -113,7 +114,7 @@ class RegressionRunner:
             "manifest": manifest.to_dict(),
             "run_config": self.config.to_dict(),
         }
-        _write_json(run_dir / "regression_config.json", config_payload)
+        write_json(run_dir / "regression_config.json", config_payload)
         store.append(
             "regression.started",
             actor="system",
@@ -127,7 +128,7 @@ class RegressionRunner:
             for index, case_spec in enumerate(manifest.cases):
                 case_result = self._run_case(case_spec, manifest_path=Path(manifest_path), index=index)
                 case_results.append(case_result)
-                _append_jsonl(run_dir / "case_runs.jsonl", case_result)
+                append_jsonl(run_dir / "case_runs.jsonl", case_result)
                 status = _combined_status(case_results)
                 if manifest.fail_fast and case_result["status"] in {"failed", "error"}:
                     break
@@ -140,7 +141,7 @@ class RegressionRunner:
                 total=len(manifest.cases),
                 cases=case_results,
             )
-            _write_json(run_dir / "result.json", result)
+            write_json(run_dir / "result.json", result)
             store.append(
                 "regression.finished",
                 actor="system",
@@ -185,9 +186,9 @@ class RegressionRunner:
         )
         verdict = {"status": "error", "failures": [], "errors": [{"error": str(exc), "error_type": type(exc).__name__}]}
         metrics = {"event_count": len(store.list_by_run()), "message_count": 0, "tool_call_count": 0, "turn_count": 1}
-        _write_json(Path(ref.run_dir) / "metrics.json", metrics)
-        _write_json(Path(ref.run_dir) / "verdict.json", verdict)
-        _write_json(
+        write_json(Path(ref.run_dir) / "metrics.json", metrics)
+        write_json(Path(ref.run_dir) / "verdict.json", verdict)
+        write_json(
             Path(ref.run_dir) / "result.json",
             {
                 **ref.to_dict(),
@@ -283,14 +284,3 @@ def _result_payload(
         **counts,
         "cases": cases,
     }
-
-
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(data, ensure_ascii=False, sort_keys=True) + "\n")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
@@ -9,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal, Sequence
 
 from .case import CaseManager
+from .io import read_json, write_json
 from .regression import RegressionRunner
 from .schema import CaseRunRef, RunConfig
 from .session import SessionManager
@@ -98,7 +98,7 @@ class RepairWorkflow:
             gate=_gate_config(self.workspace_root, self.lora_root),
         )
         plan.plan_path = str(repair_dir / "repair_plan.json")
-        _write_json(repair_dir / "repair_plan.json", plan.to_dict())
+        write_json(repair_dir / "repair_plan.json", plan.to_dict())
         EventStore(ref).append(
             "repair.started",
             actor="system",
@@ -136,7 +136,7 @@ class RepairWorkflow:
             "diff_exit_code": diff["exit_code"],
             "diff_stderr": _summarize(diff["stderr"]),
         }
-        _write_json(attempt_dir / "metadata.json", metadata)
+        write_json(attempt_dir / "metadata.json", metadata)
         EventStore(ref).append(
             "repair.patch_created",
             actor="system",
@@ -186,7 +186,7 @@ class RepairWorkflow:
             "commands": results,
             "created_at": datetime.now().astimezone().isoformat(),
         }
-        _write_json(attempt_dir / "gate_result.json", gate_result)
+        write_json(attempt_dir / "gate_result.json", gate_result)
         EventStore(ref).append(
             "repair.finished",
             actor="system",
@@ -201,18 +201,7 @@ class RepairWorkflow:
         return gate_result
 
     def find_case_run(self, session_id: str, case_run_id: str) -> CaseRunRef:
-        session_dir = Path(self.session_manager.show(session_id)["session"]["session_dir"])
-        matches = list((session_dir / "cases").glob(f"*/runs/{case_run_id}"))
-        if not matches:
-            raise FileNotFoundError(f"Case run {case_run_id!r} does not exist under session {session_id!r}")
-        run_dir = matches[0]
-        metadata = _read_json(run_dir / "run_metadata.json")
-        return CaseRunRef(
-            session_id=session_id,
-            case_id=metadata["case_id"],
-            case_run_id=case_run_id,
-            run_dir=str(run_dir),
-        )
+        return self.session_manager.find_case_run(session_id, case_run_id)
 
     def find_attempt_dir(self, attempt_id: str) -> Path:
         matches = list((self.lora_root / "sessions").glob(f"*/repairs/*/attempts/{attempt_id}"))
@@ -378,12 +367,4 @@ def _summarize(text: str, limit: int = 4000) -> str:
 
 
 def _read_json(path: str | Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
-    json_path = Path(path)
-    if default is not None and not json_path.exists():
-        return dict(default)
-    return json.loads(json_path.read_text(encoding="utf-8"))
-
-
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return read_json(path, default=default)

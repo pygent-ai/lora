@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import uuid
 from copy import deepcopy
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .io import append_jsonl, utc_now, write_json
 from .redaction import redact_secrets
 from .schema import CaseRunRef, ContextEvent
 
@@ -140,25 +140,25 @@ class EventStore:
         if persisted_source.type == "prompt.rendered":
             self._persist_rendered_prompt(persisted_source)
         persisted_event = redact_secrets(persisted_source.to_dict())
-        self._append_jsonl(self.events_path, persisted_event)
+        append_jsonl(self.events_path, persisted_event)
         if event.type.startswith("conversation."):
             record = redact_secrets(_message_record(event))
-            self._append_jsonl(
+            append_jsonl(
                 self.messages_path,
                 record,
             )
             self._append_session_history(record)
         elif event.type == "tool.call":
             record = redact_secrets(_tool_call_record(event))
-            self._append_jsonl(self.tool_calls_path, record)
+            append_jsonl(self.tool_calls_path, record)
             self._append_session_log("tool_calls.jsonl", record)
         elif event.type == "tool.result":
             record = redact_secrets(_tool_result_record(event))
-            self._append_jsonl(self.tool_results_path, record)
+            append_jsonl(self.tool_results_path, record)
             self._append_session_log("tool_results.jsonl", record)
         elif event.type.startswith("file."):
             record = redact_secrets(_file_event_record(event))
-            self._append_jsonl(self.file_events_path, record)
+            append_jsonl(self.file_events_path, record)
             self._append_session_log("file_events.jsonl", record)
 
     def _append_session_history(self, record: dict[str, Any]) -> None:
@@ -166,12 +166,12 @@ class EventStore:
             return
         path = self.session_dir / "context" / "history.jsonl"
         row = {"seq": _next_jsonl_seq(path), **record}
-        self._append_jsonl(path, row)
+        append_jsonl(path, row)
 
     def _append_session_log(self, name: str, record: dict[str, Any]) -> None:
         if self.session_dir is None:
             return
-        self._append_jsonl(self.session_dir / "logs" / name, record)
+        append_jsonl(self.session_dir / "logs" / name, record)
 
     def _persist_rendered_prompt(self, event: ContextEvent) -> None:
         prompt = event.payload.pop("prompt", None)
@@ -200,7 +200,7 @@ class EventStore:
             "dynamic_inputs": event.payload.get("dynamic_inputs", {}),
         }
         _write_text(run_text_path, persisted_prompt)
-        _write_json(run_metadata_path, prompt_metadata)
+        write_json(run_metadata_path, prompt_metadata)
         event.payload["prompt_text_path"] = str(run_text_path)
         event.payload["prompt_metadata_path"] = str(run_metadata_path)
 
@@ -210,8 +210,8 @@ class EventStore:
         session_text_path = session_prompt_dir / f"{prompt_file_name}.txt"
         session_metadata_path = session_prompt_dir / f"{prompt_file_name}.json"
         _write_text(session_text_path, persisted_prompt)
-        _write_json(session_metadata_path, prompt_metadata)
-        self._append_jsonl(
+        write_json(session_metadata_path, prompt_metadata)
+        append_jsonl(
             self.session_dir / "logs" / "rendered_prompts.jsonl",
             {
                 **prompt_metadata,
@@ -242,7 +242,7 @@ class EventStore:
             case_run_id=self.case_run_ref.case_run_id,
             turn_id=turn_id,
             type=event,
-            timestamp=_now(),
+            timestamp=utc_now(),
             actor=actor,  # type: ignore[arg-type]
             payload=payload or {},
         )
@@ -260,13 +260,6 @@ class EventStore:
     def _validate_event_type(event_type: str) -> None:
         if event_type not in LORA_EVENT_TYPES:
             raise ValueError(f"Unsupported event type: {event_type}")
-
-    @staticmethod
-    def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(data, ensure_ascii=False, sort_keys=True) + "\n")
-
 
 def _tool_call_record(event: ContextEvent) -> dict[str, Any]:
     return {
@@ -327,10 +320,6 @@ def _file_event_record(event: ContextEvent) -> dict[str, Any]:
     }
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _find_session_dir(run_dir: Path) -> Path | None:
     for parent in [run_dir, *run_dir.parents]:
         if (parent / "session.json").exists():
@@ -356,8 +345,3 @@ def _next_jsonl_seq(path: Path) -> int:
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-
-
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

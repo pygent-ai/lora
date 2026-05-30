@@ -19,6 +19,7 @@ from pygent.message import BaseMessage, ToolMessage
 from pygent.module.tool import BaseTool, ToolManager
 from pygent.toolkits import BashToolkits, FileToolkits
 
+from .io import load_env_file, plain_data
 from .runtime import RuntimeContext
 from .schema import BashCliPreset, CaseRunRef, ResolvedAgentConfig, RunConfig
 from .tools import FileStateTracker, ToolContext, ToolInterceptor
@@ -26,6 +27,7 @@ from .trace import EventStore
 
 SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
 DEFAULT_PYGENT_TOOL_NAMES = ("bash", "read", "write", "edit", "glob", "grep")
+MAX_EMPTY_TOOL_FOLLOWUP_RETRIES = 5
 
 
 def _always_enabled(ctx: "PromptRenderContext") -> bool:
@@ -694,7 +696,7 @@ class LoraAgent(BaseAgent):
         )
         self.prompt_registry = prompt_registry
         self.workspace_root = Path(config.workspace_root)
-        _load_env_file(self.workspace_root / ".env")
+        load_env_file(self.workspace_root / ".env")
         self.api_key = self.resolved_agent.api_key
         self.model_name = self.resolved_agent.model_name
         self.base_url = self.resolved_agent.base_url or "https://api.deepseek.com"
@@ -771,6 +773,8 @@ class LoraAgent(BaseAgent):
         )
         tool_context = ToolContext(case_run_ref=self.case_run_ref, turn_id=self.turn_id)
         step_count = 0
+        awaiting_tool_followup = False
+        empty_tool_followup_retries = 0
         while max_steps == -1 or step_count < max_steps:
             step_count += 1
             model_prompt = self.context_manager.build_model_request_prompt(
@@ -780,6 +784,7 @@ class LoraAgent(BaseAgent):
             )
             _set_pygent_system_prompt(pygent_context, model_prompt.static_text)
             assistant_parts: list[str] = []
+            history_len_before_request = _pygent_history_len(pygent_context)
             async for chunk in self.llm.stream_forward(pygent_context, tools=self.tools_param()):
                 content = _message_content(chunk)
                 if content:
@@ -794,6 +799,18 @@ class LoraAgent(BaseAgent):
             assistant_message = pygent_context.last_message
             assistant_text = "".join(assistant_parts)
             tool_calls = list(_message_tool_calls(assistant_message))
+            if awaiting_tool_followup and not assistant_text and not tool_calls:
+                _truncate_pygent_history(pygent_context, history_len_before_request)
+                if empty_tool_followup_retries >= MAX_EMPTY_TOOL_FOLLOWUP_RETRIES:
+                    raise RuntimeError(
+                        "empty assistant response after tool result "
+                        f"after {MAX_EMPTY_TOOL_FOLLOWUP_RETRIES} retries"
+                    )
+                empty_tool_followup_retries += 1
+                continue
+
+            awaiting_tool_followup = False
+            empty_tool_followup_retries = 0
             if assistant_text or tool_calls:
                 payload = _assistant_message_payload(assistant_message, fallback_content=assistant_text)
                 payload["type"] = "conversation.assistant_message"
@@ -807,6 +824,7 @@ class LoraAgent(BaseAgent):
             if not tool_calls:
                 return
 
+            awaiting_tool_followup = True
             for tool_call in tool_calls:
                 name = tool_call.tool_name.data
                 kwargs = dict(tool_call.arguments.data)
@@ -1099,9 +1117,9 @@ def _message_tool_calls(message: Any) -> Iterable[Any]:
 
 def _assistant_message_payload(message: Any, fallback_content: str = "") -> dict[str, Any]:
     if hasattr(message, "to_dict"):
-        payload = _plain_data(message.to_dict())
+        payload = plain_data(message.to_dict())
     elif isinstance(message, dict):
-        payload = _plain_data(message)
+        payload = plain_data(message)
     else:
         payload = {"content": _message_content(message)}
 
@@ -1112,7 +1130,7 @@ def _assistant_message_payload(message: Any, fallback_content: str = "") -> dict
     payload["content"] = str(payload.get("content") or fallback_content or "")
     if "tool_calls" not in payload:
         tool_calls = [
-            _plain_data(tool_call.to_dict() if hasattr(tool_call, "to_dict") else tool_call)
+            plain_data(tool_call.to_dict() if hasattr(tool_call, "to_dict") else tool_call)
             for tool_call in _message_tool_calls(message)
         ]
         if tool_calls:
@@ -1123,16 +1141,6 @@ def _assistant_message_payload(message: Any, fallback_content: str = "") -> dict
 def _message_content(message: Any) -> str:
     content = getattr(message, "content", "")
     return getattr(content, "data", content) or ""
-
-
-def _plain_data(value: Any) -> Any:
-    if hasattr(value, "data") and not isinstance(value, type):
-        return _plain_data(value.data)
-    if isinstance(value, dict):
-        return {key: _plain_data(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_plain_data(item) for item in value]
-    return value
 
 
 def _prompt_render_context_payload(ctx: PromptRenderContext) -> dict[str, Any]:
@@ -1318,6 +1326,16 @@ def _set_pygent_system_prompt(context: BaseContext, system_prompt: str) -> None:
         context.history.data[0].content = system_prompt
 
 
+def _pygent_history_len(context: BaseContext) -> int:
+    return len(getattr(context.history, "data", []))
+
+
+def _truncate_pygent_history(context: BaseContext, length: int) -> None:
+    history = getattr(context.history, "data", None)
+    if history is not None:
+        del history[length:]
+
+
 def _latest_user_input_hash(history: list[dict[str, Any]]) -> str | None:
     for message in reversed(history):
         if message.get("role") == "user":
@@ -1372,17 +1390,6 @@ def _write_text_atomic(path: Path, text: str) -> None:
 
 def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     _write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-
-
-def _load_env_file(path: Path) -> None:
-    if not path.exists():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def _session_dir_for_run(run_dir: Path) -> Path:

@@ -129,6 +129,36 @@ class RepeatedToolCallingLLM:
         context.add_message(AssistantMessage(content="done"))
 
 
+class EmptyAfterToolThenAnswerLLM:
+    def __init__(self, empty_followups: int) -> None:
+        self.empty_followups = empty_followups
+        self.request_messages: list[list[dict[str, Any]]] = []
+
+    async def stream_forward(self, context: Any, **kwargs: Any) -> AsyncIterator[AssistantMessageChunk]:
+        self.request_messages.append([message.to_dict() for message in context.history.data])
+        if len(self.request_messages) == 1:
+            context.add_message(
+                AssistantMessage(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            tool_call_id="call_add",
+                            tool_name="add_numbers",
+                            arguments={"a": 1, "b": 2},
+                        )
+                    ],
+                )
+            )
+            return
+
+        if len(self.request_messages) <= self.empty_followups + 1:
+            context.add_message(AssistantMessage(content=""))
+            return
+
+        yield AssistantMessageChunk(content="recovered")
+        context.add_message(AssistantMessage(content="recovered"))
+
+
 class BashThenAnswerLLM:
     def __init__(self) -> None:
         self.request_count = 0
@@ -486,6 +516,58 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 [item["role"] for item in loaded.history],
                 ["user", "assistant", "tool", "assistant", "tool", "assistant"],
             )
+
+    def test_lora_agent_retries_empty_followup_after_tool_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", max_steps=-1)
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            llm = EmptyAfterToolThenAnswerLLM(empty_followups=5)
+            agent = ToolEnabledLoraAgent(config)
+            agent.llm = llm
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="use a tool",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            loaded = manager.load(ref.session_id)
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["final_answer"], "recovered")
+            self.assertEqual(len(llm.request_messages), 7)
+            self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant", "tool", "assistant"])
+
+    def test_lora_agent_errors_after_empty_followup_retry_budget_is_exhausted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", max_steps=-1)
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            llm = EmptyAfterToolThenAnswerLLM(empty_followups=6)
+            agent = ToolEnabledLoraAgent(config)
+            agent.llm = llm
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="use a tool",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            loaded = manager.load(ref.session_id)
+            self.assertEqual(result["status"], "error")
+            self.assertIn("empty assistant response after tool result", result["error"] or "")
+            self.assertEqual(len(llm.request_messages), 7)
+            self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant", "tool"])
 
     def test_runtime_preserves_direct_pygent_message_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -432,20 +432,7 @@ def _repair_workflow(args: argparse.Namespace) -> RepairWorkflow:
 
 
 def _find_case_run(manager: SessionManager, session_id: str, case_run_id: str):
-    session_dir = Path(manager.show(session_id)["session"]["session_dir"])
-    matches = list((session_dir / "cases").glob(f"*/runs/{case_run_id}"))
-    if not matches:
-        raise FileNotFoundError(f"Case run {case_run_id!r} does not exist under session {session_id!r}")
-    run_dir = matches[0]
-    metadata = json.loads((run_dir / "run_metadata.json").read_text(encoding="utf-8"))
-    from .schema import CaseRunRef
-
-    return CaseRunRef(
-        session_id=session_id,
-        case_id=metadata["case_id"],
-        case_run_id=case_run_id,
-        run_dir=str(run_dir),
-    )
+    return manager.find_case_run(session_id, case_run_id)
 
 
 def _root_causes(verdict: dict[str, Any], events: list[Any]) -> list[dict[str, Any]]:

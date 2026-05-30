@@ -44,6 +44,16 @@ class SessionManagerTests(unittest.TestCase):
             self.assertEqual(metadata["status"], "passed")
             self.assertEqual(loaded.metadata["last_case_run_id"], run.case_run_id)
 
+    def test_find_case_run_returns_ref_from_run_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = SessionManager(RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora"))
+            session = manager.create("case-a")
+            run = manager.start_case_run(session.session_id, "case-a")
+
+            found = manager.find_case_run(session.session_id, run.case_run_id)
+
+            self.assertEqual(found, run)
+
     def test_save_redacts_secrets_from_session_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manager = SessionManager(RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora"))
