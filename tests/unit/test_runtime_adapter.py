@@ -223,6 +223,24 @@ class FakeBashLoraAgent(LoraAgent):
         self._tools["bash"] = FakeBashTool()
 
 
+class ToolSchemaTests(unittest.TestCase):
+    def test_default_bash_tool_schema_rejects_extra_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora")
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            agent = LoraAgent(
+                config,
+                resolved_agent=ResolvedAgentConfig(alias="default", model_name="test-model", api_key=None),
+            )
+
+            agent.start_run(run, "turn-0001")
+            bash_tool = next(tool["function"] for tool in agent.tools_param() if tool["function"]["name"] == "bash")
+
+            self.assertEqual(bash_tool["parameters"].get("additionalProperties"), False)
+
+
 class AgentRuntimeAdapterTests(unittest.TestCase):
     def test_default_lora_agent_receives_resolved_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -661,6 +679,13 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 "Tools currently available for this request: bash, read, write, edit, glob, grep.",
                 rendered_prompt,
             )
+            self.assertIn("Workspace root:", rendered_prompt)
+            self.assertIn("Default excludes:", rendered_prompt)
+            self.assertIn(".venv", rendered_prompt)
+            self.assertIn(".lora", rendered_prompt)
+            self.assertIn("Use glob or grep before bash find/cat", rendered_prompt)
+            self.assertIn("Use read with offset/limit instead of dumping whole files", rendered_prompt)
+            self.assertIn("Use bash as a fallback for verification or composed shell commands", rendered_prompt)
             self.assertIn("runtime.system_reminder", prompt_event["payload"]["dynamic_module_ids"])
             self.assertIn("<system-reminder>", rendered_prompt)
             self.assertIn("当前系统时间为：", rendered_prompt)

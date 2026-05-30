@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import shlex
@@ -10,8 +11,14 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from .io import utc_now, write_json
+from .redaction import redact_secrets
 from .schema import CaseRunRef
 from .trace import EventStore
+
+MAX_BASH_RESULT_CHARS = 20_000
+MAX_BASH_RESULT_LINES = 200
+BASH_RESULT_PREVIEW_LINES = 120
+BASH_RESULT_PREVIEW_CHARS = 12_000
 
 FILE_UNCHANGED_STUB = (
     "File unchanged since last read. The content from the earlier read tool_result in this conversation "
@@ -553,6 +560,16 @@ class ToolInterceptor:
             payload={"tool_name": name, "args": args},
             turn_id=ctx.turn_id,
         )
+        argument_error = _unsupported_argument_error(name, args, tool)
+        if argument_error is not None:
+            payload = {
+                "tool_call_id": call_id,
+                "status": "error",
+                "error": argument_error,
+                "error_type": "ToolArgumentError",
+            }
+            self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
+            return ToolResult(status="error", error=argument_error, tool_call_id=call_id)
         before: dict[str, FileSnapshot] | None = None
         declared: list[FileEffect] = []
         if self.file_effect_tracker is not None:
@@ -582,6 +599,12 @@ class ToolInterceptor:
         status = "success"
         if isinstance(result, dict) and result.get("status") in {"stubbed", "partial"}:
             status = result["status"]
+        result = _spool_large_bash_result(
+            tool_name=name,
+            result=result,
+            tool_call_id=call_id,
+            run_dir=self.store.run_dir,
+        )
         self.store.append(
             "tool.result",
             actor="tool",
@@ -717,6 +740,65 @@ def _select_lines(content: str, read_range: ReadRange) -> str:
     lines = content.splitlines()
     end = len(lines) if read_range.end == "EOF" else int(read_range.end)
     return "\n".join(lines[read_range.start - 1 : end])
+
+
+def _unsupported_argument_error(name: str, args: dict[str, Any], tool: Callable[..., Any]) -> str | None:
+    try:
+        signature = inspect.signature(tool)
+    except (TypeError, ValueError):
+        return None
+    parameters = signature.parameters
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return None
+    allowed = {
+        parameter_name
+        for parameter_name, parameter in parameters.items()
+        if parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    }
+    unknown = sorted(set(args) - allowed)
+    if not unknown:
+        return None
+    allowed_text = ", ".join(sorted(allowed)) or "none"
+    unknown_text = ", ".join(unknown)
+    return f"Tool {name!r} received unsupported argument(s): {unknown_text}. Supported arguments: {allowed_text}."
+
+
+def _spool_large_bash_result(*, tool_name: str, result: Any, tool_call_id: str, run_dir: Path) -> Any:
+    if tool_name != "bash" or not isinstance(result, str):
+        return result
+    lines = result.splitlines()
+    if len(result) <= MAX_BASH_RESULT_CHARS and len(lines) <= MAX_BASH_RESULT_LINES:
+        return result
+
+    output_dir = run_dir / "tool_outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{tool_call_id}.txt"
+    spooled_text = redact_secrets(result)
+    output_path.write_text(spooled_text, encoding="utf-8")
+
+    preview = "\n".join(lines[:BASH_RESULT_PREVIEW_LINES])
+    if len(preview) > BASH_RESULT_PREVIEW_CHARS:
+        preview = preview[:BASH_RESULT_PREVIEW_CHARS].rstrip()
+
+    return {
+        "status": "truncated",
+        "truncated": True,
+        "reason": "bash output exceeded the model-visible result limit",
+        "char_count": len(result),
+        "line_count": len(lines),
+        "preview_line_count": len(preview.splitlines()),
+        "preview": preview,
+        "full_output_path": str(output_path.resolve()),
+        "next_step": (
+            "Full bash output was written to full_output_path. "
+            "Use the read tool with file_path=full_output_path and offset/limit "
+            "to inspect additional chunks only if needed."
+        ),
+    }
 
 
 def _end_value(value: int | Literal["EOF"]) -> int:

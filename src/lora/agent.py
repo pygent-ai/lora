@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import time
+from copy import deepcopy
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -735,7 +736,7 @@ class LoraAgent(BaseAgent):
 
     def tools_param(self) -> list[dict[str, Any]]:
         funcs = self.tool_manager.get_openai_functions()
-        return [{"type": "function", "function": function} for function in funcs]
+        return [{"type": "function", "function": _strict_openai_function(function)} for function in funcs]
 
     async def stream(self, context: RuntimeContext, max_steps: int = -1) -> AsyncIterator[dict[str, Any]]:
         if self.context_manager is None or self.case_run_ref is None:
@@ -1057,6 +1058,12 @@ def _render_available_tools_prompt(ctx: PromptRenderContext) -> str:
             "",
             f"Tools currently available for this request: {tools}.",
             "",
+            f"Workspace root: {ctx.workspace_root}",
+            'Default excludes: .git, .lora, .venv, .pytest_cache, .ruff_cache, __pycache__, sessions.',
+            "Use glob or grep before bash find/cat for file discovery and content search.",
+            "Use read with offset/limit instead of dumping whole files through bash cat.",
+            "Use Windows absolute paths for read/write/edit file_path values; use bash working_directory for shell commands rooted in the workspace.",
+            "Use bash as a fallback for verification or composed shell commands, especially when a narrower structured tool cannot do the job.",
             "Use tools to ground claims in the workspace. Pick the smallest tool call that can answer the question, and avoid unnecessary repeat reads when the session already contains current file content.",
         ]
     )
@@ -1113,6 +1120,14 @@ def _message_tool_calls(message: Any) -> Iterable[Any]:
     if tool_calls is None:
         return []
     return getattr(tool_calls, "data", tool_calls) or []
+
+
+def _strict_openai_function(function: dict[str, Any]) -> dict[str, Any]:
+    strict = deepcopy(function)
+    parameters = strict.get("parameters")
+    if isinstance(parameters, dict) and parameters.get("type") == "object":
+        parameters["additionalProperties"] = False
+    return strict
 
 
 def _assistant_message_payload(message: Any, fallback_content: str = "") -> dict[str, Any]:

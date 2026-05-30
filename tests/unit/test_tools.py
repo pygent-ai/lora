@@ -60,6 +60,49 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))), 2)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))), 2)
 
+    def test_tool_interceptor_reports_unknown_arguments_before_calling_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(EventStore(run))
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            called = False
+
+            def bash(command: str) -> str:
+                nonlocal called
+                called = True
+                return command
+
+            result = interceptor.call_tool("bash", {"raw_arguments": "{}"}, ctx, bash)
+
+            self.assertFalse(called)
+            self.assertEqual(result.status, "error")
+            self.assertIn("unsupported argument", result.error or "")
+            self.assertIn("raw_arguments", result.error or "")
+            self.assertIn("command", result.error or "")
+
+    def test_tool_interceptor_spools_large_bash_result_to_run_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(EventStore(run))
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            output = "\n".join(f"line-{index:04d}" for index in range(700))
+
+            result = interceptor.call_tool("bash", {"command": "generate lots"}, ctx, lambda command: output)
+
+            self.assertEqual(result.status, "success")
+            self.assertIsInstance(result.result, dict)
+            payload = result.result
+            self.assertTrue(payload["truncated"])
+            self.assertEqual(payload["line_count"], 700)
+            self.assertNotIn("line-0699", payload["preview"])
+            self.assertIn("read", payload["next_step"])
+            self.assertIn("offset", payload["next_step"])
+            output_path = Path(payload["full_output_path"])
+            self.assertTrue(output_path.exists())
+            self.assertEqual(output_path.read_text(encoding="utf-8"), output)
+            tool_result = next(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))
+            self.assertEqual(tool_result["result"]["full_output_path"], str(output_path))
+
     def test_tool_interceptor_allows_outside_read_effects_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"
