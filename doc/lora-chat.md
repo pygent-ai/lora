@@ -154,7 +154,7 @@ agents:
 - `glob`
 - `grep`
 
-如果配置了 `DEEPSEEK_API_KEY`，`LoraAgent` 会通过 DeepSeek 兼容接口进行流式模型调用；当模型实际调用已注册工具时，调用会通过 `ToolInterceptor` 记录。
+如果选中的 agent profile 解析到了可用 API key，`LoraAgent` 会通过 DeepSeek 兼容接口进行流式模型调用；当模型实际调用已注册工具时，调用会通过 `ToolInterceptor` 记录。API key 可以来自 `model_request.api_key_env`、`model_request.api_key` 或兼容的 `DEEPSEEK_API_KEY`。
 
 如果选中的 agent profile 没有可用 API key，它不会调用外部模型，而是返回包含 alias 的固定提示：
 

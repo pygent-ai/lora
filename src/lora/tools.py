@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import uuid
 from dataclasses import asdict, dataclass
@@ -452,7 +453,7 @@ class FileEffectTracker:
         return None
 
     def _resolve_workspace_path(self, path: str | Path) -> str:
-        candidate = Path(path).expanduser()
+        candidate = Path(_normalize_user_path(path)).expanduser()
         if not candidate.is_absolute():
             candidate = self.workspace_root / candidate
         resolved = candidate.resolve()
@@ -607,6 +608,31 @@ class ToolInterceptor:
 
 def _normalize(path: str | Path) -> str:
     return str(Path(path).expanduser().resolve())
+
+
+def _normalize_user_path(path: str | Path) -> str | Path:
+    if os.name != "nt" or not isinstance(path, str):
+        return path
+    value = path.replace("\\", "/")
+    parts = value.split("/")
+    drive: str | None = None
+    tail: list[str] = []
+    if len(parts) >= 2 and parts[0] == "" and len(parts[1]) == 1 and parts[1].isalpha():
+        drive = parts[1]
+        tail = parts[2:]
+    elif (
+        len(parts) >= 3
+        and parts[0] == ""
+        and parts[1].lower() in {"mnt", "cygdrive"}
+        and len(parts[2]) == 1
+        and parts[2].isalpha()
+    ):
+        drive = parts[2]
+        tail = parts[3:]
+    if drive is None:
+        return path
+    suffix = "/".join(part for part in tail if part)
+    return f"{drive.upper()}:/{suffix}" if suffix else f"{drive.upper()}:/"
 
 
 def _hash_file(path: Path) -> str:

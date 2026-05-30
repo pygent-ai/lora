@@ -239,6 +239,52 @@ class FileEffectTrackerSpecTests(unittest.TestCase):
             self.assertEqual(merged[0].path, str(path.resolve()))
             self.assertEqual(merged[0].detected_by, ["tool_args", "snapshot_diff"])
 
+    def test_file_effect_tracker_accepts_common_windows_path_styles_inside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            path = workspace / "nested" / "README.md"
+            path.parent.mkdir()
+            path.write_text("hello\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+
+            path_styles = [
+                "nested/README.md",
+                ".\\nested\\README.md",
+                str(path),
+                str(path).replace("\\", "/"),
+            ]
+            path_styles.extend(_windows_shell_path_styles(path))
+
+            for raw_path in path_styles:
+                with self.subTest(raw_path=raw_path):
+                    effects = tracker.declared_effects("read", {"path": raw_path}, tool_call_id="evt_tool")
+
+                    self.assertEqual(len(effects), 1)
+                    self.assertEqual(effects[0].path, str(path.resolve()))
+
+    def test_file_effect_tracker_accepts_windows_shell_style_paths_in_bash_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            path = workspace / "README.md"
+            path.write_text("hello\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            raw_paths = _windows_shell_path_styles(path)
+            if not raw_paths:
+                self.skipTest("drive-rooted shell path styles are Windows-specific")
+
+            for raw_path in raw_paths:
+                with self.subTest(raw_path=raw_path):
+                    effects = tracker.declared_effects("bash", {"command": f"cat {raw_path}"}, tool_call_id="evt_tool")
+
+                    self.assertEqual(len(effects), 1)
+                    self.assertEqual(effects[0].path, str(path.resolve()))
+
     def test_file_effect_tracker_ignores_runtime_and_dependency_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             FileEffectTracker = _file_effect_tracker_class()
@@ -267,6 +313,24 @@ class FileEffectTrackerSpecTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 tracker.declared_effects("write", {"file_path": str(outside), "content": "x"}, tool_call_id="evt_tool")
+
+    def test_file_effect_tracker_rejects_windows_shell_style_paths_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            outside = Path(tmp) / "outside.txt"
+            outside.write_text("x", encoding="utf-8")
+            raw_paths = _windows_shell_path_styles(outside)
+            if not raw_paths:
+                self.skipTest("drive-rooted shell path styles are Windows-specific")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+
+            for raw_path in raw_paths:
+                with self.subTest(raw_path=raw_path):
+                    with self.assertRaises(ValueError):
+                        tracker.declared_effects("read", {"path": raw_path}, tool_call_id="evt_tool")
 
     def test_file_effect_tracker_infers_bash_read_without_claiming_observed_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -313,6 +377,15 @@ def _file_effect_tracker_class():
         return tools.FileEffectTracker
     except AttributeError as exc:
         raise AssertionError("FileEffectTracker is not implemented yet") from exc
+
+
+def _windows_shell_path_styles(path: Path) -> list[str]:
+    resolved = path.resolve()
+    drive = resolved.drive.rstrip(":").lower()
+    if not drive:
+        return []
+    tail = "/".join(resolved.parts[1:])
+    return [f"/{drive}/{tail}", f"/mnt/{drive}/{tail}", f"/cygdrive/{drive}/{tail}"]
 
 
 if __name__ == "__main__":

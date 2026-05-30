@@ -129,6 +129,7 @@ raise SystemExit(main())
 | --- | --- |
 | `--workspace-root` | 指定 workspace，默认当前目录或 `LORA_WORKSPACE_ROOT` |
 | `--config` | 指定 `lora.yaml` |
+| `--agent` | 选择 `lora.yaml` 中的 agent profile alias |
 | `--model` | 覆盖模型配置 |
 | `--max-steps` | 覆盖 Agent 最大循环步数 |
 
@@ -257,6 +258,7 @@ def load_run_config(
     session_id: str | None = None,
     case_file: str | Path | None = None,
     model: str | None = None,
+    agent_alias: str | None = None,
     max_steps: int | None = None,
 ) -> RunConfig
 ```
@@ -267,7 +269,9 @@ def load_run_config(
 - 读取 `lora.yaml` 或指定 `config_file`。
 - 确定 `lora_root`：配置 `lora_root` 优先，其次 `LORA_ROOT`，默认 `.lora`。
 - 确定 `session_id`：参数优先，其次 `LORA_SESSION_ID`，最后配置 `session_id`。
-- 确定 `model`：参数优先，其次 `LORA_MODEL`，最后配置 `model` 或 `runtime.model`。
+- 确定 agent profile：`agent_alias` 参数优先，其次 `agent.default_alias`，最后内置 `default`。
+- 确定 `model`：参数优先，其次选中 profile 的 `model_request.model_name`，再兼容 `LORA_MODEL`、`DEEPSEEK_MODEL`、配置 `model` 或 `runtime.model`。
+- 确定 API key：`model_request.api_key_env` 指向的环境变量优先，其次 `model_request.api_key`，最后兼容 `DEEPSEEK_API_KEY`。原始 key 只保存在非持久化的 `ResolvedAgentConfig` 中。
 - 确定 `max_steps`：参数优先，其次 `LORA_MAX_STEPS`，然后配置 `max_steps` 或 `runtime.max_steps`，默认 `-1`，表示不按步数主动截断，直到模型不再请求工具。
 - 返回 `RunConfig`，由 schema 层做路径绝对化和合法性检查。
 
@@ -278,7 +282,7 @@ def load_run_config(
 
 ### 5.2 Agent 管理配置扩展
 
-当前实现只有默认 `LoraAgent`，模型配置也主要依赖 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和全局 `--model`。后续 agent 管理功能应把“选择哪个 agent”和“这个 agent 怎么发起模型请求”变成结构化配置。
+当前实现仍只有默认运行时 agent 类 `LoraAgent`，但已经支持通过 `--agent` 和 `lora.yaml` 中的 agent profile 选择模型请求配置。`load_run_config()` 会解析 `agent.default_alias`、`agents[].alias` 和 `agents[].model_request`，并把安全元数据落到 `RunConfig`。
 
 推荐 `lora.yaml` 结构：
 
@@ -373,13 +377,20 @@ session_id: str | None = None
 case_file: str | None = None
 model: str | None = None
 max_steps: int = -1
+agent_alias: str = "default"
+model_name: str | None = None
+api_key_source: str = "missing"
+base_url: str | None = None
+resolved_agent: ResolvedAgentConfig | None = None
+user_identity: str = "default"
+cli_bash_presets: list[BashCliPreset] = []
 ```
 
 方法：
 
 - `__post_init__`：规范化 `workspace_root`、`lora_root`、`case_file`；校验 `max_steps == -1` 或 `max_steps > 0`。
-- `to_dict()`：返回 `asdict(self)`。
-- `from_dict(data)`：用 dict 反序列化。
+- `to_dict()`：返回 `asdict(self)`，但会移除非持久化的 `resolved_agent`，避免原始 API key 落盘。
+- `from_dict(data)`：用 dict 反序列化，并忽略传入的 `resolved_agent`。
 
 使用位置：
 
@@ -1050,6 +1061,16 @@ read_text_file
 interceptor = ToolInterceptor(EventStore(case_run_ref))
 ```
 
+默认 `LoraAgent` 会使用带文件效果跟踪的形式：
+
+```python
+interceptor = ToolInterceptor(
+    EventStore(case_run_ref),
+    workspace_root=workspace_root,
+    track_file_effects=True,
+)
+```
+
 #### `call_tool(name, args, ctx, tool) -> ToolResult`
 
 调用链：
@@ -1057,7 +1078,9 @@ interceptor = ToolInterceptor(EventStore(case_run_ref))
 ```text
 call_tool
   -> EventStore.append("tool.call", actor="assistant")
+  -> if tracking: snapshot workspace and collect declared file effects
   -> tool(**args)
+  -> if tracking: snapshot workspace again, merge declared/observed file effects, append file.* events
   -> on exception: EventStore.append("tool.result", status="error")
   -> on success: infer status from result.status if stubbed/partial
   -> EventStore.append("tool.result", actor="tool")
@@ -1486,6 +1509,7 @@ request_type: str = "agent_turn"
 | `system.injection_guard` | static | policy | session | 30 | 非可信内容和 prompt injection 防护 |
 | `system.coding_rules` | static | system | session | 40 | 编码工作规则 |
 | `system.output_style` | static | system | session | 50 | 输出风格 |
+| `runtime.system_reminder` | dynamic | runtime | request | 95 | 首次 CLI 上下文和新 CLI 提醒 |
 | `runtime.env_info` | dynamic | runtime | turn | 100 | UTC 时间、workspace、session、turn、request |
 | `project.file_status` | dynamic | project | request | 110 | 文件读取状态 |
 | `tool.available` | dynamic | tool | turn | 120 | 当前工具名 |
@@ -1647,7 +1671,7 @@ build_model_request_prompt
 注意：
 
 - 这些工具调用会通过 `ToolInterceptor.call_tool` 记录 `tool.call` 和 `tool.result`。
-- `tools.py` 中仍保留 `FileStateTracker.read_text_file()`，用于文件读取去重和 `file.read` 事件记录；但当前默认 `LoraAgent` 使用 pygent 的 `read/write/edit` 工具，文件工具不会自动转成 `file.read/file.write/file.edit` 事件。
+- `tools.py` 中仍保留 `FileStateTracker.read_text_file()`，用于文件读取去重和 `file.read` 事件记录。默认 `LoraAgent` 的真实工具调用路径会启用 `ToolInterceptor(..., track_file_effects=True)`，因此 pygent 的 `read/write/edit` 工具参数会声明 `file.read/file.write/file.edit`，并与 workspace snapshot diff 合并后写入 `file_events.jsonl`。
 
 ### 12.7 `LoraAgent`
 
@@ -1661,18 +1685,20 @@ agent = LoraAgent(config)
 
 - 保存 `RunConfig`。
 - 加载 workspace `.env`。
-- 读取 `DEEPSEEK_API_KEY`。agent 管理扩展落地后，应改为读取已解析的 agent profile，不直接绑定单一环境变量名。
+- 读取已解析的 `ResolvedAgentConfig`，并从中取得非持久化 API key；没有传入解析结果时才兼容 `DEEPSEEK_API_KEY`。
 - 确定模型：
-  - `config.model`
+  - CLI `--model` 覆盖
   - 选中 agent 的 `model_request.model_name`
+  - `LORA_MODEL`
   - `DEEPSEEK_MODEL`
+  - 配置 `model` 或 `runtime.model`
   - 默认 `deepseek-v4-flash`
-- 确定 base URL：`DEEPSEEK_BASE_URL` 或 `https://api.deepseek.com`。
+- 确定 base URL：选中 agent 的 `model_request.base_url`、`DEEPSEEK_BASE_URL` 或 `https://api.deepseek.com`。
 - 如果有 API key，创建 `AsyncRequestsClient`；否则 `llm=None`。
 - 初始化工具管理器。
 - 当前默认工具来自 `pygent.toolkits.FileToolkits` 和 `pygent.toolkits.BashToolkits`，注册白名单为 `bash/read/write/edit/glob/grep`。
 
-Agent 管理扩展落地后的目标职责：
+已落地的 agent profile 行为：
 
 - 根据 `agent_alias` 选择 agent profile。
 - 将 `model_request.api_key_env` 或 `model_request.api_key` 解析成非持久化 API key。
@@ -1717,7 +1743,7 @@ stream
        return
   -> BaseContext(system_prompt)
   -> convert runtime history to pygent messages
-  -> ToolInterceptor(EventStore)
+  -> ToolInterceptor(EventStore, workspace_root=..., track_file_effects=True)
   -> for max_steps:
        stream llm chunks
        collect assistant text
@@ -1735,7 +1761,7 @@ stream
 无 API key 时返回固定提示：
 
 ```text
-Lora agent is wired into chat, but DEEPSEEK_API_KEY is not configured for a model call.
+Lora agent is wired into chat, but API key is not configured for agent alias 'default'.
 ```
 
 #### `_register_tool(tool) -> None`

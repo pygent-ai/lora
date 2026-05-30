@@ -54,7 +54,7 @@ uv run lora chat --session <session_id> --message "继续刚才的话题"
 
 ## 当前 Agent 行为
 
-默认 `AgentRuntimeAdapter` 会创建 `LoraAgent`。`LoraAgent` 会加载工作区 `.env`，读取 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`。没有配置 `DEEPSEEK_API_KEY` 时不会发起外部模型调用，而是返回固定提示，方便本地测试 CLI、session、trace 和评估链路。
+默认 `AgentRuntimeAdapter` 会创建 `LoraAgent`。`LoraAgent` 会加载工作区 `.env`，读取已解析的 agent profile，并兼容 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`。没有可用 API key 时不会发起外部模型调用，而是返回包含 agent alias 的固定提示，方便本地测试 CLI、session、trace 和评估链路。
 
 真实工具调用使用 `pygent.toolkits` 中的白名单工具：
 
@@ -90,6 +90,8 @@ Lora 的结构化运行证据默认写入：
         metrics.json
         verdict.json
 ```
+
+其中 `case.yaml`、`metrics.json` 和 `verdict.json` 是 `lora case run` 的评估产物。`lora chat` 每次对话也会创建 `chat` 类型的 case run，但默认只写入 `events.jsonl`、`messages.jsonl`、`run_config.json` 和 `run_metadata.json`；实际调用工具时还会生成 `tool_calls.jsonl`、`tool_results.jsonl` 和 `file_events.jsonl`。
 
 同时会在 `sessions/{session_id}/session.json` 写入一份兼容 pygent 风格的 session 落盘。
 
