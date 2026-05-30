@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .io import load_env_file
 from .schema import BashCliPreset, ResolvedAgentConfig, RunConfig
 
 
@@ -34,7 +35,7 @@ def load_run_config(
     max_steps: int | None = None,
 ) -> RunConfig:
     root = Path(workspace_root or os.environ.get("LORA_WORKSPACE_ROOT") or Path.cwd()).expanduser().resolve()
-    _load_env_file(root / ".env")
+    load_env_file(root / ".env")
     config_path = Path(config_file or root / "lora.yaml").expanduser()
     if not config_path.is_absolute():
         config_path = root / config_path
@@ -211,17 +212,6 @@ def _bool_config(*values: Any, default: bool) -> bool:
                 return False
         raise ValueError(f"Expected boolean config value, got {value!r}")
     return default
-
-
-def _load_env_file(path: Path) -> None:
-    if not path.exists():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def _parse_yaml_subset(text: str) -> dict[str, Any]:

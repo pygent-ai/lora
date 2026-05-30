@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .case import CaseManager
+from .io import read_json, write_json
 from .regression import RegressionManifest
 from .schema import CaseDefinition, CaseRunRef, RunConfig
 from .session import SessionManager
@@ -36,12 +37,14 @@ class GeneratedTestResult:
 
 
 class TestGenerator:
+    __test__ = False
+
     def __init__(self, *, config: RunConfig, session_manager: SessionManager) -> None:
         self.config = config
         self.session_manager = session_manager
 
     def generate(self, session_id: str, case_run_id: str) -> GeneratedTestResult:
-        ref = find_case_run(self.session_manager, session_id, case_run_id)
+        ref = self.session_manager.find_case_run(session_id, case_run_id)
         run_dir = Path(ref.run_dir)
         verdict = _read_json(run_dir / "verdict.json")
         status = str(verdict.get("status") or "error")
@@ -73,7 +76,7 @@ class TestGenerator:
             "verdict": verdict,
             "recommended_tests": _recommended_tests(analysis),
         }
-        _write_json(metadata_path, metadata)
+        write_json(metadata_path, metadata)
         EventStore(ref).append(
             "test.generated",
             actor="system",
@@ -123,7 +126,7 @@ class RegressionRegistrar:
             "fail_fast": manifest.fail_fast,
             "cases": existing,
         }
-        _write_json(self.manifest_path, payload)
+        write_json(self.manifest_path, payload)
         return {
             "status": "registered" if not already_registered else "unchanged",
             "manifest": str(self.manifest_path),
@@ -138,18 +141,7 @@ class RegressionRegistrar:
 
 
 def find_case_run(manager: SessionManager, session_id: str, case_run_id: str) -> CaseRunRef:
-    session_dir = Path(manager.show(session_id)["session"]["session_dir"])
-    matches = list((session_dir / "cases").glob(f"*/runs/{case_run_id}"))
-    if not matches:
-        raise FileNotFoundError(f"Case run {case_run_id!r} does not exist under session {session_id!r}")
-    run_dir = matches[0]
-    metadata = _read_json(run_dir / "run_metadata.json")
-    return CaseRunRef(
-        session_id=session_id,
-        case_id=metadata["case_id"],
-        case_run_id=case_run_id,
-        run_dir=str(run_dir),
-    )
+    return manager.find_case_run(session_id, case_run_id)
 
 
 def _generated_case(source: CaseDefinition, verdict: dict[str, Any]) -> CaseDefinition:
@@ -254,18 +246,13 @@ def _normalize_manifest_path(value: str) -> str:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(path)
 
 
 def _read_optional_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     return _read_json(path)
-
-
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _dump_yaml(data: dict[str, Any]) -> str:

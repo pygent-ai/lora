@@ -4,11 +4,11 @@ import hashlib
 import json
 import shutil
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .config import load_mapping_file
+from .io import append_jsonl, file_snapshot, utc_now, validate_path_id
 from .schema import CaseDefinition, CaseRunRef, WorkspaceRef
 
 
@@ -24,7 +24,7 @@ class CaseManager:
         return case
 
     def validate(self, case: CaseDefinition) -> None:
-        _validate_path_id(case.id, "case id")
+        validate_path_id(case.id, "case id")
         messages = case.input.get("messages")
         prompt = case.input.get("content") or case.input.get("prompt")
         if messages is None and not prompt:
@@ -170,7 +170,7 @@ class CaseManager:
         allow_commands: bool,
     ) -> None:
         action_type = step.get("type")
-        started_at = _now()
+        started_at = utc_now()
         record: dict[str, Any] = {
             "index": index,
             "type": action_type,
@@ -239,12 +239,13 @@ class CaseManager:
                     "status": "failure",
                     "error": str(exc),
                     "error_type": type(exc).__name__,
+                    "finished_at": utc_now(),
                 }
             )
-            _append_jsonl(actions_path, record)
+            append_jsonl(actions_path, record)
             raise
-        record["finished_at"] = _now()
-        _append_jsonl(actions_path, record)
+        record["finished_at"] = utc_now()
+        append_jsonl(actions_path, record)
 
     def _write_baseline(self, case: CaseDefinition, case_run_ref: CaseRunRef) -> Path:
         files = case.expect.get("files", {}).get("unchanged", []) or []
@@ -255,7 +256,7 @@ class CaseManager:
                 raw_path,
                 field_name="expect.files.unchanged",
             )
-            baseline[str(raw_path)] = _file_snapshot(path)
+            baseline[str(raw_path)] = file_snapshot(path)
         baseline_path = Path(case_run_ref.run_dir) / "workspace" / "before_hashes.json"
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
         baseline_path.write_text(
@@ -286,32 +287,3 @@ def _resolve_workspace_path(root: Path, value: Any, *, field_name: str) -> Path:
 
 def _resolve_under_root(root: Path, value: Any) -> Path:
     return _resolve_workspace_path(root, value, field_name="workspace path")
-
-
-def _validate_path_id(value: str, field_name: str) -> None:
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts or "/" in value or "\\" in value:
-        raise ValueError(f"{field_name} must not contain path traversal")
-
-
-def _file_snapshot(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"exists": False, "content_hash": None, "size": None}
-    data = path.read_bytes()
-    return {
-        "exists": True,
-        "content_hash": hashlib.sha256(data).hexdigest(),
-        "size": len(data),
-    }
-
-
-def _append_jsonl(path: Path, data: dict[str, Any]) -> None:
-    row = dict(data)
-    row.setdefault("finished_at", _now())
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()

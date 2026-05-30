@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
 from pathlib import Path
 from typing import Any
 
 from .case import CaseManager
 from .evaluation import Evaluator
+from .io import write_json
 from .runtime import AgentRuntimeAdapter
 from .schema import CaseDefinition, RunConfig, SessionSpec
 from .session import SessionManager
@@ -45,10 +45,7 @@ def execute_case_run(
     evaluation = (evaluator or Evaluator()).evaluate(case, ref)
     if result.status != "error":
         result.status = evaluation.status  # type: ignore[assignment]
-    (run_dir / "result.json").write_text(
-        json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_json(run_dir / "result.json", result.to_dict())
     manager.finish_case_run(ref, result.status)
     return {
         **ref.to_dict(),

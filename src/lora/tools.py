@@ -6,10 +6,10 @@ import os
 import shlex
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from .io import utc_now, write_json
 from .schema import CaseRunRef
 from .trace import EventStore
 
@@ -129,11 +129,11 @@ class FileStateTracker:
                 "unit": read_range.unit,
                 "start": read_range.start,
                 "end": read_range.end,
-                "read_at": _now(),
+                "read_at": utc_now(),
             }
         )
         read_state[normalized] = ranges
-        self._write_json(self.read_state_path, read_state)
+        write_json(self.read_state_path, read_state)
 
         file_state = self._read_json(self.file_state_path)
         file_state[normalized] = {
@@ -142,9 +142,9 @@ class FileStateTracker:
             "content_hash": content_hash,
             "last_read_event_id": event_id,
             "read_ranges": ranges,
-            "last_known_at": _now(),
+            "last_known_at": utc_now(),
         }
-        self._write_json(self.file_state_path, file_state)
+        write_json(self.file_state_path, file_state)
 
     def should_stub_read(
         self,
@@ -215,12 +215,6 @@ class FileStateTracker:
         if not path.exists():
             return {}
         return json.loads(path.read_text(encoding="utf-8"))
-
-    @staticmethod
-    def _write_json(path: Path, data: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
 
 class FileEffectTracker:
     IGNORED_DIRS = frozenset({".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"})
@@ -727,7 +721,3 @@ def _select_lines(content: str, read_range: ReadRange) -> str:
 
 def _end_value(value: int | Literal["EOF"]) -> int:
     return 2**31 - 1 if value == "EOF" else int(value)
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
