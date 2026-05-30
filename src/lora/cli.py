@@ -14,7 +14,7 @@ from .evaluation import Evaluator
 from .regression import RegressionRunner
 from .repair import RepairWorkflow
 from .runner import execute_case_run
-from .runtime import AgentRuntimeAdapter
+from .runtime import AgentRuntimeAdapter, RuntimeMessage
 from .session import SessionManager
 from .test_generation import RegressionRegistrar, TestGenerator
 from .trace import EventStore
@@ -292,11 +292,26 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
             if not user_input.strip():
                 continue
             streamed = False
+            pending_delta_text = ""
 
             def print_chunk(chunk: str) -> None:
-                nonlocal streamed
+                nonlocal pending_delta_text, streamed
                 streamed = True
+                pending_delta_text += chunk
                 print(chunk, end="", flush=True)
+
+            def print_runtime_message(message: RuntimeMessage) -> None:
+                nonlocal pending_delta_text, streamed
+                lines = _format_runtime_message_for_chat(message, pending_delta_text=pending_delta_text)
+                if message.role == "assistant":
+                    pending_delta_text = ""
+                if not lines:
+                    return
+                if streamed:
+                    print()
+                for line in lines:
+                    print(line)
+                streamed = True
 
             result = asyncio.run(
                 adapter.run_turn(
@@ -305,6 +320,7 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
                     case_run_ref=run_ref,
                     turn_id=f"turn-{turn_index:04d}",
                     on_assistant_delta=print_chunk,
+                    on_runtime_message=print_runtime_message,
                 )
             )
             status = result["status"]
@@ -320,6 +336,82 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
         store.append("chat.finished", actor="system", payload={"status": status}, turn_id=None)
         manager.finish_case_run(run_ref, status)
     return None
+
+
+def _format_runtime_message_for_chat(
+    message: RuntimeMessage,
+    *,
+    pending_delta_text: str = "",
+    max_tool_result_lines: int = 5,
+) -> list[str]:
+    if message.role == "assistant":
+        lines: list[str] = []
+        content = message.content.strip()
+        if content and content != pending_delta_text:
+            lines.extend(content.splitlines())
+        for tool_call in _message_tool_calls(message):
+            name = _tool_call_name(tool_call)
+            arguments = _tool_call_arguments(tool_call)
+            suffix = f" {arguments}" if arguments else ""
+            lines.append(f"[tool call] {name}{suffix}")
+        return lines
+
+    if message.role != "tool":
+        return []
+
+    payload = _parse_json_object(message.content)
+    status = str(payload.get("status") or "result") if payload else "result"
+    tool_call_id = str((message.payload or {}).get("tool_call_id") or payload.get("tool_call_id") or "").strip()
+    heading = f"[tool result] {tool_call_id} {status}".strip()
+    preview_source = payload.get("result") if payload and "result" in payload else message.content
+    if payload and payload.get("error"):
+        preview_source = payload["error"]
+    preview_lines = _preview_lines(preview_source, max_lines=max_tool_result_lines)
+    return [heading, *preview_lines]
+
+
+def _message_tool_calls(message: RuntimeMessage) -> list[dict[str, Any]]:
+    payload = message.payload or {}
+    tool_calls = payload.get("tool_calls") or []
+    return [tool_call for tool_call in tool_calls if isinstance(tool_call, dict)]
+
+
+def _tool_call_name(tool_call: dict[str, Any]) -> str:
+    function = tool_call.get("function")
+    if isinstance(function, dict) and function.get("name"):
+        return str(function["name"])
+    return str(tool_call.get("name") or tool_call.get("tool_name") or "tool")
+
+
+def _tool_call_arguments(tool_call: dict[str, Any]) -> str:
+    function = tool_call.get("function")
+    if isinstance(function, dict) and function.get("arguments") is not None:
+        return str(function["arguments"])
+    arguments = tool_call.get("arguments")
+    if arguments is None:
+        return ""
+    if isinstance(arguments, str):
+        return arguments
+    return json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+
+
+def _parse_json_object(content: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _preview_lines(value: Any, *, max_lines: int) -> list[str]:
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    lines = text.splitlines() or [text]
+    if len(lines) > max_lines:
+        return [*lines[: max_lines - 1], "..."]
+    return lines[:max_lines]
 
 
 def _manager(args: argparse.Namespace) -> SessionManager:

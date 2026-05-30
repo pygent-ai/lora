@@ -351,6 +351,37 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertEqual([message["role"] for message in messages], ["user", "assistant"])
             self.assertNotIn("conversation.assistant_delta", [event["type"] for event in events])
 
+    def test_run_turn_reports_runtime_messages_after_streaming_deltas(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora")
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            messages: list[tuple[str, str, str | None]] = []
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(agent=RecordingAgent(), config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="use a tool",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                    on_runtime_message=lambda message: messages.append(
+                        (message.role, message.content, message.payload.get("tool_call_id") if message.payload else None)
+                    ),
+                )
+            )
+
+            self.assertEqual(result["final_answer"], "thinkingdone")
+            self.assertEqual(
+                messages,
+                [
+                    ("assistant", "thinking", None),
+                    ("tool", '{"ok": true}', "call_1"),
+                    ("assistant", "done", None),
+                ],
+            )
+
     def test_lora_agent_persists_assistant_tool_calls_in_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", max_steps=3)

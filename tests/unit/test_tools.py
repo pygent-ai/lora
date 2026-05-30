@@ -60,6 +60,29 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))), 2)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))), 2)
 
+    def test_tool_interceptor_allows_outside_read_effects_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            outside = Path(tmp) / "outside.txt"
+            outside.write_text("outside\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(EventStore(run), workspace_root=workspace, track_file_effects=True)
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+
+            result = interceptor.call_tool(
+                "read",
+                {"path": str(outside)},
+                ctx,
+                lambda path: Path(path).read_text(encoding="utf-8"),
+            )
+
+            self.assertEqual(result.status, "success")
+            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
+            self.assertEqual(len(file_events), 1)
+            self.assertEqual(file_events[0]["type"], "file.read")
+            self.assertEqual(file_events[0]["path"], str(outside.resolve()))
+
     def test_file_read_event_keeps_returned_content_for_replay(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "demo.txt"
@@ -314,6 +337,39 @@ class FileEffectTrackerSpecTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 tracker.declared_effects("write", {"file_path": str(outside), "content": "x"}, tool_call_id="evt_tool")
 
+    def test_file_effect_tracker_allows_outside_read_paths_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            outside = Path(tmp) / "outside.txt"
+            outside.write_text("x", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+
+            effects = tracker.declared_effects("read", {"path": str(outside)}, tool_call_id="evt_tool")
+
+            self.assertEqual(len(effects), 1)
+            self.assertEqual(effects[0].type, "file.read")
+            self.assertEqual(effects[0].path, str(outside.resolve()))
+
+    def test_file_effect_tracker_can_reject_outside_read_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            outside = Path(tmp) / "outside.txt"
+            outside.write_text("x", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(
+                workspace_root=workspace,
+                store=EventStore(run),
+                allow_read_outside_workspace=False,
+            )
+
+            with self.assertRaises(ValueError):
+                tracker.declared_effects("read", {"path": str(outside)}, tool_call_id="evt_tool")
+
     def test_file_effect_tracker_rejects_windows_shell_style_paths_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             FileEffectTracker = _file_effect_tracker_class()
@@ -325,7 +381,11 @@ class FileEffectTrackerSpecTests(unittest.TestCase):
             if not raw_paths:
                 self.skipTest("drive-rooted shell path styles are Windows-specific")
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            tracker = FileEffectTracker(
+                workspace_root=workspace,
+                store=EventStore(run),
+                allow_read_outside_workspace=False,
+            )
 
             for raw_path in raw_paths:
                 with self.subTest(raw_path=raw_path):

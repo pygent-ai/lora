@@ -227,9 +227,16 @@ class FileEffectTracker:
     PATH_ARG_NAMES = ("file_path", "path", "relative_path")
     WRITE_TYPES = frozenset({"file.write", "file.edit", "file.delete"})
 
-    def __init__(self, workspace_root: str | Path, store: EventStore):
+    def __init__(
+        self,
+        workspace_root: str | Path,
+        store: EventStore,
+        *,
+        allow_read_outside_workspace: bool = True,
+    ):
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.store = store
+        self.allow_read_outside_workspace = allow_read_outside_workspace
         self._appended_keys: set[tuple[Any, ...]] = set()
 
     def snapshot_workspace(self) -> dict[str, FileSnapshot]:
@@ -268,7 +275,7 @@ class FileEffectTracker:
     ) -> list[FileEffect]:
         if tool_name == "bash":
             return self._bash_read_effects(args, tool_call_id)
-        path = self._path_from_args(args)
+        path = self._path_from_args(args, allow_outside_workspace=tool_name == "read")
         if path is None:
             return []
         if tool_name == "read":
@@ -445,19 +452,21 @@ class FileEffectTracker:
                 turn_id=turn_id,
             )
 
-    def _path_from_args(self, args: dict[str, Any]) -> str | None:
+    def _path_from_args(self, args: dict[str, Any], *, allow_outside_workspace: bool = False) -> str | None:
         for name in self.PATH_ARG_NAMES:
             value = args.get(name)
             if isinstance(value, str) and value:
-                return self._resolve_workspace_path(value)
+                return self._resolve_workspace_path(value, allow_outside_workspace=allow_outside_workspace)
         return None
 
-    def _resolve_workspace_path(self, path: str | Path) -> str:
+    def _resolve_workspace_path(self, path: str | Path, *, allow_outside_workspace: bool = False) -> str:
         candidate = Path(_normalize_user_path(path)).expanduser()
         if not candidate.is_absolute():
             candidate = self.workspace_root / candidate
         resolved = candidate.resolve()
-        if not _is_relative_to(resolved, self.workspace_root):
+        if not _is_relative_to(resolved, self.workspace_root) and not (
+            allow_outside_workspace and self.allow_read_outside_workspace
+        ):
             raise ValueError(f"Path is outside workspace: {path}")
         return str(resolved)
 
@@ -476,7 +485,7 @@ class FileEffectTracker:
         effects: list[FileEffect] = []
         seen: set[str] = set()
         for raw_path in paths:
-            path = self._resolve_workspace_path(raw_path)
+            path = self._resolve_workspace_path(raw_path, allow_outside_workspace=True)
             if path in seen:
                 continue
             seen.add(path)
@@ -528,12 +537,17 @@ class ToolInterceptor:
         *,
         workspace_root: str | Path | None = None,
         track_file_effects: bool = False,
+        allow_read_outside_workspace: bool = True,
     ):
         self.store = store
         if track_file_effects and workspace_root is None:
             raise ValueError("workspace_root is required when track_file_effects=True")
         self.file_effect_tracker = (
-            FileEffectTracker(workspace_root=workspace_root, store=store)
+            FileEffectTracker(
+                workspace_root=workspace_root,
+                store=store,
+                allow_read_outside_workspace=allow_read_outside_workspace,
+            )
             if track_file_effects and workspace_root is not None
             else None
         )

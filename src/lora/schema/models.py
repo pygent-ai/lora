@@ -85,6 +85,7 @@ class RunConfig:
     resolved_agent: ResolvedAgentConfig | None = field(default=None, repr=False, compare=False)
     user_identity: str = "default"
     cli_bash_presets: list[BashCliPreset] = field(default_factory=_default_cli_bash_presets)
+    allow_read_outside_workspace: bool = True
 
     def __post_init__(self) -> None:
         self.workspace_root = _abs_path(self.workspace_root)

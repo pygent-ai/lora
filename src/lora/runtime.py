@@ -70,6 +70,7 @@ class AgentRuntimeAdapter:
         case_run_ref: CaseRunRef,
         turn_id: str | None = None,
         on_assistant_delta: Callable[[str], Any] | None = None,
+        on_runtime_message: Callable[[RuntimeMessage], Any] | None = None,
     ) -> dict[str, Any]:
         store = EventStore(case_run_ref)
         context = RuntimeContext(session)
@@ -154,6 +155,7 @@ class AgentRuntimeAdapter:
                     turn_id=resolved_turn_id,
                     final_parts=final_parts,
                 )
+                await _emit_runtime_message(on_runtime_message, runtime_message)
         except Exception as exc:  # noqa: BLE001 - preserve partial chat state on agent failures.
             message_count += _flush_assistant_delta(
                 assistant_delta_parts,
@@ -572,6 +574,14 @@ async def _emit_assistant_delta(callback: Callable[[str], Any] | None, content: 
     if callback is None:
         return
     result = callback(content)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _emit_runtime_message(callback: Callable[[RuntimeMessage], Any] | None, message: RuntimeMessage) -> None:
+    if callback is None:
+        return
+    result = callback(message)
     if inspect.isawaitable(result):
         await result
 

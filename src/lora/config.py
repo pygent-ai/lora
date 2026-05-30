@@ -74,6 +74,12 @@ def load_run_config(
         resolved_agent=resolved_agent,
         user_identity=_non_empty(_dig(config_data, "user.identity")) or "default",
         cli_bash_presets=_resolve_cli_bash_presets(config_data),
+        allow_read_outside_workspace=_bool_config(
+            os.environ.get("LORA_ALLOW_READ_OUTSIDE_WORKSPACE"),
+            _dig(config_data, "allow_read_outside_workspace"),
+            _dig(config_data, "runtime.allow_read_outside_workspace"),
+            default=True,
+        ),
     )
 
 
@@ -189,6 +195,22 @@ def _non_empty(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def _bool_config(*values: Any, default: bool) -> bool:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        raise ValueError(f"Expected boolean config value, got {value!r}")
+    return default
 
 
 def _load_env_file(path: Path) -> None:

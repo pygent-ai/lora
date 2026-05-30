@@ -40,9 +40,11 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(data["agent_alias"], "dev")
         self.assertEqual(data["model_name"], "profile-model")
         self.assertEqual(data["api_key_source"], "env:DEV_API_KEY")
+        self.assertEqual(data["allow_read_outside_workspace"], True)
         self.assertNotIn("resolved_agent", data)
         self.assertNotIn("raw-secret", str(data))
         self.assertEqual(restored.agent_alias, "dev")
+        self.assertEqual(restored.allow_read_outside_workspace, True)
 
     def test_refs_round_trip(self) -> None:
         session = SessionRef(session_id="s1", session_dir=".", workspace_root=".")

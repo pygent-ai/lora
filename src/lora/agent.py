@@ -767,6 +767,7 @@ class LoraAgent(BaseAgent):
             EventStore(self.case_run_ref),
             workspace_root=self.workspace_root,
             track_file_effects=True,
+            allow_read_outside_workspace=self.config.allow_read_outside_workspace,
         )
         tool_context = ToolContext(case_run_ref=self.case_run_ref, turn_id=self.turn_id)
         step_count = 0

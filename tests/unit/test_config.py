@@ -16,6 +16,7 @@ class ConfigTests(unittest.TestCase):
             config = load_run_config(workspace_root=tmp)
 
         self.assertEqual(config.max_steps, -1)
+        self.assertEqual(config.allow_read_outside_workspace, True)
 
     def test_load_run_config_merges_file_and_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,6 +170,18 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.user_identity, "default")
         self.assertEqual([preset.name for preset in config.cli_bash_presets], ["rg", "pyright"])
+
+    def test_allow_read_outside_workspace_can_be_disabled_in_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "lora.yaml").write_text(
+                "runtime:\n  allow_read_outside_workspace: false\n",
+                encoding="utf-8",
+            )
+
+            config = load_run_config(workspace_root=root)
+
+        self.assertEqual(config.allow_read_outside_workspace, False)
 
 @contextmanager
 def _clean_model_env() -> Iterator[None]:
