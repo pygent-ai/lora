@@ -589,6 +589,27 @@ class ToolInterceptor:
             self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
             return ToolResult(status="error", error=str(exc), tool_call_id=call_id)
 
+        tool_error = _structured_tool_error_payload(result)
+        if tool_error is not None:
+            self._append_file_effects_after_tool(
+                before,
+                declared,
+                tool_name=name,
+                tool_call_id=call_id,
+                turn_id=ctx.turn_id,
+                include_declared=False,
+            )
+            payload = {
+                "tool_call_id": call_id,
+                "status": "error",
+                "error": tool_error["error"],
+                "error_type": tool_error["error_type"],
+            }
+            if tool_error.get("details") is not None:
+                payload["details"] = tool_error["details"]
+            self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
+            return ToolResult(status="error", error=tool_error["error"], tool_call_id=call_id)
+
         self._append_file_effects_after_tool(
             before,
             declared,
@@ -621,6 +642,7 @@ class ToolInterceptor:
         tool_name: str,
         tool_call_id: str,
         turn_id: str | None,
+        include_declared: bool = True,
     ) -> None:
         if self.file_effect_tracker is None or before is None:
             return
@@ -631,6 +653,8 @@ class ToolInterceptor:
             tool_name=tool_name,
             tool_call_id=tool_call_id,
         )
+        if not include_declared:
+            declared = []
         self.file_effect_tracker.append_effects(
             self.file_effect_tracker.merge_effects(declared, observed),
             turn_id=turn_id,
@@ -765,6 +789,28 @@ def _unsupported_argument_error(name: str, args: dict[str, Any], tool: Callable[
     allowed_text = ", ".join(sorted(allowed)) or "none"
     unknown_text = ", ".join(unknown)
     return f"Tool {name!r} received unsupported argument(s): {unknown_text}. Supported arguments: {allowed_text}."
+
+
+def _structured_tool_error_payload(result: Any) -> dict[str, Any] | None:
+    error_type = getattr(result, "error_type", None)
+    details = getattr(result, "details", None)
+    if isinstance(error_type, str) and error_type:
+        return {
+            "error": str(result),
+            "error_type": error_type,
+            "details": details if isinstance(details, dict) else None,
+        }
+    if isinstance(result, dict) and result.get("ok") is False:
+        error = result.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or error.get("error") or result)
+            return {
+                "error": message,
+                "error_type": str(error.get("type") or error.get("error_type") or "ToolError"),
+                "details": error.get("details") if isinstance(error.get("details"), dict) else None,
+            }
+        return {"error": str(error or result), "error_type": "ToolError", "details": None}
+    return None
 
 
 def _spool_large_bash_result(*, tool_name: str, result: Any, tool_call_id: str, run_dir: Path) -> Any:

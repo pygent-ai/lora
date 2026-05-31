@@ -80,6 +80,31 @@ class ToolTests(unittest.TestCase):
             self.assertIn("raw_arguments", result.error or "")
             self.assertIn("command", result.error or "")
 
+    def test_tool_interceptor_maps_structured_tool_error_result_to_error_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(EventStore(run))
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+
+            result = interceptor.call_tool(
+                "read",
+                {"file_path": "missing.txt"},
+                ctx,
+                lambda file_path: _structured_tool_error(
+                    "错误：文件不存在 missing.txt",
+                    error_type="FileNotFoundError",
+                    details={"input_path": file_path, "path": "E:\\missing.txt"},
+                ),
+            )
+
+            self.assertEqual(result.status, "error")
+            self.assertEqual(result.error, "错误：文件不存在 missing.txt")
+            tool_result = next(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))
+            self.assertEqual(tool_result["status"], "error")
+            self.assertEqual(tool_result["error"], "错误：文件不存在 missing.txt")
+            self.assertEqual(tool_result["error_type"], "FileNotFoundError")
+            self.assertEqual(tool_result["details"]["input_path"], "missing.txt")
+
     def test_tool_interceptor_spools_large_bash_result_to_run_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
@@ -489,6 +514,16 @@ def _windows_shell_path_styles(path: Path) -> list[str]:
         return []
     tail = "/".join(resolved.parts[1:])
     return [f"/{drive}/{tail}", f"/mnt/{drive}/{tail}", f"/cygdrive/{drive}/{tail}"]
+
+
+def _structured_tool_error(message: str, *, error_type: str, details: dict[str, str]) -> str:
+    class StructuredToolError(str):
+        pass
+
+    error = StructuredToolError(message)
+    error.error_type = error_type  # type: ignore[attr-defined]
+    error.details = details  # type: ignore[attr-defined]
+    return error
 
 
 if __name__ == "__main__":

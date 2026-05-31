@@ -34,7 +34,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pygent-ai", specifier = "==0.1.9" }]
+requires-dist = [{ name = "pygent-ai", specifier = "==0.1.11" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.3" }]
@@ -59,11 +59,11 @@ wheels = [
 
 [[package]]
 name = "pygent-ai"
-version = "0.1.9"
+version = "0.1.11"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c9/b6/3b23565e7f8817da69709cf60ce35bbdf5d8504170aaa30d7c327913cb71/pygent_ai-0.1.9.tar.gz", hash = "sha256:83aee969f77c2be7b581c728ea8b834ad2154c67503e21bca6192e551da9487e", size = 97616, upload-time = "2026-05-29T02:34:56.213Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6a/cd/33b69ad8ed301a4b190b46c799dec82f5ea9665a2de04b886c164fc71cde/pygent_ai-0.1.11.tar.gz", hash = "sha256:f3a653e684f7657f72301f6e2f34ab8daf74cb3129c54704478ef1de3c6c511f", size = 99922, upload-time = "2026-05-31T06:27:57.53Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/a5/a70f5793c0245b09745be9a1a9f001475f24769835a850d09a96e92bb08e/pygent_ai-0.1.9-py3-none-any.whl", hash = "sha256:5807b54e66cfae7cc6cf9ae260cbc6241c360b83f4b71d821f91dd11783509ec", size = 78975, upload-time = "2026-05-29T02:34:54.955Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/c9/f70a38514d3726d4573607370e44ff9f05f27071085bee713e7443f5d060/pygent_ai-0.1.11-py3-none-any.whl", hash = "sha256:344d98a6de1fa4d3473c582ca8497051ca7b0cb64292ff9507bc703f4f10d48a", size = 80871, upload-time = "2026-05-31T06:27:56.145Z" },
 ]
 
 [[package]]

@@ -292,7 +292,7 @@ def _message_record(event: ContextEvent) -> dict[str, Any]:
 
 
 def _tool_result_record(event: ContextEvent) -> dict[str, Any]:
-    return {
+    record = {
         "event_id": event.id,
         "session_id": event.session_id,
         "case_id": event.case_id,
@@ -303,6 +303,13 @@ def _tool_result_record(event: ContextEvent) -> dict[str, Any]:
         "result": event.payload.get("result", event.payload.get("content")),
         "created_at": event.timestamp,
     }
+    if event.payload.get("error") is not None:
+        record["error"] = event.payload.get("error")
+    if event.payload.get("error_type") is not None:
+        record["error_type"] = event.payload.get("error_type")
+    if event.payload.get("details") is not None:
+        record["details"] = event.payload.get("details")
+    return record
 
 
 def _file_event_record(event: ContextEvent) -> dict[str, Any]:
