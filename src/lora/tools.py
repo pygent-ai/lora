@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from .diffing import DiffRecorder, read_snapshot_content
 from .io import utc_now, write_json
 from .redaction import redact_secrets
 from .schema import CaseRunRef
@@ -88,6 +89,9 @@ class FileSnapshot:
     size: int | None = None
     mtime_ns: int | None = None
     content_hash: str | None = None
+    content: str | None = None
+    content_available: bool = False
+    content_unavailable_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -102,6 +106,12 @@ class FileEffect:
     after_hash: str | None = None
     before_exists: bool | None = None
     after_exists: bool | None = None
+    before_content: str | None = None
+    after_content: str | None = None
+    before_content_available: bool = False
+    after_content_available: bool = False
+    before_content_unavailable_reason: str | None = None
+    after_content_unavailable_reason: str | None = None
 
     def key(self) -> tuple[Any, ...]:
         return (
@@ -258,6 +268,7 @@ class FileEffectTracker:
                 content_hash = _hash_file(path)
             except OSError:
                 continue
+            content = read_snapshot_content(path)
             snapshots[normalized] = FileSnapshot(
                 path=normalized,
                 exists=True,
@@ -265,6 +276,9 @@ class FileEffectTracker:
                 size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns,
                 content_hash=content_hash,
+                content=content.content,
+                content_available=content.available,
+                content_unavailable_reason=content.reason,
             )
         return snapshots
 
@@ -338,6 +352,9 @@ class FileEffectTracker:
                         after_hash=after_snapshot.content_hash,
                         before_exists=False,
                         after_exists=True,
+                        after_content=after_snapshot.content,
+                        after_content_available=after_snapshot.content_available,
+                        after_content_unavailable_reason=after_snapshot.content_unavailable_reason,
                     )
                 )
             elif before_snapshot is not None and after_snapshot is None:
@@ -352,6 +369,9 @@ class FileEffectTracker:
                         before_hash=before_snapshot.content_hash,
                         before_exists=True,
                         after_exists=False,
+                        before_content=before_snapshot.content,
+                        before_content_available=before_snapshot.content_available,
+                        before_content_unavailable_reason=before_snapshot.content_unavailable_reason,
                     )
                 )
             elif (
@@ -371,6 +391,12 @@ class FileEffectTracker:
                         after_hash=after_snapshot.content_hash,
                         before_exists=True,
                         after_exists=True,
+                        before_content=before_snapshot.content,
+                        after_content=after_snapshot.content,
+                        before_content_available=before_snapshot.content_available,
+                        after_content_available=after_snapshot.content_available,
+                        before_content_unavailable_reason=before_snapshot.content_unavailable_reason,
+                        after_content_unavailable_reason=after_snapshot.content_unavailable_reason,
                     )
                 )
         return sorted(effects, key=lambda effect: (_effect_type_order(effect.type), effect.path))
@@ -411,6 +437,12 @@ class FileEffectTracker:
                     after_hash=observed_effect.after_hash,
                     before_exists=observed_effect.before_exists,
                     after_exists=observed_effect.after_exists,
+                    before_content=observed_effect.before_content,
+                    after_content=observed_effect.after_content,
+                    before_content_available=observed_effect.before_content_available,
+                    after_content_available=observed_effect.after_content_available,
+                    before_content_unavailable_reason=observed_effect.before_content_unavailable_reason,
+                    after_content_unavailable_reason=observed_effect.after_content_unavailable_reason,
                 )
             )
 
@@ -430,6 +462,7 @@ class FileEffectTracker:
         *,
         turn_id: str | None,
     ) -> None:
+        diff_recorder = DiffRecorder(self.store, self.workspace_root)
         for effect in effects:
             key = effect.key()
             if key in self._appended_keys:
@@ -452,6 +485,7 @@ class FileEffectTracker:
                 },
                 turn_id=turn_id,
             )
+            diff_recorder.record_effect(effect, turn_id=turn_id)
 
     def _path_from_args(self, args: dict[str, Any], *, allow_outside_workspace: bool = False) -> str | None:
         for name in self.PATH_ARG_NAMES:

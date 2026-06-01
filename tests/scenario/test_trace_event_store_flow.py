@@ -27,10 +27,12 @@ class TraceEventStoreScenarioTests(unittest.TestCase):
                 "context.projection_created",
                 "prompt.rendered",
                 "tool.call",
+                "tool.unknown",
                 "file.read",
                 "file.write",
                 "file.edit",
                 "file.delete",
+                "diff.created",
                 "tool.result",
                 "conversation.tool_message",
                 "conversation.assistant_message",
@@ -61,6 +63,7 @@ class TraceEventStoreScenarioTests(unittest.TestCase):
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))), 1)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))), 1)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))), 4)
+            self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "diffs" / "diff_events.jsonl"))), 1)
 
     def test_regression_run_records_started_and_finished_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -86,7 +89,7 @@ def _actor_for(event_type: str) -> str:
         return "user"
     if event_type.startswith("conversation.assistant"):
         return "assistant"
-    if event_type.startswith("tool.") or event_type.startswith("file."):
+    if event_type.startswith("tool.") or event_type.startswith("file.") or event_type.startswith("diff."):
         return "tool"
     return "system"
 
@@ -110,8 +113,20 @@ def _payload_for(event_type: str) -> dict[str, object]:
         return {"tool_name": "read_text_file", "args": {"path": "README.md"}}
     if event_type == "tool.result":
         return {"tool_call_id": "evt_call", "status": "success", "result": "README content"}
+    if event_type == "tool.unknown":
+        return {"tool_call_id": "evt_call", "requested_tool": "missing"}
     if event_type.startswith("file."):
         return {"path": "README.md", "content_hash": "abc123"}
+    if event_type == "diff.created":
+        return {
+            "diff_id": "diff_1",
+            "tool_call_id": "evt_call",
+            "tool_name": "edit",
+            "path": "README.md",
+            "relative_path": "README.md",
+            "change_type": "edit",
+            "patch_available": False,
+        }
     if event_type == "analysis.created":
         return {"status": "failed", "root_causes": []}
     if event_type == "test.generated":

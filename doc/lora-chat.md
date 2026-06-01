@@ -139,9 +139,13 @@ agents:
         messages.jsonl
         run_config.json
         run_metadata.json
+        diffs/
+          diff_events.jsonl
+          patches/
+          snapshots/
 ```
 
-`events.jsonl` 会记录用户消息、模型请求边界、提示词渲染、assistant 回复、模型响应边界和上下文 checkpoint。实际调用工具时，还会写入 `tool_calls.jsonl`、`tool_results.jsonl` 和 `file_events.jsonl` 等投影文件。
+`events.jsonl` 会记录用户消息、模型请求边界、提示词渲染、assistant 回复、模型响应边界和上下文 checkpoint。实际调用工具时，还会写入 `tool_calls.jsonl`、`tool_results.jsonl` 和 `file_events.jsonl` 等投影文件。写入、编辑或删除 workspace 文件时，Lora 还会在 `diffs/` 下保存文本快照、patch 文件和 `diff.created` 索引，后续 turn 可以通过 `diff` 工具查询这些持久化改动。
 
 ## 当前 agent 行为
 
@@ -153,6 +157,9 @@ agents:
 - `edit`
 - `glob`
 - `grep`
+- `diff`
+
+`diff` 工具读取 Lora 已记录的文件影响和快照产物，可以按当前 turn、当前 run 或整个 session 返回变更摘要、结构化 JSON 或 unified patch；它用于查看历史运行证据，不替代实时仓库状态下的 `git diff`。
 
 如果选中的 agent profile 解析到了可用 API key，`LoraAgent` 会通过 DeepSeek 兼容接口进行流式模型调用；当模型实际调用已注册工具时，调用会通过 `ToolInterceptor` 记录。API key 可以来自 `model_request.api_key_env`、`model_request.api_key` 或兼容的 `DEEPSEEK_API_KEY`。
 

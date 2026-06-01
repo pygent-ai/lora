@@ -20,6 +20,7 @@ from pygent.message import BaseMessage, ToolMessage
 from pygent.module.tool import BaseTool, ToolManager
 from pygent.toolkits import BashToolkits, FileToolkits
 
+from .diffing import DiffTool
 from .io import load_env_file, plain_data
 from .runtime import RuntimeContext
 from .schema import BashCliPreset, CaseRunRef, ResolvedAgentConfig, RunConfig
@@ -830,16 +831,24 @@ class LoraAgent(BaseAgent):
                 name = tool_call.tool_name.data
                 kwargs = dict(tool_call.arguments.data)
                 if name not in self._tools:
-                    raise RuntimeError(f"Unknown tool requested by model: {name}")
-                result = interceptor.call_tool(name, kwargs, tool_context, self._tools[name].forward)
-                new_cli_entries: list[dict[str, Any]] = []
-                if name == "bash" and self.context_manager is not None:
-                    new_cli_entries = _detect_new_bash_cli(
-                        self.context_manager.session_dir,
-                        self.config.cli_bash_presets,
-                        command=str(kwargs.get("command") or ""),
+                    payload = _record_unknown_tool_call(
+                        interceptor=interceptor,
+                        name=name,
+                        args=kwargs,
+                        available_tools=list(self._tools),
+                        turn_id=self.turn_id,
                     )
-                payload = result.to_dict()
+                    new_cli_entries: list[dict[str, Any]] = []
+                else:
+                    result = interceptor.call_tool(name, kwargs, tool_context, self._tools[name].forward)
+                    new_cli_entries = []
+                    if name == "bash" and self.context_manager is not None:
+                        new_cli_entries = _detect_new_bash_cli(
+                            self.context_manager.session_dir,
+                            self.config.cli_bash_presets,
+                            command=str(kwargs.get("command") or ""),
+                        )
+                    payload = result.to_dict()
                 content = _serialize_tool_payload_for_model(payload)
                 reminder = _render_new_cli_tool_message_reminder(new_cli_entries)
                 if reminder:
@@ -883,6 +892,14 @@ class LoraAgent(BaseAgent):
             if tool is None:
                 raise RuntimeError(f"Default pygent tool is not available: {name}")
             self._register_tool(tool)
+        if self.case_run_ref is not None:
+            self._register_tool(
+                DiffTool(
+                    case_run_ref=self.case_run_ref,
+                    workspace_root=self.workspace_root,
+                    turn_id=self.turn_id,
+                )
+            )
 
 
 def _render_system_identity_prompt(ctx: PromptRenderContext) -> str:
@@ -1061,8 +1078,11 @@ def _render_available_tools_prompt(ctx: PromptRenderContext) -> str:
             f"Workspace root: {ctx.workspace_root}",
             'Default excludes: .git, .lora, .venv, .pytest_cache, .ruff_cache, __pycache__, sessions.',
             "Use glob or grep before bash find/cat for file discovery and content search.",
-            "Use read with offset/limit instead of dumping whole files through bash cat.",
+            "For large files, do not read the whole file first. Use grep/rg/glob to locate relevant symbols, headings, or line numbers, then call read with offset and limit around those matches.",
+            "Read full files only when they are small, roughly under 200 lines, or when whole-file structure is necessary. For files over 300 lines, prefer targeted reads of 80-150 lines and expand only if needed.",
+            "If a previous tool result provides exact line numbers or headings, use read with offset/limit for those ranges instead of re-reading the whole file.",
             "Use Windows absolute paths for read/write/edit file_path values; use bash working_directory for shell commands rooted in the workspace.",
+            "Use diff to inspect persisted Lora file changes. Use bash git diff only for live repository state.",
             "Use bash as a fallback for verification or composed shell commands, especially when a narrower structured tool cannot do the job.",
             "Use tools to ground claims in the workspace. Pick the smallest tool call that can answer the question, and avoid unnecessary repeat reads when the session already contains current file content.",
         ]
@@ -1320,6 +1340,47 @@ def _render_new_cli_tool_message_reminder(entries: list[dict[str, Any]]) -> str 
         )
     lines.extend(["  </new-bash-cli>", "</cli-context>", "</system-reminder>"])
     return "\n".join(lines)
+
+
+def _record_unknown_tool_call(
+    *,
+    interceptor: ToolInterceptor,
+    name: str,
+    args: dict[str, Any],
+    available_tools: list[str],
+    turn_id: str | None,
+) -> dict[str, Any]:
+    message = (
+        f"Unknown tool requested by model: {name}. "
+        f"Available tools: {', '.join(available_tools) if available_tools else 'none'}."
+    )
+    details = {
+        "requested_tool": name,
+        "available_tools": available_tools,
+        "arguments": args,
+        "hint": "Call one of the available tools. For shell commands or installed CLIs, use the bash tool.",
+    }
+    call_id = interceptor.store.append(
+        "tool.call",
+        actor="assistant",
+        payload={"tool_name": name, "args": args},
+        turn_id=turn_id,
+    )
+    interceptor.store.append(
+        "tool.unknown",
+        actor="system",
+        payload={"tool_call_id": call_id, "message": message, **details},
+        turn_id=turn_id,
+    )
+    payload = {
+        "tool_call_id": call_id,
+        "status": "error",
+        "error": message,
+        "error_type": "UnknownToolError",
+        "details": details,
+    }
+    interceptor.store.append("tool.result", actor="tool", payload=payload, turn_id=turn_id)
+    return payload
 
 
 def _serialize_tool_payload_for_model(payload: dict[str, Any]) -> str:

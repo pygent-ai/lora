@@ -103,6 +103,31 @@ class ToolCallingLLM:
         )
 
 
+class UnknownToolThenAnswerLLM:
+    def __init__(self) -> None:
+        self.request_messages: list[list[dict[str, Any]]] = []
+
+    async def stream_forward(self, context: Any, **kwargs: Any) -> AsyncIterator[AssistantMessageChunk]:
+        self.request_messages.append([message.to_dict() for message in context.history.data])
+        if len(self.request_messages) == 1:
+            context.add_message(
+                AssistantMessage(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            tool_call_id="call_missing",
+                            tool_name="summon_missing_tool",
+                            arguments={"target": "anything"},
+                        )
+                    ],
+                )
+            )
+            return
+
+        yield AssistantMessageChunk(content="recovered from missing tool")
+        context.add_message(AssistantMessage(content="recovered from missing tool"))
+
+
 class RepeatedToolCallingLLM:
     def __init__(self) -> None:
         self.request_messages: list[list[dict[str, Any]]] = []
@@ -278,10 +303,10 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
 
             agent.start_run(run, "turn-0001")
 
-            self.assertEqual(list(agent._tools), ["bash", "read", "write", "edit", "glob", "grep"])
+            self.assertEqual(list(agent._tools), ["bash", "read", "write", "edit", "glob", "grep", "diff"])
             self.assertEqual(
                 [tool["function"]["name"] for tool in agent.tools_param()],
-                ["bash", "read", "write", "edit", "glob", "grep"],
+                ["bash", "read", "write", "edit", "glob", "grep", "diff"],
             )
             self.assertNotIn("delete_file", agent._tools)
 
@@ -478,6 +503,53 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 [message["content"] for message in loaded.history[:-1]],
                 [message["content"] for message in llm.request_messages[-1][1:]],
             )
+
+    def test_lora_agent_records_unknown_tool_as_tool_error_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", max_steps=3)
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            llm = UnknownToolThenAnswerLLM()
+            agent = ToolEnabledLoraAgent(config)
+            agent.llm = llm
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="try any missing tool",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            loaded = manager.load(ref.session_id)
+            events = _read_jsonl(Path(run.run_dir) / "events.jsonl")
+            tool_calls = _read_jsonl(Path(run.run_dir) / "tool_calls.jsonl")
+            tool_results = _read_jsonl(Path(run.run_dir) / "tool_results.jsonl")
+            unknown_event = next(event for event in events if event["type"] == "tool.unknown")
+            tool_message = loaded.history[2]
+            tool_payload = json.loads(tool_message["content"])
+
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["final_answer"], "recovered from missing tool")
+            self.assertEqual(len(llm.request_messages), 2)
+            self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant", "tool", "assistant"])
+            self.assertEqual(tool_calls[0]["tool_name"], "summon_missing_tool")
+            self.assertEqual(tool_calls[0]["args"], {"target": "anything"})
+            self.assertEqual(tool_results[0]["status"], "error")
+            self.assertEqual(tool_results[0]["error_type"], "UnknownToolError")
+            self.assertIn("summon_missing_tool", tool_results[0]["error"])
+            self.assertEqual(tool_results[0]["details"]["requested_tool"], "summon_missing_tool")
+            self.assertIn("add_numbers", tool_results[0]["details"]["available_tools"])
+            self.assertEqual(unknown_event["payload"]["requested_tool"], "summon_missing_tool")
+            self.assertEqual(unknown_event["payload"]["arguments"], {"target": "anything"})
+            self.assertEqual(tool_payload["status"], "error")
+            self.assertEqual(tool_payload["error_type"], "UnknownToolError")
+            self.assertEqual(tool_payload["details"]["requested_tool"], "summon_missing_tool")
+            self.assertIn("bash", tool_payload["details"]["available_tools"])
+            self.assertEqual(llm.request_messages[1][-1]["tool_call_id"], "call_missing")
 
     def test_model_request_prefix_is_append_only_across_tool_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -676,15 +748,17 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertIn("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", rendered_prompt)
             self.assertIn("# Available Tools", rendered_prompt)
             self.assertIn(
-                "Tools currently available for this request: bash, read, write, edit, glob, grep.",
+                "Tools currently available for this request: bash, read, write, edit, glob, grep, diff.",
                 rendered_prompt,
             )
+            self.assertIn("Use diff to inspect persisted Lora file changes.", rendered_prompt)
             self.assertIn("Workspace root:", rendered_prompt)
             self.assertIn("Default excludes:", rendered_prompt)
             self.assertIn(".venv", rendered_prompt)
             self.assertIn(".lora", rendered_prompt)
             self.assertIn("Use glob or grep before bash find/cat", rendered_prompt)
-            self.assertIn("Use read with offset/limit instead of dumping whole files", rendered_prompt)
+            self.assertIn("For large files, do not read the whole file first.", rendered_prompt)
+            self.assertIn("call read with offset and limit around those matches", rendered_prompt)
             self.assertIn("Use bash as a fallback for verification or composed shell commands", rendered_prompt)
             self.assertIn("runtime.system_reminder", prompt_event["payload"]["dynamic_module_ids"])
             self.assertIn("<system-reminder>", rendered_prompt)

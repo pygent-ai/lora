@@ -26,6 +26,7 @@ Lora 为这些问题提供一套本地优先的运行证据链。
 - **修复闭环**：支持生成修复计划、捕获人工 diff attempt，并运行 regression gate。
 - **Agent profile**：通过 `lora.yaml` 和 `--agent` 选择不同 agent alias、模型、API key 来源和 base URL。
 - **文件影响追踪**：记录工具对 workspace 文件的读取、写入、编辑和删除效果。
+- **持久化 Diff**：为写入、编辑和删除类工具调用保存文本快照与 unified patch，并通过 `diff` 工具在后续 turn、run 或 session 中查询。
 
 ## 快速开始
 
@@ -160,8 +161,10 @@ uv run lora --agent dev --model deepseek-v4-flash chat --message "hello"
 - `edit`
 - `glob`
 - `grep`
+- `diff`
 
 工具调用会经过 `ToolInterceptor`，统一记录 `tool.call`、`tool.result`，并在默认路径下追踪 workspace 文件影响。
+其中 `diff` 使用 Lora 已落盘的文件影响和快照产物，适合查看当前 turn、run 或整个 session 内由 Agent 工具调用产生的历史改动；实时仓库状态仍应使用 `bash` 执行 `git diff` 等命令查看。
 
 ## 运行产物
 
@@ -186,12 +189,16 @@ Lora 的结构化运行证据默认写入 `.lora/`：
               tool_calls.jsonl
               tool_results.jsonl
               file_events.jsonl
+              diffs/
+                diff_events.jsonl
+                patches/
+                snapshots/
               metrics.json
               verdict.json
               analysis.json
 ```
 
-其中 `events.jsonl` 是完整事实来源，其他 JSONL 和 JSON 文件是面向查询、评测和分析的投影或结果。
+其中 `events.jsonl` 是完整事实来源，其他 JSONL 和 JSON 文件是面向查询、评测和分析的投影或结果。`diffs/` 保存可恢复的文本快照、patch 文件和 diff 索引，session 级索引会同步写入 `logs/diff_events.jsonl`。
 
 ## 项目结构
 
@@ -204,6 +211,7 @@ src/lora/
   runtime.py          Agent 运行适配层
   agent.py            默认 LoraAgent、prompt 和工具注册
   tools.py            工具拦截、文件读取去重和文件影响追踪
+  diffing.py          持久化 diff 快照、patch 生成和 diff 工具
   trace.py            事件存储和 JSONL 投影
   evaluation.py       deterministic evaluator
   analysis.py         失败归因
@@ -232,6 +240,7 @@ doc_design/           设计与开发文档
 - regression manifest 执行与失败 case 生成注册。
 - repair plan、manual diff attempt 捕获和 regression gate。
 - workspace setup 的受控文件操作与路径安全检查。
+- 持久化 diff 快照、patch 产物和模型可见的 `diff` 查询工具。
 - prompt 渲染记录、static prompt cache 和 prompt injection policy 基础链路。
 
 规划中的能力：

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from lora.schema import CaseRunRef
+from lora.diffing import DiffTool
 from lora.tools import FileStateTracker, ReadRange, ToolContext, ToolInterceptor
 from lora.trace import EventStore
 
@@ -496,6 +497,76 @@ class FileEffectTrackerSpecTests(unittest.TestCase):
 
             file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
             self.assertEqual(len(file_events), 1)
+
+    def test_file_effect_tracker_persists_patch_for_edit_and_diff_tool_returns_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            path = workspace / "demo.txt"
+            path.write_text("old\nsame\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            store = EventStore(run)
+            tracker = FileEffectTracker(workspace_root=workspace, store=store)
+            before = tracker.snapshot_workspace()
+
+            path.write_text("new\nsame\n", encoding="utf-8")
+            effects = tracker.observed_effects(before, tracker.snapshot_workspace(), tool_name="edit", tool_call_id="evt_tool")
+            tracker.append_effects(effects, turn_id="turn-0001")
+
+            diff_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "diffs" / "diff_events.jsonl"))
+            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
+            result = DiffTool(case_run_ref=run, workspace_root=workspace).forward(format="patch")
+
+            self.assertEqual(len(file_events), 1)
+            self.assertEqual(len(diff_events), 1)
+            self.assertEqual(diff_events[0]["change_type"], "edit")
+            self.assertTrue(Path(diff_events[0]["snapshot_before_path"]).exists())
+            self.assertTrue(Path(diff_events[0]["snapshot_after_path"]).exists())
+            self.assertTrue(Path(diff_events[0]["patch_path"]).exists())
+            self.assertEqual(result["count"], 1)
+            self.assertIn("--- a/demo.txt\n+++ b/demo.txt\n", result["patch"])
+            self.assertIn("-old", result["patch"])
+            self.assertIn("+new", result["patch"])
+
+    def test_diff_tool_reads_session_level_diff_index_after_recreation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            run_dir = session_dir / "cases" / "c1" / "runs" / "r1"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.json").write_text("{}", encoding="utf-8")
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            path = workspace / "created.txt"
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=run_dir)
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            path.write_text("hello\n", encoding="utf-8")
+            effects = tracker.observed_effects(before, tracker.snapshot_workspace(), tool_name="write", tool_call_id="evt_tool")
+            tracker.append_effects(effects, turn_id="turn-0001")
+
+            recreated = DiffTool(case_run_ref=run, workspace_root=workspace)
+            result = recreated.forward(scope="session", format="summary")
+
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["diffs"][0]["path"], "created.txt")
+            self.assertEqual(result["diffs"][0]["change_type"], "write")
+
+    def test_diff_tool_schema_exposes_scope_and_format_enums(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+
+            schema = DiffTool(case_run_ref=run, workspace_root=workspace).to_openai_function()
+            properties = schema["parameters"]["properties"]
+
+            self.assertEqual(properties["scope"]["enum"], ["turn", "run", "session"])
+            self.assertEqual(properties["format"]["enum"], ["summary", "patch", "json"])
+            self.assertEqual(properties["limit"]["minimum"], 1)
+            self.assertFalse(schema["parameters"]["additionalProperties"])
 
 
 def _file_effect_tracker_class():

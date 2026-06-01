@@ -22,7 +22,9 @@ DESIGN_EVENT_TYPES = frozenset(
         "model.response",
         "prompt.rendered",
         "tool.call",
+        "tool.unknown",
         "tool.result",
+        "diff.created",
         "file.read",
         "file.write",
         "file.edit",
@@ -160,6 +162,10 @@ class EventStore:
             record = redact_secrets(_file_event_record(event))
             append_jsonl(self.file_events_path, record)
             self._append_session_log("file_events.jsonl", record)
+        elif event.type == "diff.created":
+            record = redact_secrets(_diff_event_record(event))
+            append_jsonl(self.run_dir / "diffs" / "diff_events.jsonl", record)
+            self._append_session_log("diff_events.jsonl", record)
 
     def _append_session_history(self, record: dict[str, Any]) -> None:
         if self.session_dir is None:
@@ -324,6 +330,35 @@ def _file_event_record(event: ContextEvent) -> dict[str, Any]:
         "content_hash": event.payload.get("content_hash") or event.payload.get("hash"),
         "created_at": event.timestamp,
         "payload": event.payload,
+    }
+
+
+def _diff_event_record(event: ContextEvent) -> dict[str, Any]:
+    payload = event.payload
+    return {
+        "event_id": event.id,
+        "session_id": event.session_id,
+        "case_id": event.case_id,
+        "case_run_id": event.case_run_id,
+        "turn_id": event.turn_id,
+        "diff_id": payload.get("diff_id"),
+        "tool_call_id": payload.get("tool_call_id"),
+        "tool_name": payload.get("tool_name"),
+        "path": payload.get("path"),
+        "relative_path": payload.get("relative_path"),
+        "change_type": payload.get("change_type"),
+        "before_exists": payload.get("before_exists"),
+        "after_exists": payload.get("after_exists"),
+        "before_hash": payload.get("before_hash"),
+        "after_hash": payload.get("after_hash"),
+        "snapshot_before_path": payload.get("snapshot_before_path"),
+        "snapshot_after_path": payload.get("snapshot_after_path"),
+        "patch_available": payload.get("patch_available", False),
+        "patch_path": payload.get("patch_path"),
+        "patch_char_count": payload.get("patch_char_count", 0),
+        "patch_line_count": payload.get("patch_line_count", 0),
+        "patch_unavailable_reason": payload.get("patch_unavailable_reason"),
+        "created_at": event.timestamp,
     }
 
 
