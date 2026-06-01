@@ -29,7 +29,8 @@ The first memorable quality should be observability: users are not only chatting
 
 In scope:
 
-- PySide6 desktop entry point under `lora.gui`.
+- PySide6 desktop app package under `lora_gui`, kept as a sibling of the core `lora` package.
+- A GUI script entry point such as `lora-gui`.
 - Main window with session sidebar, chat pane, and trace inspector.
 - New chat session creation.
 - Resume existing chat sessions from `.lora/sessions`.
@@ -53,10 +54,10 @@ These can be added later without changing the main shell.
 
 ## Architecture
 
-Add a GUI package:
+Add a GUI package next to the core `lora` package:
 
 ```text
-src/lora/gui/
+src/lora_gui/
   __init__.py
   __main__.py
   app.py
@@ -70,6 +71,8 @@ src/lora/gui/
     settings.py
 ```
 
+This keeps `lora` focused on agent/runtime behavior and makes `lora_gui` the application layer. `lora_gui` may import from `lora`, but `lora` must not import from `lora_gui`.
+
 `app.py` owns Qt application startup and applies the stylesheet.
 
 `main_window.py` composes the three main panes and coordinates user actions.
@@ -78,14 +81,14 @@ src/lora/gui/
 
 `session_model.py` adapts `SessionManager` and `.lora/sessions` into view-friendly records. It should be responsible for listing, loading, and creating chat sessions.
 
-The GUI reuses existing core APIs:
+The GUI reuses existing core APIs from `lora`:
 
 - `load_run_config()` for runtime configuration.
 - `SessionManager` for session lifecycle.
 - `AgentRuntimeAdapter.run_turn()` for chat execution.
 - `EventStore` and run artifact files for inspector data.
 
-The GUI must not duplicate session persistence logic.
+The GUI must not duplicate session persistence logic. Packaging should include both `src/lora` and `src/lora_gui`, while the existing `lora` CLI remains owned by the core package.
 
 ## Main UI
 
@@ -182,6 +185,21 @@ Manual verification:
 ## Implementation Notes
 
 PySide6 should be added as a project dependency only when implementation begins. The design assumes Python 3.13 compatibility.
+
+Implementation should update packaging metadata so both packages are included:
+
+```toml
+[tool.hatch.build.targets.wheel]
+packages = ["src/lora", "src/lora_gui"]
+```
+
+It should also add a desktop app command:
+
+```toml
+[project.scripts]
+lora = "lora.cli:main"
+lora-gui = "lora_gui.__main__:main"
+```
 
 Qt styling should be local to the GUI package. Core Lora modules should remain UI-agnostic.
 
