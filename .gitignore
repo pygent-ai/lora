@@ -16,3 +16,4 @@ wheels/
 # Local Lora runtime state
 .lora/sessions/
 sessions/
+.superpowers/
