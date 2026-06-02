@@ -129,6 +129,33 @@ class ToolTests(unittest.TestCase):
             tool_result = next(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))
             self.assertEqual(tool_result["result"]["full_output_path"], str(output_path))
 
+    def test_tool_interceptor_does_not_spool_allowlisted_large_bash_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(EventStore(run), bash_full_output_allowlist=["lora"])
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            output = "\n".join(f"line-{index:04d}" for index in range(700))
+
+            result = interceptor.call_tool("bash", {"command": "lora chat --message hello"}, ctx, lambda command: output)
+
+            self.assertEqual(result.status, "success")
+            self.assertEqual(result.result, output)
+            self.assertFalse((Path(run.run_dir) / "tool_outputs").exists())
+            tool_result = next(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))
+            self.assertEqual(tool_result["result"], output)
+
+    def test_tool_interceptor_allowlist_requires_command_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(EventStore(run), bash_full_output_allowlist=["lora"])
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            output = "\n".join(f"line-{index:04d}" for index in range(700))
+
+            result = interceptor.call_tool("bash", {"command": "lorax chat"}, ctx, lambda command: output)
+
+            self.assertIsInstance(result.result, dict)
+            self.assertTrue(result.result["truncated"])
+
     def test_tool_interceptor_allows_outside_read_effects_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"

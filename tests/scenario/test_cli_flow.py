@@ -441,7 +441,7 @@ class CliScenarioTests(unittest.TestCase):
             payload = json.loads(chat.stdout)
             run_dir = Path(payload["run_dir"])
 
-            self.assertEqual(payload["status"], "passed")
+            self.assertEqual(set(payload), {"final_answer", "session_id", "case_run_id", "run_dir"})
             self.assertIn("Lora agent is wired into chat", payload["final_answer"])
             self.assertTrue(payload["session_id"].startswith("chat-chat-"))
             self.assertTrue((run_dir / "events.jsonl").exists())

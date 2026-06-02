@@ -75,6 +75,7 @@ def load_run_config(
         resolved_agent=resolved_agent,
         user_identity=_non_empty(_dig(config_data, "user.identity")) or "default",
         cli_bash_presets=_resolve_cli_bash_presets(config_data),
+        bash_full_output_allowlist=_resolve_bash_full_output_allowlist(config_data),
         allow_read_outside_workspace=_bool_config(
             os.environ.get("LORA_ALLOW_READ_OUTSIDE_WORKSPACE"),
             _dig(config_data, "allow_read_outside_workspace"),
@@ -160,6 +161,21 @@ def _resolve_cli_bash_presets(config_data: dict[str, Any]) -> list[BashCliPreset
                 description=str(item.get("description") or ""),
             )
         )
+    return resolved
+
+
+def _resolve_bash_full_output_allowlist(config_data: dict[str, Any]) -> list[str]:
+    entries = _dig(config_data, "cli.bash.full_output_allowlist")
+    if entries is None:
+        return []
+    if not isinstance(entries, list):
+        raise ValueError("cli.bash.full_output_allowlist must be a list")
+    resolved: list[str] = []
+    for index, item in enumerate(entries):
+        value = _non_empty(item)
+        if value is None:
+            raise ValueError(f"cli.bash.full_output_allowlist[{index}] must be a non-empty string")
+        resolved.append(value)
     return resolved
 
 

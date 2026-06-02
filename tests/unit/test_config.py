@@ -164,12 +164,45 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.cli_bash_presets[0].command, "rg --help")
         self.assertEqual(config.cli_bash_presets[1].description, "Run Python type checks.")
 
+    def test_bash_full_output_allowlist_resolves_from_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "lora.yaml").write_text(
+                "\n".join(
+                    [
+                        "cli:",
+                        "  bash:",
+                        "    full_output_allowlist:",
+                        "      - lora",
+                        "      - uv run pytest",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_run_config(workspace_root=root)
+
+        self.assertEqual(config.bash_full_output_allowlist, ["lora", "uv run pytest"])
+
     def test_user_identity_and_cli_presets_have_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = load_run_config(workspace_root=tmp)
 
         self.assertEqual(config.user_identity, "default")
         self.assertEqual([preset.name for preset in config.cli_bash_presets], ["rg", "pyright"])
+        self.assertEqual(config.bash_full_output_allowlist, [])
+
+    def test_bash_full_output_allowlist_must_be_a_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "lora.yaml").write_text(
+                "cli:\n  bash:\n    full_output_allowlist: lora\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "cli.bash.full_output_allowlist"):
+                load_run_config(workspace_root=root)
 
     def test_allow_read_outside_workspace_can_be_disabled_in_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

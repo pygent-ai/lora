@@ -95,6 +95,7 @@ class PromptRenderContext:
     session_id: str
     workspace_root: Path
     session_dir: Path
+    skills_dir: Path
     turn_id: str | None
     projection: dict[str, Any]
     tool_names: list[str]
@@ -226,6 +227,15 @@ class PromptRegistry:
                 order=95,
                 render=_render_system_reminder_prompt,
                 enabled=_system_reminder_enabled,
+            ),
+            PromptModule(
+                id="runtime.skill_reminder",
+                phase="dynamic",
+                type="runtime",
+                cache_scope="request",
+                order=96,
+                render=_render_skill_reminder_prompt,
+                enabled=_skill_reminder_enabled,
             ),
             PromptModule(
                 id="runtime.env_info",
@@ -410,6 +420,7 @@ class StaticPromptSessionCache:
                 session_id=ctx.session_id,
                 workspace_root=ctx.workspace_root,
                 session_dir=ctx.session_dir,
+                skills_dir=ctx.skills_dir,
                 turn_id=None,
                 projection={},
                 tool_names=[],
@@ -511,9 +522,11 @@ class AgentContextManager:
         prompt_registry: PromptRegistry | None = None,
         prompt_composer: PromptComposer | None = None,
         cli_bash_presets: list[BashCliPreset] | None = None,
+        skills_dir: Path | None = None,
     ) -> None:
         self.session_dir = session_dir
         self.workspace_root = workspace_root
+        self.skills_dir = skills_dir or workspace_root / ".lora" / "skills"
         self.store = store
         self.file_state = FileStateTracker(session_dir / "state")
         self.prompt_composer = prompt_composer or PromptComposer(prompt_registry)
@@ -547,6 +560,7 @@ class AgentContextManager:
             session_id=runtime_context.session_id,
             workspace_root=self.workspace_root,
             session_dir=self.session_dir,
+            skills_dir=self.skills_dir,
             turn_id=turn_id,
             projection={},
             tool_names=[],
@@ -588,6 +602,7 @@ class AgentContextManager:
             session_id=runtime_context.session_id,
             workspace_root=self.workspace_root,
             session_dir=self.session_dir,
+            skills_dir=self.skills_dir,
             turn_id=turn_id,
             projection=projection,
             tool_names=tool_names,
@@ -666,6 +681,8 @@ class AgentContextManager:
             )
             if any(module["id"] == "runtime.system_reminder" for module in dynamic_rendered_modules):
                 _consume_system_reminder_state(render_ctx)
+            if any(module["id"] == "runtime.skill_reminder" for module in dynamic_rendered_modules):
+                _consume_skill_reminder_state(render_ctx)
         return model_prompt
 
     def file_status(self) -> list[dict[str, Any]]:
@@ -729,6 +746,7 @@ class LoraAgent(BaseAgent):
             store=EventStore(case_run_ref),
             prompt_registry=self.prompt_registry,
             cli_bash_presets=self.config.cli_bash_presets,
+            skills_dir=Path(self.config.lora_root) / "skills",
         )
         setattr(self.context_manager, "turn_id", turn_id)
         self.tool_manager = ToolManager()
@@ -772,6 +790,7 @@ class LoraAgent(BaseAgent):
             workspace_root=self.workspace_root,
             track_file_effects=True,
             allow_read_outside_workspace=self.config.allow_read_outside_workspace,
+            bash_full_output_allowlist=self.config.bash_full_output_allowlist,
         )
         tool_context = ToolContext(case_run_ref=self.case_run_ref, turn_id=self.turn_id)
         step_count = 0
@@ -839,6 +858,7 @@ class LoraAgent(BaseAgent):
                         turn_id=self.turn_id,
                     )
                     new_cli_entries: list[dict[str, Any]] = []
+                    new_skill_entries: list[dict[str, Any]] = []
                 else:
                     result = interceptor.call_tool(name, kwargs, tool_context, self._tools[name].forward)
                     new_cli_entries = []
@@ -848,11 +868,25 @@ class LoraAgent(BaseAgent):
                             self.config.cli_bash_presets,
                             command=str(kwargs.get("command") or ""),
                         )
+                        new_skill_entries = _detect_new_skills_after_file_change(
+                            self.context_manager.session_dir,
+                            self.context_manager.skills_dir,
+                        )
+                    elif name in {"write", "edit"} and self.context_manager is not None:
+                        new_skill_entries = _detect_new_skills_after_file_change(
+                            self.context_manager.session_dir,
+                            self.context_manager.skills_dir,
+                        )
+                    else:
+                        new_skill_entries = []
                     payload = result.to_dict()
                 content = _serialize_tool_payload_for_model(payload)
                 reminder = _render_new_cli_tool_message_reminder(new_cli_entries)
                 if reminder:
                     content = f"{content}\n\n{reminder}"
+                skill_reminder = _render_new_skill_tool_message_reminder(self.context_manager.skills_dir, new_skill_entries)
+                if skill_reminder:
+                    content = f"{content}\n\n{skill_reminder}"
                 tool_message = ToolMessage(
                     content=content,
                     tool_call_id=tool_call.tool_call_id.data,
@@ -1039,6 +1073,70 @@ def _render_system_reminder_prompt(ctx: PromptRenderContext) -> str | None:
     return "\n".join(lines)
 
 
+def _skill_reminder_enabled(ctx: PromptRenderContext) -> bool:
+    state = _load_skill_context_state(ctx)
+    if not bool(state.get("initial_skill_context_injected")) and ctx.skills_dir.exists():
+        if not state.get("known_skills") and not state.get("skills_dir_fingerprint"):
+            state["skills_dir"] = str(ctx.skills_dir)
+            state["skills_dir_fingerprint"] = _skills_dir_fingerprint(ctx.skills_dir)
+            state["known_skills"] = {skill["name"]: skill for skill in _scan_standard_skills(ctx.skills_dir)}
+            _write_skill_context_state(ctx, state)
+        return True
+    return _skill_reminder_has_content(state)
+
+
+def _render_skill_reminder_prompt(ctx: PromptRenderContext) -> str | None:
+    state = _load_skill_context_state(ctx)
+    include_initial = not bool(state.get("initial_skill_context_injected")) and ctx.skills_dir.exists()
+    pending_new_skills = list(state.get("pending_new_skills") or [])
+    if not include_initial and not pending_new_skills:
+        return None
+
+    lines = [
+        "<system-reminder>",
+        "  <skills-context>",
+        f"    <skills-directory>{escape(str(ctx.skills_dir), quote=False)}</skills-directory>",
+    ]
+    if include_initial:
+        lines.extend(
+            [
+                "    <instruction>",
+                "      Skills are discovered from this directory. A standard skill is a subdirectory containing SKILL.md with name and description frontmatter.",
+                "      The available skill list contains names and descriptions only. Load the full SKILL.md instructions only when the task requires that skill.",
+                "    </instruction>",
+            ]
+        )
+        skills = sorted((state.get("known_skills") or {}).values(), key=lambda item: str(item.get("name") or ""))
+        if skills:
+            lines.append("    <available-skills>")
+            lines.extend(_render_skill_entries(skills, indent="      "))
+            lines.append("    </available-skills>")
+    if pending_new_skills:
+        lines.append("    <new-skills>")
+        lines.extend(_render_skill_entries(pending_new_skills, indent="      "))
+        lines.append("    </new-skills>")
+    lines.extend(["  </skills-context>", "</system-reminder>"])
+    return "\n".join(lines)
+
+
+def _render_skill_entries(skills: list[dict[str, Any]], *, indent: str) -> list[str]:
+    lines: list[str] = []
+    for skill in skills:
+        name = str(skill.get("name") or "")
+        description = str(skill.get("description") or "")
+        if not name or not description:
+            continue
+        lines.extend(
+            [
+                f"{indent}<skill>",
+                f"{indent}  <name>{escape(name, quote=False)}</name>",
+                f"{indent}  <description>{escape(description[:240], quote=False)}</description>",
+                f"{indent}</skill>",
+            ]
+        )
+    return lines
+
+
 def _render_runtime_env_info_prompt(ctx: PromptRenderContext) -> str:
     return (
         "# Runtime Context\n\n"
@@ -1222,12 +1320,55 @@ def _write_cli_context_state(ctx: PromptRenderContext, state: dict[str, Any]) ->
     _write_json_atomic(path, state)
 
 
+def _skill_context_state_path(ctx: PromptRenderContext) -> Path:
+    return ctx.session_dir / "state" / "skill_context.json"
+
+
+def _default_skill_context_state(skills_dir: Path) -> dict[str, Any]:
+    return {
+        "initial_skill_context_injected": False,
+        "skills_dir": str(skills_dir),
+        "skills_dir_fingerprint": "",
+        "known_skills": {},
+        "pending_new_skills": [],
+        "pending_system_reminders": [],
+    }
+
+
+def _load_skill_context_state(ctx: PromptRenderContext) -> dict[str, Any]:
+    path = _skill_context_state_path(ctx)
+    if not path.exists():
+        return _default_skill_context_state(ctx.skills_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        data = {}
+    return {
+        "initial_skill_context_injected": bool(data.get("initial_skill_context_injected")),
+        "skills_dir": str(data.get("skills_dir") or ctx.skills_dir),
+        "skills_dir_fingerprint": str(data.get("skills_dir_fingerprint") or ""),
+        "known_skills": dict(data.get("known_skills") or {}),
+        "pending_new_skills": list(data.get("pending_new_skills") or []),
+        "pending_system_reminders": list(data.get("pending_system_reminders") or []),
+    }
+
+
+def _write_skill_context_state(ctx: PromptRenderContext, state: dict[str, Any]) -> None:
+    path = _skill_context_state_path(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(path, state)
+
+
 def _system_reminder_has_content(ctx: PromptRenderContext, state: dict[str, Any]) -> bool:
     return (
         (not bool(state.get("initial_available_cli_injected")) and bool(ctx.cli_bash_presets))
         or bool(state.get("pending_new_bash_cli"))
         or bool(state.get("pending_system_reminders"))
     )
+
+
+def _skill_reminder_has_content(state: dict[str, Any]) -> bool:
+    return bool(state.get("pending_new_skills")) or bool(state.get("pending_system_reminders"))
 
 
 def _consume_system_reminder_state(ctx: PromptRenderContext) -> None:
@@ -1250,6 +1391,22 @@ def _consume_system_reminder_state(ctx: PromptRenderContext) -> None:
     state["pending_new_bash_cli"] = []
     state["pending_system_reminders"] = []
     _write_cli_context_state(ctx, state)
+
+
+def _consume_skill_reminder_state(ctx: PromptRenderContext) -> None:
+    state = _load_skill_context_state(ctx)
+    known = dict(state.get("known_skills") or {})
+    for item in state.get("pending_new_skills") or []:
+        name = str(item.get("name") or "")
+        if name:
+            known[name] = dict(item)
+    state["known_skills"] = known
+    state["skills_dir"] = str(ctx.skills_dir)
+    state["skills_dir_fingerprint"] = _skills_dir_fingerprint(ctx.skills_dir)
+    state["initial_skill_context_injected"] = True
+    state["pending_new_skills"] = []
+    state["pending_system_reminders"] = []
+    _write_skill_context_state(ctx, state)
 
 
 def _detect_new_bash_cli(
@@ -1304,6 +1461,111 @@ def _detect_new_bash_cli(
     return new_entries
 
 
+def _detect_new_skills_after_file_change(session_dir: Path, skills_dir: Path) -> list[dict[str, Any]]:
+    ctx = PromptRenderContext(
+        session_id="skill-detection",
+        workspace_root=skills_dir.parent.parent if skills_dir.name == "skills" else skills_dir.parent,
+        session_dir=session_dir,
+        skills_dir=skills_dir,
+        turn_id=None,
+        projection={},
+        tool_names=[],
+    )
+    state = _load_skill_context_state(ctx)
+    new_fingerprint = _skills_dir_fingerprint(skills_dir)
+    if state.get("skills_dir_fingerprint") == new_fingerprint:
+        return []
+
+    known = dict(state.get("known_skills") or {})
+    pending = list(state.get("pending_new_skills") or [])
+    pending_names = {str(item.get("name") or "") for item in pending}
+    new_entries: list[dict[str, Any]] = []
+    for skill in _scan_standard_skills(skills_dir):
+        name = str(skill.get("name") or "")
+        if not name or name in known or name in pending_names:
+            continue
+        entry = {**skill, "source": "tool_result", "detected_at": _now()}
+        pending.append(entry)
+        pending_names.add(name)
+        new_entries.append(entry)
+
+    state["skills_dir"] = str(skills_dir)
+    state["skills_dir_fingerprint"] = new_fingerprint
+    if new_entries:
+        state["pending_new_skills"] = pending
+        reminders = list(state.get("pending_system_reminders") or [])
+        reminders.append({"kind": "skill_context", "created_at": _now()})
+        state["pending_system_reminders"] = reminders
+    _write_skill_context_state(ctx, state)
+    return new_entries
+
+
+def _skills_dir_fingerprint(skills_dir: Path) -> str:
+    if not skills_dir.exists():
+        return _hash_json([])
+    rows: list[dict[str, Any]] = []
+    for child in sorted(skills_dir.iterdir(), key=lambda item: item.name):
+        if not child.is_dir():
+            continue
+        rows.append({"name": child.name, "has_skill": (child / "SKILL.md").is_file()})
+    return _hash_json(rows)
+
+
+def _scan_standard_skills(skills_dir: Path) -> list[dict[str, Any]]:
+    if not skills_dir.exists():
+        return []
+    skills: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for child in sorted(skills_dir.iterdir(), key=lambda item: item.name):
+        if not child.is_dir():
+            continue
+        skill_path = child / "SKILL.md"
+        if not skill_path.is_file():
+            continue
+        skill = _read_skill_definition(skill_path)
+        if skill is None:
+            continue
+        if skill["name"] in seen_names:
+            continue
+        seen_names.add(skill["name"])
+        skills.append(skill)
+    return skills
+
+
+def _read_skill_definition(path: Path) -> dict[str, Any] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    frontmatter = _parse_frontmatter(text)
+    name = str(frontmatter.get("name") or "").strip()
+    description = str(frontmatter.get("description") or "").strip()
+    if not name or not description:
+        return None
+    return {
+        "name": name,
+        "description": description,
+        "path": str(path),
+        "content_hash": _hash_text(text),
+        "detected_at": _now(),
+    }
+
+
+def _parse_frontmatter(text: str) -> dict[str, str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    data: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return data
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        data[key.strip()] = value.strip().strip("\"'")
+    return {}
+
+
 def _infer_installed_cli_names(command: str) -> list[str]:
     parts = command.split()
     if len(parts) >= 4 and parts[:3] == ["npm", "install", "-g"]:
@@ -1339,6 +1601,22 @@ def _render_new_cli_tool_message_reminder(entries: list[dict[str, Any]]) -> str 
             ]
         )
     lines.extend(["  </new-bash-cli>", "</cli-context>", "</system-reminder>"])
+    return "\n".join(lines)
+
+
+def _render_new_skill_tool_message_reminder(skills_dir: Path, entries: list[dict[str, Any]]) -> str | None:
+    if not entries:
+        return None
+    lines = [
+        "<system-reminder>",
+        "  <skills-context>",
+        f"    <skills-directory>{escape(str(skills_dir), quote=False)}</skills-directory>",
+        "    <new-skills>",
+        *_render_skill_entries(entries, indent="      "),
+        "    </new-skills>",
+        "  </skills-context>",
+        "</system-reminder>",
+    ]
     return "\n".join(lines)
 
 

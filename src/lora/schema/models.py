@@ -85,6 +85,7 @@ class RunConfig:
     resolved_agent: ResolvedAgentConfig | None = field(default=None, repr=False, compare=False)
     user_identity: str = "default"
     cli_bash_presets: list[BashCliPreset] = field(default_factory=_default_cli_bash_presets)
+    bash_full_output_allowlist: list[str] = field(default_factory=list)
     allow_read_outside_workspace: bool = True
 
     def __post_init__(self) -> None:
@@ -103,6 +104,12 @@ class RunConfig:
         self.cli_bash_presets = [
             preset if isinstance(preset, BashCliPreset) else BashCliPreset(**preset)
             for preset in self.cli_bash_presets
+        ]
+        if not isinstance(self.bash_full_output_allowlist, list):
+            raise ValueError("bash_full_output_allowlist must be a list")
+        self.bash_full_output_allowlist = [
+            _require(item, "bash_full_output_allowlist item")
+            for item in self.bash_full_output_allowlist
         ]
 
     def to_dict(self) -> dict[str, Any]:

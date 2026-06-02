@@ -30,7 +30,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"lora: error: {exc}", file=sys.stderr)
         return 2
     if result is not None:
-        print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
 
@@ -277,7 +277,7 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
                 )
             )
             status = result["status"]
-            return {**run_ref.to_dict(), **result}
+            return _chat_message_payload(run_ref, result)
 
         print(f"lora chat session: {session_id}")
         print("Type /exit or /quit to end.")
@@ -336,6 +336,18 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
         store.append("chat.finished", actor="system", payload={"status": status}, turn_id=None)
         manager.finish_case_run(run_ref, status)
     return None
+
+
+def _chat_message_payload(run_ref: Any, result: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "final_answer": str(result.get("final_answer") or ""),
+        "session_id": run_ref.session_id,
+        "case_run_id": run_ref.case_run_id,
+        "run_dir": str(run_ref.run_dir),
+    }
+    if result.get("error"):
+        payload["error"] = str(result["error"])
+    return payload
 
 
 def _format_runtime_message_for_chat(

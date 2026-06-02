@@ -42,6 +42,33 @@ class FailingAgent:
         raise RuntimeError("boom")
 
 
+class ToolCallContentThenFinalAgent:
+    async def stream(self, context: Any, max_steps: int = 8) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "role": "assistant",
+            "content": "我先看一下工具结果",
+            "type": "conversation.assistant_message",
+            "payload": {
+                "role": "assistant",
+                "content": "我先看一下工具结果",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": '{"path": "README.md"}'},
+                    }
+                ],
+            },
+        }
+        yield {
+            "role": "tool",
+            "content": '{"status": "success", "result": "ok", "error": null, "tool_call_id": "call_1"}',
+            "type": "conversation.tool_message",
+            "payload": {"role": "tool", "content": '{"status": "success"}', "tool_call_id": "call_1"},
+        }
+        yield {"role": "assistant", "content": "最终答案", "type": "conversation.assistant_message"}
+
+
 class DeltaAgent:
     async def stream(self, context: Any, max_steps: int = 8) -> AsyncIterator[dict[str, Any]]:
         yield {
@@ -209,6 +236,43 @@ class BashThenAnswerLLM:
         context.add_message(AssistantMessage(content="noticed"))
 
 
+class BashCreateSkillThenAnswerLLM:
+    def __init__(self, skills_dir: Path) -> None:
+        self.request_count = 0
+        self.skills_dir = skills_dir
+
+    async def stream_forward(self, context: Any, **kwargs: Any) -> AsyncIterator[AssistantMessageChunk]:
+        self.request_count += 1
+        if self.request_count == 1:
+            skill_path = self.skills_dir / "debugging" / "SKILL.md"
+            command = (
+                f"mkdir -p {skill_path.parent.as_posix()} && "
+                f"cat > {skill_path.as_posix()} <<'EOF'\n"
+                "---\n"
+                "name: debugging\n"
+                "description: Investigate failures systematically before proposing fixes.\n"
+                "---\n"
+                "# Debugging\n"
+                "EOF"
+            )
+            context.add_message(
+                AssistantMessage(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            tool_call_id="call_bash_skill",
+                            tool_name="bash",
+                            arguments={"command": command},
+                        )
+                    ],
+                )
+            )
+            return
+
+        yield AssistantMessageChunk(content="noticed new skill")
+        context.add_message(AssistantMessage(content="noticed new skill"))
+
+
 class AddNumbersTool(BaseTool):
     def __init__(self) -> None:
         super().__init__(
@@ -239,6 +303,13 @@ class FakeBashTool(BaseTool):
         self.parameters.data["command"]["description"] = "Command to run."
 
     def forward(self, command: str) -> dict[str, Any]:
+        marker = "cat > "
+        if marker in command and "<<'EOF'" in command:
+            target = command.split(marker, 1)[1].split(" <<'EOF'", 1)[0].strip()
+            content = command.split("<<'EOF'\n", 1)[1].rsplit("\nEOF", 1)[0]
+            path = Path(target)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
         return {"command": command, "stdout": "added 1 package", "exit_code": 0}
 
 
@@ -334,7 +405,7 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             messages = _read_jsonl(Path(run.run_dir) / "messages.jsonl")
 
             self.assertEqual(result.status, "passed")
-            self.assertEqual(result.final_answer, "thinkingdone")
+            self.assertEqual(result.final_answer, "done")
             self.assertEqual(agent.seen_session_id, ref.session_id)
             self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant", "tool", "assistant"])
             self.assertIn("conversation.user_message", [event["type"] for event in events])
@@ -445,7 +516,7 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(result["final_answer"], "thinkingdone")
+            self.assertEqual(result["final_answer"], "done")
             self.assertEqual(
                 messages,
                 [
@@ -454,6 +525,29 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                     ("assistant", "done", None),
                 ],
             )
+
+    def test_run_turn_final_answer_uses_last_assistant_message_without_tool_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora")
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(
+                    agent=ToolCallContentThenFinalAgent(),
+                    config=config,
+                    session_manager=manager,
+                ).run_turn(
+                    session=session,
+                    user_input="use a tool",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            self.assertEqual(result["final_answer"], "最终答案")
 
     def test_lora_agent_persists_assistant_tool_calls_in_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -870,6 +964,176 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertNotIn("runtime.system_reminder", second_prompt_event["payload"]["dynamic_module_ids"])
             first_rendered = Path(first_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
             self.assertIn("<available-bash-cli>", first_rendered)
+
+    def test_first_request_renders_skill_directory_and_available_skills_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            skills_dir = workspace / ".lora" / "skills"
+            skill_file = skills_dir / "code-review" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True, exist_ok=True)
+            skill_file.write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "name: code-review",
+                        "description: Review code changes and prioritize bugs.",
+                        "---",
+                        "# Code Review",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = RunConfig(workspace_root=workspace, lora_root=workspace / ".lora")
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+
+            first_run = manager.start_case_run(ref.session_id, "chat")
+            first_session = manager.load(ref.session_id)
+            asyncio.run(
+                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                    session=first_session,
+                    user_input="first",
+                    case_run_ref=first_run,
+                    turn_id="turn-0001",
+                )
+            )
+            second_run = manager.start_case_run(ref.session_id, "chat")
+            second_session = manager.load(ref.session_id)
+            asyncio.run(
+                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                    session=second_session,
+                    user_input="second",
+                    case_run_ref=second_run,
+                    turn_id="turn-0002",
+                )
+            )
+
+            first_prompt_event = next(
+                event for event in _read_jsonl(Path(first_run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
+            )
+            second_prompt_event = next(
+                event
+                for event in _read_jsonl(Path(second_run.run_dir) / "events.jsonl")
+                if event["type"] == "prompt.rendered"
+            )
+            first_rendered = Path(first_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            second_rendered = Path(second_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            static_prompt = (Path(ref.session_dir) / "context" / "prompts" / "static_prompt.txt").read_text(
+                encoding="utf-8"
+            )
+
+            self.assertIn("runtime.skill_reminder", first_prompt_event["payload"]["dynamic_module_ids"])
+            self.assertNotIn("runtime.skill_reminder", second_prompt_event["payload"]["dynamic_module_ids"])
+            self.assertIn("<skills-context>", first_rendered)
+            self.assertIn(f"<skills-directory>{workspace / '.lora' / 'skills'}</skills-directory>", first_rendered)
+            self.assertIn("<available-skills>", first_rendered)
+            self.assertIn("<name>code-review</name>", first_rendered)
+            self.assertIn("<description>Review code changes and prioritize bugs.</description>", first_rendered)
+            self.assertNotIn("<skills-context>", second_rendered)
+            self.assertNotIn("<skills-context>", static_prompt)
+
+    def test_second_request_does_not_scan_skills_when_no_tool_changed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            skills_dir = workspace / ".lora" / "skills"
+            skill_file = skills_dir / "code-review" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True, exist_ok=True)
+            skill_file.write_text(
+                "---\nname: code-review\ndescription: Review code changes.\n---\n",
+                encoding="utf-8",
+            )
+            config = RunConfig(workspace_root=workspace, lora_root=workspace / ".lora")
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+
+            first_run = manager.start_case_run(ref.session_id, "chat")
+            first_session = manager.load(ref.session_id)
+            asyncio.run(
+                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                    session=first_session,
+                    user_input="first",
+                    case_run_ref=first_run,
+                    turn_id="turn-0001",
+                )
+            )
+            skill_file.unlink()
+            second_run = manager.start_case_run(ref.session_id, "chat")
+            second_session = manager.load(ref.session_id)
+            asyncio.run(
+                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                    session=second_session,
+                    user_input="second",
+                    case_run_ref=second_run,
+                    turn_id="turn-0002",
+                )
+            )
+
+            second_prompt_event = next(
+                event
+                for event in _read_jsonl(Path(second_run.run_dir) / "events.jsonl")
+                if event["type"] == "prompt.rendered"
+            )
+            second_rendered = Path(second_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+
+            self.assertNotIn("runtime.skill_reminder", second_prompt_event["payload"]["dynamic_module_ids"])
+            self.assertNotIn("<skills-context>", second_rendered)
+
+    def test_bash_tool_detects_new_skill_and_reminds_before_next_model_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = RunConfig(workspace_root=workspace, lora_root=workspace / ".lora", max_steps=3)
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            state_dir = Path(ref.session_dir) / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "skill_context.json").write_text(
+                json.dumps(
+                    {
+                        "initial_skill_context_injected": True,
+                        "skills_dir": str(workspace / ".lora" / "skills"),
+                        "skills_dir_fingerprint": "",
+                        "known_skills": {},
+                        "pending_new_skills": [],
+                        "pending_system_reminders": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            agent = FakeBashLoraAgent(config)
+            agent.llm = BashCreateSkillThenAnswerLLM(workspace / ".lora" / "skills")
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="install a skill",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            prompt_events = [
+                event for event in _read_jsonl(Path(run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
+            ]
+            second_rendered = Path(prompt_events[1]["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            loaded = manager.load(ref.session_id)
+            tool_messages = [message for message in loaded.history if message["role"] == "tool"]
+            state = json.loads((state_dir / "skill_context.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(len(prompt_events), 2)
+            self.assertIn("runtime.skill_reminder", prompt_events[1]["payload"]["dynamic_module_ids"])
+            self.assertIn("<new-skills>", second_rendered)
+            self.assertIn("<skills-directory>", second_rendered)
+            self.assertIn("<name>debugging</name>", second_rendered)
+            self.assertIn("<description>Investigate failures systematically before proposing fixes.</description>", second_rendered)
+            self.assertEqual(len(tool_messages), 1)
+            self.assertIn("<system-reminder>", tool_messages[0]["content"])
+            self.assertIn("<new-skills>", tool_messages[0]["content"])
+            self.assertIn("<name>debugging</name>", tool_messages[0]["content"])
+            self.assertEqual(state["pending_new_skills"], [])
+            self.assertEqual(state["pending_system_reminders"], [])
 
     def test_pending_new_cli_is_rendered_once_with_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

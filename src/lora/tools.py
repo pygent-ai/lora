@@ -573,8 +573,10 @@ class ToolInterceptor:
         workspace_root: str | Path | None = None,
         track_file_effects: bool = False,
         allow_read_outside_workspace: bool = True,
+        bash_full_output_allowlist: list[str] | None = None,
     ):
         self.store = store
+        self.bash_full_output_allowlist = list(bash_full_output_allowlist or [])
         if track_file_effects and workspace_root is None:
             raise ValueError("workspace_root is required when track_file_effects=True")
         self.file_effect_tracker = (
@@ -656,9 +658,11 @@ class ToolInterceptor:
             status = result["status"]
         result = _spool_large_bash_result(
             tool_name=name,
+            args=args,
             result=result,
             tool_call_id=call_id,
             run_dir=self.store.run_dir,
+            bash_full_output_allowlist=self.bash_full_output_allowlist,
         )
         self.store.append(
             "tool.result",
@@ -847,8 +851,19 @@ def _structured_tool_error_payload(result: Any) -> dict[str, Any] | None:
     return None
 
 
-def _spool_large_bash_result(*, tool_name: str, result: Any, tool_call_id: str, run_dir: Path) -> Any:
+def _spool_large_bash_result(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    result: Any,
+    tool_call_id: str,
+    run_dir: Path,
+    bash_full_output_allowlist: list[str],
+) -> Any:
     if tool_name != "bash" or not isinstance(result, str):
+        return result
+    command = args.get("command") or args.get("cmd")
+    if isinstance(command, str) and _bash_command_matches_allowlist(command, bash_full_output_allowlist):
         return result
     lines = result.splitlines()
     if len(result) <= MAX_BASH_RESULT_CHARS and len(lines) <= MAX_BASH_RESULT_LINES:
@@ -879,6 +894,19 @@ def _spool_large_bash_result(*, tool_name: str, result: Any, tool_call_id: str, 
             "to inspect additional chunks only if needed."
         ),
     }
+
+
+def _bash_command_matches_allowlist(command: str, allowlist: list[str]) -> bool:
+    command = command.strip()
+    if not command:
+        return False
+    for raw_entry in allowlist:
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        if command == entry or command.startswith(f"{entry} "):
+            return True
+    return False
 
 
 def _end_value(value: int | Literal["EOF"]) -> int:

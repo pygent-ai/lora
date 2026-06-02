@@ -101,19 +101,26 @@ agents:
 
 ## 单轮输出
 
-`--message` 模式会输出 JSON，包含本次 chat run 和 turn 的关键信息：
+`--message` 模式会输出 JSON。`final_answer` 是子 Agent 的答复内容，其余字段只作为追踪元数据：
 
 ```json
 {
-  "case_id": "chat",
   "case_run_id": "run-...",
-  "error": null,
   "final_answer": "Lora agent is wired into chat, but API key is not configured for agent alias 'default'.",
-  "message_count": 2,
   "run_dir": "...\\.lora\\sessions\\...\\cases\\chat\\runs\\...",
-  "session_id": "chat-chat-...",
-  "status": "passed",
-  "turn_id": "turn-0001"
+  "session_id": "chat-chat-..."
+}
+```
+
+如果运行报错，会额外返回 `error`：
+
+```json
+{
+  "case_run_id": "run-...",
+  "error": "agent error message",
+  "final_answer": "partial answer if any",
+  "run_dir": "...\\.lora\\sessions\\...\\cases\\chat\\runs\\...",
+  "session_id": "chat-chat-..."
 }
 ```
 
@@ -122,7 +129,7 @@ agents:
 - `session_id` 是后续续接对话需要使用的 id。
 - `final_answer` 是 agent 的最终回复。
 - `run_dir` 是本轮对话事件、消息和元数据的落盘目录。
-- `status` 为 `passed`、`error` 等运行状态。
+- `error` 是可选字段，仅在 agent 运行报错时返回。
 
 ## 数据落盘
 

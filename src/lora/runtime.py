@@ -543,7 +543,8 @@ def _append_runtime_message(
         runtime_message.content = content
     context.add_message({**payload, "role": runtime_message.role, "content": runtime_message.content})
     store.append(event_type, actor=actor, payload=payload, turn_id=turn_id)
-    if runtime_message.role == "assistant":
+    if runtime_message.role == "assistant" and not _has_tool_calls(payload):
+        final_parts.clear()
         final_parts.append(runtime_message.content)
     return 1
 
@@ -603,6 +604,11 @@ def _message_to_history(message: dict[str, Any] | Any) -> dict[str, Any]:
     role = _value(getattr(message, "role", None)) or "user"
     content = _value(getattr(message, "content", None)) or ""
     return {"role": str(role), "content": str(content)}
+
+
+def _has_tool_calls(payload: dict[str, Any]) -> bool:
+    tool_calls = payload.get("tool_calls")
+    return isinstance(tool_calls, list) and bool(tool_calls)
 
 
 def _canonical_tool_content(content: str) -> str:
