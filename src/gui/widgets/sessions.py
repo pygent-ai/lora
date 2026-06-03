@@ -32,8 +32,8 @@ class SessionSidebar(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._rows: dict[str, _SessionRow] = {}
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 20, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(18, 18, 18, 16)
+        layout.setSpacing(10)
 
         title = QLabel("Lora")
         title.setObjectName("Brand")
@@ -51,6 +51,7 @@ class SessionSidebar(QWidget):
         self.sessions.setObjectName("SessionList")
         self.sessions.setFocusPolicy(Qt.NoFocus)
         self.sessions.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.sessions.setSpacing(2)
         self.sessions.itemClicked.connect(self._emit_selected)
 
         self.agent = QLabel("")
@@ -109,7 +110,7 @@ class SessionSidebar(QWidget):
             item.setData(256, record.session_id)
             item.setToolTip(record.session_id)
             row = _SessionRow(record, self.session_delete_requested.emit)
-            item.setSizeHint(QSize(row.sizeHint().width(), 58))
+            item.setSizeHint(QSize(row.sizeHint().width(), 54))
             self.sessions.addItem(item)
             self.sessions.setItemWidget(item, row)
             self._rows[record.session_id] = row
@@ -145,16 +146,16 @@ class _SessionRow(QWidget):
         self.setObjectName("SessionRow")
         self.setProperty("dev_id", record.session_id)
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setMinimumHeight(56)
+        self.setMinimumHeight(52)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(7, 7, 7, 7)
         layout.setSpacing(8)
 
         self.rail = QLabel("")
         self.rail.setObjectName("SessionRowRail")
         self.rail.setProperty("selected", False)
-        self.rail.setFixedWidth(4)
-        self.rail.setMinimumHeight(34)
+        self.rail.setFixedWidth(3)
+        self.rail.setMinimumHeight(32)
 
         text_stack = QVBoxLayout()
         text_stack.setContentsMargins(0, 0, 0, 0)
@@ -173,6 +174,12 @@ class _SessionRow(QWidget):
         text_stack.addWidget(label)
         text_stack.addWidget(metadata)
 
+        status = QLabel(_runtime_status_label(record.runtime_status))
+        status.setObjectName("SessionRowStatus")
+        status.setProperty("status", _runtime_status_key(record.runtime_status))
+        status.setAlignment(Qt.AlignCenter)
+        status.setFixedWidth(64)
+
         delete_button = QPushButton()
         delete_button.setObjectName("SessionRowDeleteButton")
         delete_button.setProperty("dev_id", f"delete:{record.session_id}")
@@ -184,6 +191,7 @@ class _SessionRow(QWidget):
 
         layout.addWidget(self.rail)
         layout.addLayout(text_stack, 1)
+        layout.addWidget(status)
         layout.addWidget(delete_button)
 
     def set_selected(self, selected: bool) -> None:
@@ -200,3 +208,23 @@ def _session_metadata(record: ChatSessionRecord) -> str:
     if timestamp:
         return str(timestamp)[:19]
     return record.session_id[:12]
+
+
+def _runtime_status_key(status: str) -> str:
+    value = status.lower()
+    if "run" in value:
+        return "running"
+    if "error" in value or "fail" in value:
+        return "error"
+    if "done" in value or "finish" in value or "pass" in value or "success" in value:
+        return "success"
+    return "ready"
+
+
+def _runtime_status_label(status: str) -> str:
+    return {
+        "running": "Running",
+        "error": "Error",
+        "success": "Done",
+        "ready": "Ready",
+    }[_runtime_status_key(status)]

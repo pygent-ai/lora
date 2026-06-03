@@ -18,6 +18,7 @@ class ChatSessionRecord:
     created_at: str
     updated_at: str
     title: str
+    runtime_status: str = "ready"
 
 
 class ChatSessionStore:

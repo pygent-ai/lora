@@ -21,29 +21,32 @@ class GuiThemeTests(unittest.TestCase):
         night = PALETTES["night"]
 
         self.assertIsInstance(day, ThemePalette)
-        self.assertEqual(day.colors.bg, "#eef3f6")
-        self.assertEqual(day.state_colors.running, "#0e7c86")
-        self.assertEqual(night.colors.bg, "#111719")
-        self.assertEqual(night.state_colors.error, "#ff6b68")
+        self.assertEqual(day.colors.bg, "#f5f5f7")
+        self.assertEqual(day.colors.accent, "#007aff")
+        self.assertEqual(day.state_colors.running, "#64d2ff")
+        self.assertEqual(night.colors.bg, "#1c1c1e")
+        self.assertEqual(night.colors.accent, "#0a84ff")
+        self.assertEqual(night.state_colors.error, "#ff453a")
         self.assertEqual(day.radius.card, 8)
         self.assertEqual(night.radius.pane, 12)
 
-    def test_day_theme_uses_command_center_day_palette(self) -> None:
+    def test_day_theme_uses_apple_studio_palette(self) -> None:
         day = theme_stylesheet("day")
 
-        self.assertIn("#eef3f6", day)
-        self.assertIn("#d5dee6", day)
+        self.assertIn("#f5f5f7", day)
+        self.assertIn("#007aff", day)
+        self.assertIn("#dadde3", day)
         self.assertIn("#SessionRowDeleteButton", day)
 
-    def test_day_theme_uses_precise_radius_and_compact_controls(self) -> None:
+    def test_day_theme_uses_mac_like_surfaces_and_compact_controls(self) -> None:
         day = theme_stylesheet("day")
 
-        self.assertIn("#f7fafc", day)
+        self.assertIn("#fbfbfd", day)
         self.assertIn("#ffffff", day)
-        self.assertIn("#aebbc6", day)
-        self.assertIn("qlineargradient", day)
+        self.assertIn("#d2d2d7", day)
+        self.assertIn("rgba(255,255,255,0.72)", day)
         self.assertIn("border-radius: 8px", day)
-        self.assertIn("padding: 9px 12px", day)
+        self.assertIn("padding: 8px 12px", day)
 
     def test_chat_theme_styles_transcript_status_rows(self) -> None:
         day = theme_stylesheet("day")
@@ -52,7 +55,7 @@ class GuiThemeTests(unittest.TestCase):
         self.assertIn("#ToolStatusRow", day)
         self.assertIn("#ToolStatusIcon", day)
         self.assertIn("#ToolStatusRow[status=\"running\"]", day)
-        self.assertIn("color: #63717c", day)
+        self.assertIn("color: #6e6e73", day)
 
     def test_chat_theme_keeps_message_text_compact_and_avatars_visible(self) -> None:
         day = theme_stylesheet("day")

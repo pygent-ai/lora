@@ -4,10 +4,32 @@ import unittest
 
 from lora.runtime import RuntimeMessage
 
-from gui.workers import InspectorEvent, runtime_message_to_inspector_event, runtime_message_to_inspector_events
+from gui.workers import ChatTurnWorker, InspectorEvent, runtime_message_to_inspector_event, runtime_message_to_inspector_events
 
 
 class GuiWorkerTests(unittest.TestCase):
+    def test_worker_runtime_event_signal_includes_session_id(self) -> None:
+        worker = ChatTurnWorker(
+            config=object(),
+            manager=object(),
+            session_id="chat-alpha",
+            user_input="hello",
+            turn_index=1,
+        )
+        emitted: list[tuple[str, InspectorEvent]] = []
+        worker.runtime_event.connect(lambda session_id, event: emitted.append((session_id, event)))
+
+        worker._emit_runtime_message(
+            RuntimeMessage(
+                role="assistant",
+                content="",
+                payload={"tool_calls": [{"id": "call_1", "function": {"name": "read", "arguments": "{}"}}]},
+            )
+        )
+
+        self.assertEqual(emitted[0][0], "chat-alpha")
+        self.assertEqual(emitted[0][1].title, "Tool call: read")
+
     def test_runtime_message_to_inspector_event_formats_tool_call(self) -> None:
         message = RuntimeMessage(
             role="assistant",

@@ -86,11 +86,11 @@ def runtime_message_to_inspector_events(message: RuntimeMessage) -> list[Inspect
 
 
 class ChatTurnWorker(QObject):
-    assistant_delta = Signal(str)
-    runtime_event = Signal(object)
-    run_started = Signal(object)
-    completed = Signal(object)
-    failed = Signal(str)
+    assistant_delta = Signal(str, str)
+    runtime_event = Signal(str, object)
+    run_started = Signal(str, object)
+    completed = Signal(str, object)
+    failed = Signal(str, str)
 
     def __init__(
         self,
@@ -114,7 +114,7 @@ class ChatTurnWorker(QObject):
         status = "error"
         try:
             run_ref = self.manager.start_case_run(self.session_id, "chat", run_config=self.config)
-            self.run_started.emit(run_ref)
+            self.run_started.emit(self.session_id, run_ref)
             session = self.manager.load(self.session_id)
             adapter = AgentRuntimeAdapter(config=self.config, session_manager=self.manager)
             result = asyncio.run(
@@ -123,21 +123,24 @@ class ChatTurnWorker(QObject):
                     user_input=self.user_input,
                     case_run_ref=run_ref,
                     turn_id=f"turn-{self.turn_index:04d}",
-                    on_assistant_delta=self.assistant_delta.emit,
+                    on_assistant_delta=self._emit_assistant_delta,
                     on_runtime_message=self._emit_runtime_message,
                 )
             )
             status = str(result["status"])
-            self.completed.emit({**run_ref.to_dict(), **result})
+            self.completed.emit(self.session_id, {**run_ref.to_dict(), **result})
         except Exception as exc:  # noqa: BLE001 - Qt worker boundary reports readable failures.
-            self.failed.emit(str(exc))
+            self.failed.emit(self.session_id, str(exc))
         finally:
             if run_ref is not None:
                 self.manager.finish_case_run(run_ref, status)
 
+    def _emit_assistant_delta(self, delta: str) -> None:
+        self.assistant_delta.emit(self.session_id, delta)
+
     def _emit_runtime_message(self, message: RuntimeMessage) -> None:
         for event in runtime_message_to_inspector_events(message):
-            self.runtime_event.emit(event)
+            self.runtime_event.emit(self.session_id, event)
 
 
 def _tool_calls(message: RuntimeMessage) -> list[dict[str, Any]]:

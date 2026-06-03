@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Literal
 
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMainWindow, QMessageBox, QWidget
@@ -17,6 +19,25 @@ from lora.schema import RunConfig
 from lora.session import SessionManager
 
 
+@dataclass(slots=True)
+class _LiveUpdate:
+    kind: Literal["assistant_delta", "runtime_event"]
+    payload: str | InspectorEvent
+
+
+@dataclass(slots=True)
+class _ActiveRun:
+    session_id: str
+    user_input: str
+    turn_index: int
+    thread: QThread | None
+    worker: ChatTurnWorker | None
+    updates: list[_LiveUpdate] = field(default_factory=list)
+    run_ref: object | None = None
+    status: str = "running"
+    error: str | None = None
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -30,8 +51,7 @@ class MainWindow(QMainWindow):
     ):
         super().__init__(parent)
         self.setWindowTitle("Lora")
-        self._thread: QThread | None = None
-        self._worker: ChatTurnWorker | None = None
+        self._running_sessions: dict[str, _ActiveRun] = {}
         self._active_session_id: str | None = None
         self._theme = "day"
         self._turn_index = 1
@@ -43,14 +63,14 @@ class MainWindow(QMainWindow):
         shell = QWidget()
         shell.setObjectName("CentralShell")
         layout = QHBoxLayout(shell)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(14)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(16)
 
         self.sidebar = SessionSidebar()
         self.chat = ChatPane()
         self.inspector = TraceInspector()
-        self.sidebar.setFixedWidth(350)
-        self.inspector.setFixedWidth(390)
+        self.sidebar.setFixedWidth(336)
+        self.inspector.setFixedWidth(388)
         layout.addWidget(self.sidebar)
         layout.addWidget(self.chat, 1)
         layout.addWidget(self.inspector)
@@ -82,9 +102,23 @@ class MainWindow(QMainWindow):
         self.inspector.reset_context(session_id=session_id)
         self._load_last_run_trace(session_id, session.metadata)
         self._turn_index = _next_turn_index(session.history)
+        active_run = self._running_sessions.get(session_id)
+        if active_run is not None:
+            self._render_running_session(active_run)
+        else:
+            self.chat.set_running(False)
 
     def refresh_sessions(self) -> None:
-        self.sidebar.set_sessions(self.store.list_chat_sessions())
+        records = []
+        for record in self.store.list_chat_sessions():
+            active_run = self._running_sessions.get(record.session_id)
+            if active_run is None:
+                records.append(record)
+            else:
+                records.append(replace(record, runtime_status=active_run.status))
+        self.sidebar.set_sessions(records)
+        if self._active_session_id is not None:
+            self.sidebar.select_session(self._active_session_id)
 
     def _select_initial_session(self) -> None:
         records = self.store.list_chat_sessions()
@@ -92,6 +126,12 @@ class MainWindow(QMainWindow):
             self.select_session(records[0].session_id)
 
     def delete_session(self, session_id: str, *, confirm: bool = True) -> None:
+        if session_id in self._running_sessions:
+            self._show_warning(
+                "Session is running",
+                "This session is still running. Wait for it to finish before deleting it.",
+            )
+            return
         if confirm and not self._confirm_delete_session(session_id):
             return
         was_active = session_id == self._active_session_id
@@ -118,23 +158,31 @@ class MainWindow(QMainWindow):
         if self._active_session_id is None:
             self.create_chat()
         assert self._active_session_id is not None
+        session_id = self._active_session_id
+        if session_id in self._running_sessions:
+            self.chat.set_run_status("running")
+            self.inspector.set_status("Running")
+            return
         self.chat.add_message("user", message)
         self.chat.start_assistant_message()
         self.chat.set_running(True)
         self.inspector.set_status("Running")
+        self._start_chat_worker(session_id, message, self._turn_index)
+        self.refresh_sessions()
 
+    def _start_chat_worker(self, session_id: str, message: str, turn_index: int) -> _ActiveRun:
         thread = QThread(self)
         worker = ChatTurnWorker(
             config=self.config,
             manager=self.manager,
-            session_id=self._active_session_id,
+            session_id=session_id,
             user_input=message,
-            turn_index=self._turn_index,
+            turn_index=turn_index,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.run_started.connect(self._on_run_started)
-        worker.assistant_delta.connect(self.chat.append_assistant_delta)
+        worker.assistant_delta.connect(self._on_assistant_delta)
         worker.runtime_event.connect(self._on_runtime_event)
         worker.completed.connect(self._on_turn_completed)
         worker.failed.connect(self._on_turn_failed)
@@ -142,12 +190,22 @@ class MainWindow(QMainWindow):
         worker.failed.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_worker_refs)
-        self._thread = thread
-        self._worker = worker
+        thread.finished.connect(lambda session_id=session_id: self._clear_worker_refs(session_id))
+        active_run = self._new_active_run(
+            session_id=session_id,
+            user_input=message,
+            turn_index=turn_index,
+            thread=thread,
+            worker=worker,
+        )
+        self._running_sessions[session_id] = active_run
         thread.start()
+        return active_run
 
     def open_settings(self) -> None:
+        if self._has_running_sessions():
+            self._show_warning("Runs in progress", "Wait for running sessions to finish before changing runtime settings.")
+            return
         dialog = SettingsDialog(self.config, self)
         if dialog.exec() != dialog.Accepted:
             return
@@ -204,37 +262,123 @@ class MainWindow(QMainWindow):
             }
         )
 
-    def _on_run_started(self, run_ref: object) -> None:
-        case_run_id = getattr(run_ref, "case_run_id", "")
-        self.inspector.reset_context(session_id=self._active_session_id, case_run_id=case_run_id)
-        self.inspector.set_status("Running")
+    def _new_active_run(
+        self,
+        *,
+        session_id: str,
+        user_input: str,
+        turn_index: int,
+        thread: QThread | None,
+        worker: ChatTurnWorker | None,
+    ) -> _ActiveRun:
+        return _ActiveRun(
+            session_id=session_id,
+            user_input=user_input,
+            turn_index=turn_index,
+            thread=thread,
+            worker=worker,
+        )
 
-    def _on_runtime_event(self, event: InspectorEvent) -> None:
-        self.inspector.add_event(event)
-        self.chat.add_runtime_event(event)
+    def _render_running_session(self, active_run: _ActiveRun) -> None:
+        case_run_id = getattr(active_run.run_ref, "case_run_id", "") if active_run.run_ref is not None else ""
+        self.inspector.reset_context(session_id=active_run.session_id, case_run_id=case_run_id)
+        self.chat.add_message("user", active_run.user_input)
+        self.chat.start_assistant_message()
+        for update in active_run.updates:
+            if update.kind == "assistant_delta":
+                self.chat.append_assistant_delta(str(update.payload))
+            elif isinstance(update.payload, InspectorEvent):
+                self.inspector.add_event(update.payload)
+                self.chat.add_runtime_event(update.payload)
+        self.chat.set_running(True)
+        self.chat.set_run_status(active_run.status)
+        self.inspector.set_status(active_run.status)
 
-    def _on_turn_completed(self, result: object) -> None:
-        payload = result if isinstance(result, dict) else {}
-        self.chat.finish_assistant_message(str(payload.get("final_answer") or ""))
-        self.chat.set_running(False)
-        self.chat.set_run_status(str(payload.get("status") or "Finished"))
-        self.inspector.set_status(str(payload.get("status") or "Finished"))
-        run_dir = payload.get("run_dir")
-        if run_dir:
-            self.inspector.load_trace_events_from_run_dir(str(run_dir))
+    def _on_run_started(self, session_id: str, run_ref: object) -> None:
+        active_run = self._running_sessions.get(session_id)
+        if active_run is not None:
+            active_run.run_ref = run_ref
+            active_run.status = "running"
+        if session_id == self._active_session_id:
+            case_run_id = getattr(run_ref, "case_run_id", "")
+            self.inspector.reset_context(session_id=session_id, case_run_id=case_run_id)
+            self.inspector.set_status("Running")
         self.refresh_sessions()
-        self._turn_index += 1
 
-    def _on_turn_failed(self, error: str) -> None:
-        self.chat.finish_assistant_message()
-        self.chat.show_error(error)
-        self.chat.set_running(False)
-        self.inspector.set_status("Error")
-        self.inspector.add_event(InspectorEvent(kind="event", title="Runtime error", detail=error, tone="error"))
+    def _on_assistant_delta(self, session_id: str, delta: str) -> None:
+        active_run = self._running_sessions.get(session_id)
+        if active_run is not None:
+            active_run.updates.append(_LiveUpdate("assistant_delta", delta))
+        if session_id == self._active_session_id:
+            self.chat.append_assistant_delta(delta)
 
-    def _clear_worker_refs(self) -> None:
-        self._thread = None
-        self._worker = None
+    def _on_runtime_event(self, session_id: str, event: InspectorEvent) -> None:
+        active_run = self._running_sessions.get(session_id)
+        if active_run is not None:
+            active_run.updates.append(_LiveUpdate("runtime_event", event))
+        if session_id == self._active_session_id:
+            self.inspector.add_event(event)
+            self.chat.add_runtime_event(event)
+
+    def _on_turn_completed(self, session_id: str, result: object) -> None:
+        payload = result if isinstance(result, dict) else {}
+        active_run = self._running_sessions.get(session_id)
+        if active_run is not None:
+            active_run.status = str(payload.get("status") or "Finished")
+        if session_id == self._active_session_id:
+            self.chat.finish_assistant_message(str(payload.get("final_answer") or ""))
+            self.chat.set_running(False)
+            self.chat.set_run_status(str(payload.get("status") or "Finished"))
+            self.inspector.set_status(str(payload.get("status") or "Finished"))
+            run_dir = payload.get("run_dir")
+            if run_dir:
+                self.inspector.load_trace_events_from_run_dir(str(run_dir))
+            self._turn_index += 1
+        self._running_sessions.pop(session_id, None)
+        self.refresh_sessions()
+
+    def _on_turn_failed(self, session_id: str, error: str) -> None:
+        active_run = self._running_sessions.get(session_id)
+        if active_run is not None:
+            active_run.status = "error"
+            active_run.error = error
+        if session_id == self._active_session_id:
+            self.chat.finish_assistant_message()
+            self.chat.show_error(error)
+            self.chat.set_running(False)
+            self.inspector.set_status("Error")
+            self.inspector.add_event(InspectorEvent(kind="event", title="Runtime error", detail=error, tone="error"))
+        self._running_sessions.pop(session_id, None)
+        self.refresh_sessions()
+
+    def _clear_worker_refs(self, session_id: str) -> None:
+        active_run = self._running_sessions.get(session_id)
+        if active_run is None:
+            return
+        active_run.thread = None
+        active_run.worker = None
+
+    def _has_running_sessions(self) -> bool:
+        return bool(self._running_sessions)
+
+    def _show_warning(self, title: str, message: str) -> None:
+        QMessageBox.warning(self, title, message)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt override.
+        if not self._has_running_sessions():
+            super().closeEvent(event)
+            return
+        result = QMessageBox.question(
+            self,
+            "Runs in progress",
+            "There are running chat sessions. Closing now will stop them. Keep Lora open?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if result == QMessageBox.Yes:
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def _load_last_run_trace(self, session_id: str, metadata: dict[str, object]) -> None:
         case_run_id = metadata.get("last_case_run_id")

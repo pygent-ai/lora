@@ -136,6 +136,32 @@ class GuiSessionSidebarTests(unittest.TestCase):
         self.assertEqual(sidebar.new_button.toolTip(), "Create a new chat session")
         self.assertEqual(sidebar.settings_button.toolTip(), "Open settings")
 
+    def test_session_row_shows_runtime_status(self) -> None:
+        sidebar = SessionSidebar()
+        sidebar.set_sessions(
+            [
+                ChatSessionRecord(
+                    session_id="chat-one",
+                    session_dir="sessions/chat-one",
+                    case_id="chat",
+                    mode="chat",
+                    created_at="1",
+                    updated_at="1",
+                    title="Chat one",
+                    runtime_status="running",
+                )
+            ]
+        )
+
+        row = sidebar.sessions.itemWidget(sidebar.sessions.item(0))
+        assert row is not None
+        status = row.findChild(QLabel, "SessionRowStatus")
+
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status.text(), "Running")
+        self.assertEqual(status.property("status"), "running")
+
 
 if __name__ == "__main__":
     unittest.main()

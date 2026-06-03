@@ -74,57 +74,57 @@ PALETTES: dict[str, ThemePalette] = {
     "day": ThemePalette(
         name="day",
         colors=ThemeColors(
-            bg="#eef3f6",
+            bg="#f5f5f7",
             surface="#ffffff",
-            surface_alt="#f7fafc",
-            surface_elevated="#edf5f7",
-            border="#d5dee6",
-            border_strong="#aebbc6",
-            text="#1e2a2f",
-            text_muted="#63717c",
-            text_soft="#8a98a3",
-            accent="#0f6f78",
-            accent_hover="#0e7c86",
+            surface_alt="#fbfbfd",
+            surface_elevated="#f0f0f3",
+            border="#dadde3",
+            border_strong="#d2d2d7",
+            text="#1d1d1f",
+            text_muted="#6e6e73",
+            text_soft="#8e8e93",
+            accent="#007aff",
+            accent_hover="#0a84ff",
             accent_text="#ffffff",
-            selection="#dcecef",
-            input="#fbfdfe",
+            selection="#eaf3ff",
+            input="#ffffff",
         ),
         typography=ThemeTypography(),
-        spacing=ThemeSpacing(),
+        spacing=ThemeSpacing(control_pad_y=8),
         radius=ThemeRadius(),
         state_colors=ThemeStateColors(
-            success="#0b8a6a",
-            warning="#b57613",
-            error="#c84645",
-            running="#0e7c86",
+            success="#34c759",
+            warning="#ff9f0a",
+            error="#ff453a",
+            running="#64d2ff",
         ),
     ),
     "night": ThemePalette(
         name="night",
         colors=ThemeColors(
-            bg="#111719",
-            surface="#182125",
-            surface_alt="#202b30",
-            surface_elevated="#26343a",
-            border="#314247",
-            border_strong="#587078",
-            text="#dce8ea",
-            text_muted="#96a8ad",
-            text_soft="#73888f",
-            accent="#39c6c9",
-            accent_hover="#5ed6d9",
-            accent_text="#071012",
-            selection="#213f47",
-            input="#131d21",
+            bg="#1c1c1e",
+            surface="#242426",
+            surface_alt="#2c2c2e",
+            surface_elevated="#3a3a3c",
+            border="#3a3a3c",
+            border_strong="#48484a",
+            text="#f5f5f7",
+            text_muted="#a1a1a6",
+            text_soft="#8e8e93",
+            accent="#0a84ff",
+            accent_hover="#409cff",
+            accent_text="#ffffff",
+            selection="#163a5f",
+            input="#1f1f21",
         ),
         typography=ThemeTypography(),
-        spacing=ThemeSpacing(),
+        spacing=ThemeSpacing(control_pad_y=8),
         radius=ThemeRadius(),
         state_colors=ThemeStateColors(
-            success="#32c99a",
-            warning="#e7a83c",
-            error="#ff6b68",
-            running="#39c6c9",
+            success="#30d158",
+            warning="#ff9f0a",
+            error="#ff453a",
+            running="#64d2ff",
         ),
     ),
 }
@@ -165,11 +165,15 @@ def _stylesheet(palette: ThemePalette) -> str:
     s = palette.spacing
     r = palette.radius
     state = palette.state_colors
-    sidebar_gradient_start = "#ffffff" if palette.name == "day" else "#121b1f"
-    pane_gradient_end = "#f2f7f9" if palette.name == "day" else "#141d21"
+    pane_fill = "rgba(255,255,255,0.72)" if palette.name == "day" else "rgba(36,36,38,0.88)"
+    toolbar_fill = "rgba(255,255,255,0.86)" if palette.name == "day" else "rgba(44,44,46,0.92)"
+    button_fill = "rgba(255,255,255,0.78)" if palette.name == "day" else "rgba(58,58,60,0.74)"
+    status_bg = "#f2f8ff" if palette.name == "day" else "#17324f"
+    error_bg = "#fff1f0" if palette.name == "day" else "#4a1f1d"
+    success_bg = "#eefbf2" if palette.name == "day" else "#173a23"
     return f"""
 QWidget {{
-    font-family: "Segoe UI Variable Text", "DengXian", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "DengXian", "PingFang SC", sans-serif;
     font-size: {t.body_size}px;
     color: {c.text};
 }}
@@ -180,15 +184,14 @@ QMainWindow, #CentralShell {{
     border: 0;
 }}
 #SessionSidebar, #ChatPane, #TraceInspector {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 {sidebar_gradient_start}, stop:0.58 {c.surface}, stop:1 {pane_gradient_end});
+    background: {pane_fill};
     border: 1px solid {c.border};
     border-radius: {r.pane}px;
 }}
 #Brand {{
     color: {c.text};
     font-size: {t.title_size}px;
-    font-weight: 800;
+    font-weight: 650;
 }}
 #SidebarMeta, #SessionRowMeta, #InspectorMeta, #ChatHeaderMeta {{
     color: {c.text_muted};
@@ -197,16 +200,16 @@ QMainWindow, #CentralShell {{
 #SectionLabel {{
     color: {c.text_soft};
     font-size: {t.section_size}px;
-    font-weight: 700;
+    font-weight: 650;
     letter-spacing: 0px;
     padding-top: 6px;
 }}
 #AccentButton, #PrimaryButton {{
     background: {c.accent};
-    border: 1px solid {c.accent_hover};
+    border: 1px solid {c.accent};
     border-radius: {r.card}px;
     color: {c.accent_text};
-    font-weight: 700;
+    font-weight: 650;
     padding: {s.control_pad_y}px {s.control_pad_x}px;
 }}
 #AccentButton:hover, #PrimaryButton:hover {{
@@ -215,10 +218,10 @@ QMainWindow, #CentralShell {{
 #PrimaryButton:disabled {{
     background: {c.surface_elevated};
     color: {c.text_muted};
-    border-color: {c.border_strong};
+    border-color: {c.border};
 }}
 QPushButton {{
-    background: {c.surface_alt};
+    background: {button_fill};
     border: 1px solid {c.border};
     border-radius: {r.card}px;
     color: {c.text};
@@ -226,7 +229,7 @@ QPushButton {{
 }}
 QPushButton:hover {{
     border-color: {c.border_strong};
-    background: {c.surface_elevated};
+    background: {c.surface_alt};
 }}
 QPushButton:disabled {{
     color: {c.text_soft};
@@ -250,17 +253,17 @@ QPushButton:disabled {{
     outline: 0;
 }}
 #SessionRow {{
-    background: {c.surface_alt};
-    border: 1px solid {c.border};
+    background: transparent;
+    border: 1px solid transparent;
     border-radius: {r.row}px;
 }}
 #SessionRow:hover {{
-    background: {c.surface_elevated};
-    border-color: {c.border_strong};
+    background: {c.surface_alt};
+    border-color: {c.border};
 }}
 #SessionRow[selected="true"] {{
     background: {c.selection};
-    border: 1px solid {c.accent};
+    border: 1px solid {c.border_strong};
 }}
 #SessionRowRail {{
     background: transparent;
@@ -271,7 +274,27 @@ QPushButton:disabled {{
 }}
 #SessionRowTitle {{
     color: {c.text};
-    font-weight: 700;
+    font-weight: 650;
+}}
+#SessionRowStatus {{
+    background: transparent;
+    border-radius: {r.chip}px;
+    color: {c.text_muted};
+    font-size: 11px;
+    font-weight: 650;
+    padding: 3px 6px;
+}}
+#SessionRowStatus[status="running"] {{
+    background: {status_bg};
+    color: {state.running};
+}}
+#SessionRowStatus[status="error"] {{
+    background: {error_bg};
+    color: {state.error};
+}}
+#SessionRowStatus[status="success"] {{
+    background: {success_bg};
+    color: {state.success};
 }}
 #SessionRowDeleteButton {{
     background: transparent;
@@ -281,11 +304,11 @@ QPushButton:disabled {{
     padding: 2px;
 }}
 #SessionRowDeleteButton:hover {{
-    background: {c.surface};
+    background: {c.surface_elevated};
     color: {c.text};
 }}
 #ThemeSegment {{
-    background: {c.surface_alt};
+    background: {c.surface_elevated};
     border: 1px solid {c.border};
     border-radius: {r.card}px;
 }}
@@ -299,13 +322,13 @@ QPushButton:disabled {{
 #ThemeDayButton:checked, #ThemeNightButton:checked {{
     background: {c.surface};
     color: {c.text};
-    border: 1px solid {c.border_strong};
+    border: 1px solid {c.border};
 }}
 #SettingsButton {{
-    padding: 9px 12px;
+    padding: {s.control_pad_y}px {s.control_pad_x}px;
 }}
 #ChatHeader {{
-    background: {c.surface};
+    background: {toolbar_fill};
     border-bottom: 1px solid {c.border};
     border-top-left-radius: {r.pane}px;
     border-top-right-radius: {r.pane}px;
@@ -313,7 +336,7 @@ QPushButton:disabled {{
 #ChatHeaderTitle {{
     color: {c.text};
     font-size: 16px;
-    font-weight: 800;
+    font-weight: 650;
 }}
 #ChatRunStatus, #InspectorStatusIndicator {{
     background: {c.surface_alt};
@@ -321,23 +344,23 @@ QPushButton:disabled {{
     border-radius: {r.chip}px;
     color: {c.text_muted};
     font-size: {t.meta_size}px;
-    font-weight: 800;
+    font-weight: 650;
     padding: 3px 7px;
 }}
 #ChatRunStatus[status="running"], #InspectorStatusIndicator[status="running"] {{
-    background: {state.running};
+    background: {status_bg};
     border-color: {state.running};
-    color: {c.accent_text};
+    color: {c.text};
 }}
 #ChatRunStatus[status="error"], #InspectorStatusIndicator[status="error"] {{
-    background: {state.error};
+    background: {error_bg};
     border-color: {state.error};
-    color: #ffffff;
+    color: {state.error};
 }}
 #ChatRunStatus[status="success"], #InspectorStatusIndicator[status="success"] {{
-    background: {state.success};
+    background: {success_bg};
     border-color: {state.success};
-    color: #ffffff;
+    color: {state.success};
 }}
 #ChatScroll, #ChatScrollBody {{
     background: transparent;
@@ -355,9 +378,9 @@ QPushButton:disabled {{
     font-size: {t.message_size}px;
 }}
 #UserBubble {{
-    background: {c.selection};
-    color: {c.text};
-    border: 1px solid {c.border_strong};
+    background: {c.accent};
+    color: {c.accent_text};
+    border: 1px solid {c.accent};
 }}
 #AssistantBubble {{
     background: {c.surface};
@@ -369,21 +392,24 @@ QPushButton:disabled {{
     border: 1px solid {c.border};
     border-radius: {r.card}px;
     color: {c.text_muted};
-    font-weight: 800;
+    font-weight: 650;
 }}
 #ToolStatusRow {{
-    background: {c.surface};
+    background: {toolbar_fill};
     border: 1px solid {c.border};
     border-radius: {r.card}px;
 }}
 #ToolStatusRow[status="running"] {{
     border-color: {state.running};
+    background: {status_bg};
 }}
 #ToolStatusRow[status="success"] {{
     border-color: {state.success};
+    background: {success_bg};
 }}
 #ToolStatusRow[status="error"] {{
     border-color: {state.error};
+    background: {error_bg};
 }}
 #ToolStatusIcon {{
     background: {c.surface_alt};
@@ -391,7 +417,7 @@ QPushButton:disabled {{
     border-radius: {r.chip}px;
     color: {c.text_soft};
     font-size: 12px;
-    font-weight: 800;
+    font-weight: 650;
     padding: 0;
 }}
 #ToolStatusToggle {{
@@ -407,7 +433,7 @@ QPushButton:disabled {{
 #ToolStatusTitle {{
     color: {c.text};
     font-size: 13px;
-    font-weight: 800;
+    font-weight: 650;
 }}
 #ToolStatusDetail {{
     color: {c.text_muted};
@@ -421,7 +447,7 @@ QPushButton:disabled {{
 #ToolCallStatus {{
     color: {c.text_soft};
     font-size: {t.meta_size}px;
-    font-weight: 800;
+    font-weight: 650;
 }}
 #ToolCallStatus[status="running"] {{
     color: {state.running};
@@ -437,7 +463,7 @@ QPushButton:disabled {{
     font-size: 12px;
 }}
 #Composer {{
-    background: {c.surface};
+    background: {toolbar_fill};
     border-top: 1px solid {c.border};
     border-bottom-left-radius: {r.pane}px;
     border-bottom-right-radius: {r.pane}px;
@@ -460,7 +486,7 @@ QPushButton:disabled {{
 #InspectorStatus {{
     color: {c.text};
     font-size: 16px;
-    font-weight: 800;
+    font-weight: 650;
 }}
 QTabWidget::pane {{
     border: 1px solid {c.border};
@@ -469,18 +495,17 @@ QTabWidget::pane {{
     top: -1px;
 }}
 QTabBar::tab {{
-    background: {c.surface_alt};
-    border: 1px solid {c.border};
+    background: {c.surface_elevated};
+    border: 1px solid transparent;
     color: {c.text_muted};
-    padding: 8px 13px;
-    margin-right: 3px;
-    border-top-left-radius: {r.chip}px;
-    border-top-right-radius: {r.chip}px;
+    padding: 7px 13px;
+    margin: 0;
+    border-radius: {r.chip}px;
 }}
 QTabBar::tab:selected {{
     color: {c.text};
     background: {c.surface};
-    border-bottom-color: {c.surface};
+    border: 1px solid {c.border};
 }}
 QTreeWidget, QListWidget {{
     background: {c.surface};
@@ -493,7 +518,7 @@ QHeaderView::section {{
     border: 0;
     border-bottom: 1px solid {c.border};
     color: {c.text_muted};
-    font-weight: 700;
+    font-weight: 650;
     padding: 7px;
 }}
 QTreeWidget::item, QListWidget::item {{
@@ -543,7 +568,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 #InspectorConfigKey {{
     color: {c.text_muted};
     font-size: {t.meta_size}px;
-    font-weight: 800;
+    font-weight: 650;
 }}
 #InspectorConfigValue {{
     color: {c.text};

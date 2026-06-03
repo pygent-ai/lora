@@ -44,7 +44,7 @@ class ChatPane(QWidget):
         header_frame = QFrame()
         header_frame.setObjectName("ChatHeader")
         header_layout = QHBoxLayout(header_frame)
-        header_layout.setContentsMargins(22, 16, 22, 14)
+        header_layout.setContentsMargins(22, 14, 22, 13)
         header_layout.setSpacing(12)
         header_text = QVBoxLayout()
         header_text.setContentsMargins(0, 0, 0, 0)
@@ -74,8 +74,8 @@ class ChatPane(QWidget):
         self.scroll_body.setAttribute(Qt.WA_StyledBackground, True)
         self.scroll_body.setMinimumWidth(0)
         self.messages = QVBoxLayout(self.scroll_body)
-        self.messages.setContentsMargins(32, 28, 32, 28)
-        self.messages.setSpacing(20)
+        self.messages.setContentsMargins(32, 26, 32, 26)
+        self.messages.setSpacing(18)
         self.messages.addStretch(1)
         self.scroll_area.setWidget(self.scroll_body)
         root.addWidget(self.scroll_area, 1)
@@ -83,17 +83,17 @@ class ChatPane(QWidget):
         composer = QFrame()
         composer.setObjectName("Composer")
         composer_layout = QHBoxLayout(composer)
-        composer_layout.setContentsMargins(24, 18, 24, 18)
-        composer_layout.setSpacing(14)
+        composer_layout.setContentsMargins(24, 16, 24, 16)
+        composer_layout.setSpacing(12)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Message Lora...")
-        self.input.setFixedHeight(74)
+        self.input.setFixedHeight(70)
         self.input.setObjectName("MessageInput")
         self.send_button = QPushButton("Send")
         self.send_button.setObjectName("PrimaryButton")
         self.send_button.setIcon(icon("send"))
         self.send_button.setToolTip("Send message")
-        self.send_button.setFixedSize(104, 54)
+        self.send_button.setFixedSize(100, 50)
         self.send_button.clicked.connect(self._submit)
         composer_layout.addWidget(self.input, 1)
         composer_layout.addWidget(self.send_button)
@@ -304,11 +304,11 @@ class ChatPane(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(10)
-        status_icon = QLabel("RUN")
+        status_icon = QLabel("Live")
         status_icon.setObjectName("ToolStatusIcon")
         status_icon.setProperty("status", "running")
         status_icon.setAlignment(Qt.AlignCenter)
-        status_icon.setFixedSize(34, 22)
+        status_icon.setFixedSize(42, 22)
         title_label = QLabel(title)
         title_label.setObjectName("ThinkingStatusTitle")
         layout.addWidget(status_icon)
@@ -374,12 +374,12 @@ class _ToolGroupWidget(QFrame):
         summary = QHBoxLayout()
         summary.setContentsMargins(0, 0, 0, 0)
         summary.setSpacing(10)
-        self.status_icon = QLabel("RUN")
+        self.status_icon = QLabel("Live")
         self.status_icon.setObjectName("ToolStatusIcon")
         self.status_icon.setProperty("status", "running")
         self.status_icon.setAlignment(Qt.AlignCenter)
-        self.status_icon.setFixedSize(34, 22)
-        self.toggle = QPushButton(">")
+        self.status_icon.setFixedSize(42, 22)
+        self.toggle = QPushButton("+")
         self.toggle.setObjectName("ToolStatusToggle")
         self.toggle.setFixedSize(22, 22)
         self.toggle.clicked.connect(self._toggle_detail)
@@ -442,7 +442,7 @@ class _ToolGroupWidget(QFrame):
         _refresh_widget(self)
         _refresh_widget(self.status_icon)
         self.toggle.setEnabled(True)
-        self.toggle.setText("v" if self._expanded else ">")
+        self.toggle.setText("-" if self._expanded else "+")
         _clear_layout(self.detail_holder)
         if not self._expanded:
             return
@@ -494,10 +494,10 @@ def _natural_label_width(label: QLabel) -> int:
 
 def _tool_status_label(status: str) -> str:
     if status == "success":
-        return "OK"
+        return "Done"
     if status == "error":
-        return "ERR"
-    return "RUN"
+        return "Fail"
+    return "Live"
 
 
 def _tool_line_text(call: _ToolCallState) -> str:
