@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QFontMetrics, QKeyEvent, QTextDocument
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -85,7 +85,7 @@ class ChatPane(QWidget):
         composer_layout = QHBoxLayout(composer)
         composer_layout.setContentsMargins(24, 16, 24, 16)
         composer_layout.setSpacing(12)
-        self.input = QPlainTextEdit()
+        self.input = _MessageInput()
         self.input.setPlaceholderText("Message Lora...")
         self.input.setFixedHeight(70)
         self.input.setObjectName("MessageInput")
@@ -95,6 +95,7 @@ class ChatPane(QWidget):
         self.send_button.setToolTip("Send message")
         self.send_button.setFixedSize(100, 50)
         self.send_button.clicked.connect(self._submit)
+        self.input.submit_requested.connect(self._submit)
         composer_layout.addWidget(self.input, 1)
         composer_layout.addWidget(self.send_button)
         root.addWidget(composer)
@@ -161,9 +162,10 @@ class ChatPane(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        bubble = QLabel(content or " ")
+        bubble = QLabel(" ")
         bubble.setObjectName("UserBubble" if role == "user" else "AssistantBubble")
         _configure_message_bubble(bubble)
+        _set_message_bubble_text(bubble, content or " ")
         avatar = _message_avatar(role)
         if role == "user":
             layout.addStretch(1)
@@ -219,7 +221,7 @@ class ChatPane(QWidget):
         if self._assistant_row is not None:
             self._assistant_row.show()
         self._assistant_label.show()
-        self._assistant_label.setText(self._assistant_text or " ")
+        _set_message_bubble_text(self._assistant_label, self._assistant_text or " ")
         self._active_tool_group = None
         self._update_bubble_widths()
         self._scroll_to_bottom()
@@ -231,7 +233,7 @@ class ChatPane(QWidget):
             if self._assistant_row is not None:
                 self._assistant_row.show()
             self._assistant_label.show()
-            self._assistant_label.setText(final_answer)
+            _set_message_bubble_text(self._assistant_label, final_answer)
         self._assistant_label = None
         self._assistant_row = None
         self._assistant_text = ""
@@ -332,6 +334,29 @@ class ChatPane(QWidget):
             return
         self._active_tool_group.apply_result(result)
         self._scroll_to_bottom()
+
+
+class _MessageInput(QPlainTextEdit):
+    submit_requested = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt override.
+        key = event.key()
+        modifiers = event.modifiers()
+        submit_key = key in {Qt.Key_Return, Qt.Key_Enter}
+        has_text_modifier = bool(
+            modifiers
+            & (
+                Qt.KeyboardModifier.ShiftModifier
+                | Qt.KeyboardModifier.ControlModifier
+                | Qt.KeyboardModifier.AltModifier
+                | Qt.KeyboardModifier.MetaModifier
+            )
+        )
+        if submit_key and not has_text_modifier:
+            self.submit_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 def _message_avatar(role: str) -> QLabel:
@@ -472,7 +497,10 @@ def _tool_call_line(call: _ToolCallState) -> QWidget:
 def _configure_message_bubble(label: QLabel) -> None:
     label.setMinimumWidth(0)
     label.setWordWrap(True)
+    label.setTextFormat(Qt.PlainText)
     label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    label.setProperty("format", "text")
+    label.setProperty("raw_text", "")
     label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.MinimumExpanding)
 
 
@@ -484,12 +512,52 @@ def _configure_wrapping_label(label: QLabel) -> None:
 
 
 def _natural_label_width(label: QLabel) -> int:
-    text = label.text() or " "
+    text = str(label.property("raw_text") or label.text() or " ")
     metrics = QFontMetrics(label.font())
     margins = label.contentsMargins()
     frame_width = label.frameWidth() * 2
     padding_width = 36
     return metrics.horizontalAdvance(text) + margins.left() + margins.right() + frame_width + padding_width
+
+
+def _set_message_bubble_text(label: QLabel, text: str) -> None:
+    label.setProperty("raw_text", text)
+    next_format = _message_bubble_format(label, text)
+    label.setTextFormat(Qt.RichText if next_format == "markdown" else Qt.PlainText)
+    label.setText(_markdown_to_html(text) if next_format == "markdown" else text)
+    if label.property("format") != next_format:
+        label.setProperty("format", next_format)
+        _refresh_widget(label)
+
+
+def _message_bubble_format(label: QLabel, text: str) -> str:
+    if label.objectName() != "AssistantBubble":
+        return "text"
+    if _looks_like_json_stream(text):
+        return "json"
+    if _looks_like_markdown_stream(text):
+        return "markdown"
+    return "text"
+
+
+def _looks_like_json_stream(text: str) -> bool:
+    stripped = text.lstrip()
+    return stripped.startswith("{") or stripped.startswith("[")
+
+
+def _looks_like_markdown_stream(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    if stripped.startswith(("```", "#", "> ", "- ", "* ", "+ ")):
+        return True
+    return bool(re.search(r"(^|\n)\s*(#{1,6}\s|[-*+]\s|>\s|\d+\.\s|```)|(\*\*|__|`[^`]*$|\[[^\]]+\]\()", text))
+
+
+def _markdown_to_html(text: str) -> str:
+    document = QTextDocument()
+    document.setMarkdown(text)
+    return document.toHtml()
 
 
 def _tool_status_label(status: str) -> str:
@@ -586,6 +654,8 @@ def _tool_call_arguments(tool_call: dict[str, object]) -> str:
 def _tool_call_description(arguments: str) -> str:
     parsed = _parse_json_dict(arguments)
     if not parsed:
+        if _looks_like_json_stream(arguments):
+            return arguments.strip()
         return ""
     return str(parsed.get("description") or "").strip()
 

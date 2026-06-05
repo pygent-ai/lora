@@ -162,6 +162,35 @@ class GuiSessionSidebarTests(unittest.TestCase):
         self.assertEqual(status.text(), "Running")
         self.assertEqual(status.property("status"), "running")
 
+    def test_sidebar_shows_scope_tabs_and_emits_selected_scope(self) -> None:
+        sidebar = SessionSidebar()
+        sidebar.set_scopes(
+            [
+                {"scope_id": "conversation", "label": "对话", "tooltip": "General chats"},
+                {"scope_id": "project:E:/Projects/lora", "label": "lora", "tooltip": "E:/Projects/lora"},
+            ],
+            active_scope_id="conversation",
+        )
+        emitted: list[str] = []
+        sidebar.scope_selected.connect(emitted.append)
+
+        sidebar.scope_tabs.setCurrentIndex(1)
+
+        self.assertEqual(sidebar.scope_tabs.tabText(0), "对话")
+        self.assertEqual(sidebar.scope_tabs.tabText(1), "lora")
+        self.assertEqual(sidebar.scope_tabs.tabToolTip(1), "E:/Projects/lora")
+        self.assertEqual(emitted, ["project:E:/Projects/lora"])
+
+    def test_project_picker_button_has_stable_name_and_signal(self) -> None:
+        sidebar = SessionSidebar()
+        emitted: list[bool] = []
+        sidebar.project_select_requested.connect(lambda: emitted.append(True))
+
+        sidebar.project_button.click()
+
+        self.assertEqual(sidebar.project_button.objectName(), "ProjectPickerButton")
+        self.assertEqual(emitted, [True])
+
 
 if __name__ == "__main__":
     unittest.main()

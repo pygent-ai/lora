@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Literal
 
 from PySide6.QtCore import QThread
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QMainWindow, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QMainWindow, QMessageBox, QWidget
 
-from gui.session_model import ChatSessionStore
+from gui.session_model import ChatSessionStore, GuiProjectState, SessionScope, build_session_scopes
 from gui.theme import theme_stylesheet
 from gui.widgets.chat import ChatPane
 from gui.widgets.inspector import TraceInspector
@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
         agent_alias: str | None = None,
         model: str | None = None,
         max_steps: int | None = None,
+        state_path: str | Path | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -56,21 +57,30 @@ class MainWindow(QMainWindow):
         self._theme = "day"
         self._turn_index = 1
         self._config_path = config_path
-        self.config = self._load_config(workspace_root, config_path, agent_alias, model, max_steps)
+        self._agent_alias_override = agent_alias
+        self._model_override = model
+        self._max_steps_override = max_steps
+        self.project_state = GuiProjectState.load(state_path)
+        if workspace_root is not None:
+            self._remember_project_path(workspace_root, persist=state_path is not None)
+        self.scopes = build_session_scopes(self.project_state)
+        self._active_scope_id = self._initial_scope_id(workspace_root)
+        self.current_scope = self._scope_by_id(self._active_scope_id)
+        self.config = self._config_for_scope(self.current_scope)
         self.manager = SessionManager(self.config)
         self.store = ChatSessionStore(self.manager)
 
         shell = QWidget()
         shell.setObjectName("CentralShell")
         layout = QHBoxLayout(shell)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(16)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(18)
 
         self.sidebar = SessionSidebar()
         self.chat = ChatPane()
         self.inspector = TraceInspector()
-        self.sidebar.setFixedWidth(336)
-        self.inspector.setFixedWidth(388)
+        self.sidebar.setFixedWidth(326)
+        self.inspector.setFixedWidth(410)
         layout.addWidget(self.sidebar)
         layout.addWidget(self.chat, 1)
         layout.addWidget(self.inspector)
@@ -80,6 +90,8 @@ class MainWindow(QMainWindow):
         self.sidebar.session_selected.connect(self.select_session)
         self.sidebar.session_delete_requested.connect(self.delete_session)
         self.sidebar.settings_requested.connect(self.open_settings)
+        self.sidebar.scope_selected.connect(self.select_scope)
+        self.sidebar.project_select_requested.connect(self.choose_project_path)
         self.sidebar.theme_toggle_requested.connect(self.toggle_theme)
         self.sidebar.theme_selected.connect(self.set_theme)
         self.chat.message_submitted.connect(self.send_message)
@@ -119,6 +131,44 @@ class MainWindow(QMainWindow):
         self.sidebar.set_sessions(records)
         if self._active_session_id is not None:
             self.sidebar.select_session(self._active_session_id)
+
+    def select_scope(self, scope_id: str) -> None:
+        if scope_id == self._active_scope_id:
+            return
+        if self._has_running_sessions():
+            self._show_warning("Runs in progress", "Wait for running sessions to finish before changing projects.")
+            self._refresh_static_ui()
+            return
+        self._active_scope_id = scope_id
+        self.current_scope = self._scope_by_id(scope_id)
+        self.config = self._config_for_scope(self.current_scope)
+        self.manager = SessionManager(self.config)
+        self.store = ChatSessionStore(self.manager)
+        self._active_session_id = None
+        self._turn_index = 1
+        self.chat.clear()
+        self.chat.set_session_title("Select or create a chat session")
+        self.inspector.reset_context()
+        self._refresh_static_ui()
+        self.refresh_sessions()
+        self._select_initial_session()
+
+    def choose_project_path(self) -> None:
+        if self._has_running_sessions():
+            self._show_warning("Runs in progress", "Wait for running sessions to finish before changing projects.")
+            return
+        selected = QFileDialog.getExistingDirectory(self, "Choose project folder", self.config.workspace_root)
+        if selected:
+            self.set_project_path(selected)
+
+    def set_project_path(self, project_path: str) -> None:
+        if self._has_running_sessions():
+            self._show_warning("Runs in progress", "Wait for running sessions to finish before changing projects.")
+            return
+        resolved = str(Path(project_path).expanduser().resolve())
+        self.project_state.remember_project(resolved)
+        self.scopes = build_session_scopes(self.project_state)
+        self.select_scope(f"project:{resolved}")
 
     def _select_initial_session(self) -> None:
         records = self.store.list_chat_sessions()
@@ -246,13 +296,39 @@ class MainWindow(QMainWindow):
             max_steps=max_steps,
         )
 
+    def _config_for_scope(self, scope: SessionScope) -> RunConfig:
+        if scope.workspace_root is None:
+            return RunConfig(
+                workspace_root=scope.runtime_workspace_root,
+                lora_root=scope.lora_root,
+                agent_alias=self._agent_alias_override or "default",
+                model=self._model_override,
+                max_steps=self._max_steps_override if self._max_steps_override is not None else -1,
+            )
+        return self._load_config(
+            scope.workspace_root,
+            self._config_path,
+            self._agent_alias_override,
+            self._model_override,
+            self._max_steps_override,
+        )
+
     def _refresh_static_ui(self) -> None:
-        self.sidebar.set_workspace(_short_path(self.config.workspace_root))
+        self.sidebar.set_scopes(
+            [
+                {"scope_id": scope.scope_id, "label": scope.label, "tooltip": scope.tooltip}
+                for scope in self.scopes
+            ],
+            active_scope_id=self._active_scope_id,
+        )
+        workspace_label = "对话" if self.current_scope.workspace_root is None else _short_path(self.config.workspace_root)
+        self.sidebar.set_workspace(workspace_label)
         self.sidebar.set_agent_status(self.config.agent_alias, self.config.model_name)
         self.sidebar.set_theme_name(self._theme)
         self.inspector.set_config(
             {
                 "workspace": self.config.workspace_root,
+                "scope": self.current_scope.label,
                 "lora_root": self.config.lora_root,
                 "agent": self.config.agent_alias,
                 "model": self.config.model_name,
@@ -261,6 +337,32 @@ class MainWindow(QMainWindow):
                 "max_steps": self.config.max_steps,
             }
         )
+
+    def _remember_project_path(self, project_path: str | Path, *, persist: bool) -> None:
+        resolved = str(Path(project_path).expanduser().resolve())
+        if persist:
+            self.project_state.remember_project(resolved)
+            return
+        recent = [resolved]
+        for item in self.project_state.recent_project_paths or []:
+            normalized = str(Path(item).expanduser().resolve())
+            if normalized != resolved:
+                recent.append(normalized)
+        self.project_state.default_project_path = resolved
+        self.project_state.recent_project_paths = recent[:12]
+
+    def _initial_scope_id(self, workspace_root: str | None) -> str:
+        if workspace_root is not None:
+            return f"project:{Path(workspace_root).expanduser().resolve()}"
+        if self.project_state.default_project_path:
+            return f"project:{Path(self.project_state.default_project_path).expanduser().resolve()}"
+        return "conversation"
+
+    def _scope_by_id(self, scope_id: str) -> SessionScope:
+        for scope in self.scopes:
+            if scope.scope_id == scope_id:
+                return scope
+        return self.scopes[0]
 
     def _new_active_run(
         self,

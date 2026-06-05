@@ -7,10 +7,56 @@ from pathlib import Path
 from lora.config import load_run_config
 from lora.session import SessionManager
 
-from gui.session_model import ChatSessionRecord, ChatSessionStore
+from gui.session_model import ChatSessionRecord, ChatSessionStore, GuiProjectState, build_session_scopes
 
 
 class GuiSessionModelTests(unittest.TestCase):
+    def test_project_state_remembers_default_and_recent_project_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            first = Path(tmp) / "first"
+            second = Path(tmp) / "second"
+
+            state = GuiProjectState.load(state_path)
+            state.remember_project(first)
+            state.remember_project(second)
+            restored = GuiProjectState.load(state_path)
+
+            self.assertEqual(restored.default_project_path, str(second.resolve()))
+            self.assertEqual(restored.recent_project_paths, [str(second.resolve()), str(first.resolve())])
+
+    def test_build_session_scopes_includes_conversation_and_recent_projects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = Path(tmp) / "repo"
+            state = GuiProjectState.load(state_path)
+            state.remember_project(project)
+
+            scopes = build_session_scopes(state)
+
+            self.assertEqual([scope.scope_id for scope in scopes], ["conversation", f"project:{project.resolve()}"])
+            self.assertEqual(scopes[0].label, "对话")
+            self.assertIsNone(scopes[0].workspace_root)
+            self.assertEqual(scopes[1].label, "repo")
+            self.assertEqual(scopes[1].workspace_root, str(project.resolve()))
+
+    def test_chat_sessions_are_isolated_by_scope_lora_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = Path(tmp) / "repo"
+            state = GuiProjectState.load(state_path)
+            state.remember_project(project)
+            conversation_scope, project_scope = build_session_scopes(state)
+
+            conversation_config = conversation_scope.to_run_config()
+            project_config = project_scope.to_run_config()
+            conversation_record = ChatSessionStore(SessionManager(conversation_config)).create_chat_session()
+            project_record = ChatSessionStore(SessionManager(project_config)).create_chat_session()
+
+            self.assertNotEqual(Path(conversation_record.session_dir).parents, Path(project_record.session_dir).parents)
+            self.assertIn(".lora", conversation_record.session_dir)
+            self.assertTrue(str(project.resolve()) in project_record.session_dir)
+
     def test_list_chat_sessions_returns_only_chat_mode_sorted_newest_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = load_run_config(workspace_root=tmp)

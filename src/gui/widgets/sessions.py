@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QStyle,
+    QTabBar,
     QVBoxLayout,
     QWidget,
 )
@@ -23,6 +24,8 @@ class SessionSidebar(QWidget):
     session_selected = Signal(str)
     session_delete_requested = Signal(str)
     settings_requested = Signal()
+    scope_selected = Signal(str)
+    project_select_requested = Signal()
     theme_toggle_requested = Signal()
     theme_selected = Signal(str)
 
@@ -47,6 +50,11 @@ class SessionSidebar(QWidget):
 
         recent = QLabel("Recent Sessions")
         recent.setObjectName("SectionLabel")
+        self.scope_tabs = QTabBar()
+        self.scope_tabs.setObjectName("SessionScopeTabs")
+        self.scope_tabs.setExpanding(False)
+        self.scope_tabs.currentChanged.connect(self._emit_scope_selected)
+        self._scope_ids: list[str] = []
         self.sessions = QListWidget()
         self.sessions.setObjectName("SessionList")
         self.sessions.setFocusPolicy(Qt.NoFocus)
@@ -81,6 +89,11 @@ class SessionSidebar(QWidget):
         self.night_button.clicked.connect(lambda: self.theme_selected.emit("night"))
         theme_layout.addWidget(self.day_button)
         theme_layout.addWidget(self.night_button)
+        self.project_button = QPushButton("Choose Project")
+        self.project_button.setObjectName("ProjectPickerButton")
+        self.project_button.setToolTip("Choose a project folder")
+        self.project_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.project_button.clicked.connect(self.project_select_requested.emit)
         self.settings_button = QPushButton("Settings")
         self.settings_button.setObjectName("SettingsButton")
         self.settings_button.setIcon(icon("settings"))
@@ -91,8 +104,10 @@ class SessionSidebar(QWidget):
         layout.addWidget(self.workspace)
         layout.addWidget(self.new_button)
         layout.addWidget(recent)
+        layout.addWidget(self.scope_tabs)
         layout.addWidget(self.sessions, 1)
         layout.addWidget(self.agent)
+        layout.addWidget(self.project_button)
         layout.addWidget(theme_row)
         layout.addWidget(self.settings_button)
 
@@ -101,6 +116,25 @@ class SessionSidebar(QWidget):
 
     def set_agent_status(self, alias: str, model_name: str | None) -> None:
         self.agent.setText(f"Agent: {alias}\nModel: {model_name or 'default'}")
+
+    def set_scopes(self, scopes: list[dict[str, str]], *, active_scope_id: str) -> None:
+        self.scope_tabs.blockSignals(True)
+        while self.scope_tabs.count():
+            self.scope_tabs.removeTab(0)
+        self._scope_ids = []
+        active_index = 0
+        for index, scope in enumerate(scopes):
+            scope_id = str(scope.get("scope_id") or "")
+            label = str(scope.get("label") or scope_id)
+            tooltip = str(scope.get("tooltip") or label)
+            self.scope_tabs.addTab(label)
+            self.scope_tabs.setTabToolTip(index, tooltip)
+            self._scope_ids.append(scope_id)
+            if scope_id == active_scope_id:
+                active_index = index
+        if self.scope_tabs.count():
+            self.scope_tabs.setCurrentIndex(active_index)
+        self.scope_tabs.blockSignals(False)
 
     def set_sessions(self, records: list[ChatSessionRecord]) -> None:
         self.sessions.clear()
@@ -138,6 +172,10 @@ class SessionSidebar(QWidget):
         session_id = str(item.data(256))
         self.select_session(session_id)
         self.session_selected.emit(session_id)
+
+    def _emit_scope_selected(self, index: int) -> None:
+        if 0 <= index < len(self._scope_ids):
+            self.scope_selected.emit(self._scope_ids[index])
 
 
 class _SessionRow(QWidget):

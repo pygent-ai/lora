@@ -28,25 +28,33 @@ class GuiThemeTests(unittest.TestCase):
         self.assertEqual(night.colors.accent, "#0a84ff")
         self.assertEqual(night.state_colors.error, "#ff453a")
         self.assertEqual(day.radius.card, 8)
-        self.assertEqual(night.radius.pane, 12)
+        self.assertEqual(night.radius.pane, 16)
 
     def test_day_theme_uses_apple_studio_palette(self) -> None:
         day = theme_stylesheet("day")
 
         self.assertIn("#f5f5f7", day)
         self.assertIn("#007aff", day)
-        self.assertIn("#dadde3", day)
+        self.assertIn("#dfe5ee", day)
         self.assertIn("#SessionRowDeleteButton", day)
 
     def test_day_theme_uses_mac_like_surfaces_and_compact_controls(self) -> None:
         day = theme_stylesheet("day")
 
-        self.assertIn("#fbfbfd", day)
+        self.assertIn("#f7f9fc", day)
         self.assertIn("#ffffff", day)
-        self.assertIn("#d2d2d7", day)
-        self.assertIn("rgba(255,255,255,0.72)", day)
+        self.assertIn("#c9d4e2", day)
+        self.assertIn("rgba(255,255,255,0.64)", day)
         self.assertIn("border-radius: 8px", day)
         self.assertIn("padding: 8px 12px", day)
+
+    def test_day_theme_uses_apple_tech_surface_treatment(self) -> None:
+        stylesheet = theme_stylesheet("day")
+
+        self.assertIn("qlineargradient", stylesheet)
+        self.assertIn("rgba(255,255,255,0.64)", stylesheet)
+        self.assertIn("border-radius: 16px", stylesheet)
+        self.assertIn("QToolTip", stylesheet)
 
     def test_chat_theme_styles_transcript_status_rows(self) -> None:
         day = theme_stylesheet("day")
@@ -55,7 +63,7 @@ class GuiThemeTests(unittest.TestCase):
         self.assertIn("#ToolStatusRow", day)
         self.assertIn("#ToolStatusIcon", day)
         self.assertIn("#ToolStatusRow[status=\"running\"]", day)
-        self.assertIn("color: #6e6e73", day)
+        self.assertIn("color: #68707c", day)
 
     def test_chat_theme_keeps_message_text_compact_and_avatars_visible(self) -> None:
         day = theme_stylesheet("day")
@@ -67,6 +75,13 @@ class GuiThemeTests(unittest.TestCase):
         self.assertIn("#ToolStatusToggle", day)
         self.assertIn("#ChatRunStatus", day)
         self.assertIn("#InspectorConfigRow", day)
+
+    def test_night_theme_keeps_depth_without_flat_black_panels(self) -> None:
+        stylesheet = theme_stylesheet("night")
+
+        self.assertIn("rgba(28,28,30,0.82)", stylesheet)
+        self.assertIn("rgba(10,132,255,0.16)", stylesheet)
+        self.assertIn("QScrollBar:vertical", stylesheet)
 
     def test_available_themes_are_day_and_night(self) -> None:
         self.assertEqual(available_themes(), ("day", "night"))

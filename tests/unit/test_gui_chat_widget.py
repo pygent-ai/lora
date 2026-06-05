@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontMetrics
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSizePolicy, QWidget
 
 from gui.workers import InspectorEvent
@@ -359,6 +360,41 @@ class GuiChatWidgetTests(unittest.TestCase):
         ]
         self.assertEqual(ordered_labels, ["hello"])
 
+    def test_streaming_json_assistant_reply_uses_live_json_format_before_complete_parse(self) -> None:
+        pane = ChatPane()
+
+        pane.start_assistant_message()
+        pane.append_assistant_delta('{"status": ')
+
+        bubble = pane.findChild(QLabel, "AssistantBubble")
+        self.assertIsNotNone(bubble)
+        assert bubble is not None
+        self.assertEqual(bubble.text(), '{"status": ')
+        self.assertEqual(bubble.property("format"), "json")
+
+    def test_streaming_markdown_assistant_reply_renders_before_final_answer(self) -> None:
+        pane = ChatPane()
+
+        pane.start_assistant_message()
+        pane.append_assistant_delta("# 标")
+
+        bubble = pane.findChild(QLabel, "AssistantBubble")
+        self.assertIsNotNone(bubble)
+        assert bubble is not None
+        self.assertEqual(bubble.property("format"), "markdown")
+        self.assertEqual(bubble.property("raw_text"), "# 标")
+        self.assertIn("<h1", bubble.text())
+
+    def test_partial_tool_call_json_displays_streaming_json_fragment(self) -> None:
+        pane = ChatPane()
+
+        pane.add_runtime_event(
+            InspectorEvent(kind="tool", title="Tool call: bash", detail='{"description": "Run', tone="accent")
+        )
+
+        status_texts = [label.text() for label in pane.findChildren(QLabel, "ToolStatusTitle")]
+        self.assertEqual(status_texts, ['{"description": "Run'])
+
     def test_tool_call_after_streaming_reply_starts_a_new_group_below_reply(self) -> None:
         pane = ChatPane()
 
@@ -490,6 +526,31 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(idle_width, running_width)
         self.assertEqual(pane.send_button.width(), idle_width)
         self.assertEqual(status.property("status"), "ready")
+
+    def test_enter_submits_message_from_composer(self) -> None:
+        pane = ChatPane()
+        submitted: list[str] = []
+        pane.message_submitted.connect(submitted.append)
+        pane.input.setPlainText("hello from keyboard")
+        pane.input.setFocus()
+
+        QTest.keyClick(pane.input, Qt.Key_Return)
+
+        self.assertEqual(submitted, ["hello from keyboard"])
+        self.assertEqual(pane.input.toPlainText(), "")
+
+    def test_shift_enter_keeps_newline_in_composer(self) -> None:
+        pane = ChatPane()
+        submitted: list[str] = []
+        pane.message_submitted.connect(submitted.append)
+        pane.input.setPlainText("first")
+        pane.input.moveCursor(pane.input.textCursor().MoveOperation.End)
+        pane.input.setFocus()
+
+        QTest.keyClick(pane.input, Qt.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+
+        self.assertEqual(submitted, [])
+        self.assertEqual(pane.input.toPlainText(), "first\n")
 
     def test_tool_group_renders_as_execution_card_with_status_property(self) -> None:
         pane = ChatPane()

@@ -35,6 +35,7 @@ def load_run_config(
     max_steps: int | None = None,
 ) -> RunConfig:
     root = Path(workspace_root or os.environ.get("LORA_WORKSPACE_ROOT") or Path.cwd()).expanduser().resolve()
+    user_lora_root = (Path.home() / ".lora").expanduser().resolve()
     load_env_file(root / ".env")
     config_path = Path(config_file or root / "lora.yaml").expanduser()
     if not config_path.is_absolute():
@@ -82,6 +83,7 @@ def load_run_config(
             _dig(config_data, "runtime.allow_read_outside_workspace"),
             default=True,
         ),
+        user_lora_root=str(user_lora_root),
     )
 
 

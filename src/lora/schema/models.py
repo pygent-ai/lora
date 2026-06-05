@@ -87,10 +87,12 @@ class RunConfig:
     cli_bash_presets: list[BashCliPreset] = field(default_factory=_default_cli_bash_presets)
     bash_full_output_allowlist: list[str] = field(default_factory=list)
     allow_read_outside_workspace: bool = True
+    user_lora_root: str | None = None
 
     def __post_init__(self) -> None:
         self.workspace_root = _abs_path(self.workspace_root)
         self.lora_root = _abs_path(self.lora_root)
+        self.user_lora_root = _abs_path(self.user_lora_root or (Path.home() / ".lora"))
         if self.case_file is not None:
             self.case_file = _abs_path(self.case_file)
         if self.max_steps != -1 and self.max_steps <= 0:

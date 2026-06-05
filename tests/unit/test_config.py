@@ -17,6 +17,7 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.max_steps, -1)
         self.assertEqual(config.allow_read_outside_workspace, True)
+        self.assertEqual(config.user_lora_root, str((Path.home() / ".lora").resolve()))
 
     def test_load_run_config_merges_file_and_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

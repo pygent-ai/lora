@@ -273,6 +273,45 @@ class BashCreateSkillThenAnswerLLM:
         context.add_message(AssistantMessage(content="noticed new skill"))
 
 
+class BashCreateNamedSkillThenAnswerLLM:
+    def __init__(self, skills_dir: Path, *, name: str, description: str) -> None:
+        self.request_count = 0
+        self.skills_dir = skills_dir
+        self.name = name
+        self.description = description
+
+    async def stream_forward(self, context: Any, **kwargs: Any) -> AsyncIterator[AssistantMessageChunk]:
+        self.request_count += 1
+        if self.request_count == 1:
+            skill_path = self.skills_dir / self.name / "SKILL.md"
+            command = (
+                f"mkdir -p {skill_path.parent.as_posix()} && "
+                f"cat > {skill_path.as_posix()} <<'EOF'\n"
+                "---\n"
+                f"name: {self.name}\n"
+                f"description: {self.description}\n"
+                "---\n"
+                "# Skill\n"
+                "EOF"
+            )
+            context.add_message(
+                AssistantMessage(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            tool_call_id="call_bash_skill",
+                            tool_name="bash",
+                            arguments={"command": command},
+                        )
+                    ],
+                )
+            )
+            return
+
+        yield AssistantMessageChunk(content="noticed project skill")
+        context.add_message(AssistantMessage(content="noticed project skill"))
+
+
 class AddNumbersTool(BaseTool):
     def __init__(self) -> None:
         super().__init__(
@@ -965,6 +1004,47 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             first_rendered = Path(first_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
             self.assertIn("<available-bash-cli>", first_rendered)
 
+    def test_static_prompt_describes_multilevel_lora_paths_without_skill_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as user_tmp:
+            workspace = Path(tmp)
+            user_lora_root = Path(user_tmp) / ".lora"
+            project_skill = workspace / ".lora" / "skills" / "code-review" / "SKILL.md"
+            project_skill.parent.mkdir(parents=True, exist_ok=True)
+            project_skill.write_text(
+                "---\nname: code-review\ndescription: Review code changes.\n---\n",
+                encoding="utf-8",
+            )
+            config = RunConfig(
+                workspace_root=workspace,
+                lora_root=workspace / ".lora",
+                user_lora_root=user_lora_root,
+            )
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+
+            asyncio.run(
+                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="paths",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            static_prompt = (Path(ref.session_dir) / "context" / "prompts" / "static_prompt.txt").read_text(
+                encoding="utf-8"
+            )
+
+            self.assertIn("# Lora Paths", static_prompt)
+            self.assertIn(f"- Workspace root: {workspace.resolve()}", static_prompt)
+            self.assertIn(f"- Project Lora root: {(workspace / '.lora').resolve()}", static_prompt)
+            self.assertIn(f"- User Lora root: {user_lora_root.resolve()}", static_prompt)
+            self.assertIn("Bash commands and file tools resolve relative paths from the workspace root.", static_prompt)
+            self.assertNotIn("<available-skills>", static_prompt)
+            self.assertNotIn("code-review", static_prompt)
+
     def test_first_request_renders_skill_directory_and_available_skills_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
@@ -1031,6 +1111,74 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertIn("<description>Review code changes and prioritize bugs.</description>", first_rendered)
             self.assertNotIn("<skills-context>", second_rendered)
             self.assertNotIn("<skills-context>", static_prompt)
+
+    def test_available_skills_include_user_and_project_sources_with_project_shadowing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as user_tmp:
+            workspace = Path(tmp)
+            user_lora_root = Path(user_tmp) / ".lora"
+            user_skill = user_lora_root / "skills" / "code-review" / "SKILL.md"
+            project_skill = workspace / ".lora" / "skills" / "code-review" / "SKILL.md"
+            user_only_skill = user_lora_root / "skills" / "python-style" / "SKILL.md"
+            for path, description in [
+                (user_skill, "General user-level review guidance."),
+                (project_skill, "Project-specific review guidance."),
+                (user_only_skill, "Shared Python style guidance."),
+            ]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    "\n".join(
+                        [
+                            "---",
+                            f"name: {path.parent.name}",
+                            f"description: {description}",
+                            "---",
+                            "# Skill",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+            config = RunConfig(
+                workspace_root=workspace,
+                lora_root=workspace / ".lora",
+                user_lora_root=user_lora_root,
+            )
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+
+            asyncio.run(
+                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="skills",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            prompt_event = next(
+                event for event in _read_jsonl(Path(run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
+            )
+            rendered = Path(prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            state = json.loads((Path(ref.session_dir) / "state" / "skill_context.json").read_text(encoding="utf-8"))
+
+            self.assertIn("<user-skills-directory>", rendered)
+            self.assertIn(str((user_lora_root / "skills").resolve()), rendered)
+            self.assertIn("<project-skills-directory>", rendered)
+            self.assertIn(str((workspace / ".lora" / "skills").resolve()), rendered)
+            self.assertIn("<available-skills>", rendered)
+            self.assertIn("<name>code-review</name>", rendered)
+            self.assertIn("<description>Project-specific review guidance.</description>", rendered)
+            self.assertIn("<scope>project</scope>", rendered)
+            self.assertIn("<uri>project://skills/code-review/SKILL.md</uri>", rendered)
+            self.assertIn("<shadowed>", rendered)
+            self.assertIn("<uri>user://skills/code-review/SKILL.md</uri>", rendered)
+            self.assertIn("<name>python-style</name>", rendered)
+            self.assertIn("<scope>user</scope>", rendered)
+            self.assertIn("<uri>user://skills/python-style/SKILL.md</uri>", rendered)
+            self.assertEqual(state["user_skills_dir"], str((user_lora_root / "skills").resolve()))
+            self.assertEqual(state["project_skills_dir"], str((workspace / ".lora" / "skills").resolve()))
+            self.assertIn("skills_fingerprint", state)
 
     def test_second_request_does_not_scan_skills_when_no_tool_changed_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1134,6 +1282,83 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertIn("<name>debugging</name>", tool_messages[0]["content"])
             self.assertEqual(state["pending_new_skills"], [])
             self.assertEqual(state["pending_system_reminders"], [])
+
+    def test_project_skill_shadowing_known_user_skill_triggers_new_skill_reminder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as user_tmp:
+            workspace = Path(tmp)
+            user_lora_root = Path(user_tmp) / ".lora"
+            user_skill = user_lora_root / "skills" / "code-review" / "SKILL.md"
+            user_skill.parent.mkdir(parents=True, exist_ok=True)
+            user_skill.write_text(
+                "---\nname: code-review\ndescription: User-level review guidance.\n---\n",
+                encoding="utf-8",
+            )
+            config = RunConfig(
+                workspace_root=workspace,
+                lora_root=workspace / ".lora",
+                user_lora_root=user_lora_root,
+                max_steps=3,
+            )
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            state_dir = Path(ref.session_dir) / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            user_skill_entry = {
+                "name": "code-review",
+                "description": "User-level review guidance.",
+                "path": str(user_skill.resolve()),
+                "content_hash": "user-hash",
+                "scope": "user",
+                "uri": "user://skills/code-review/SKILL.md",
+                "shadowed": [],
+            }
+            (state_dir / "skill_context.json").write_text(
+                json.dumps(
+                    {
+                        "initial_skill_context_injected": True,
+                        "skills_dir": str(workspace / ".lora" / "skills"),
+                        "skills_dir_fingerprint": "",
+                        "user_skills_dir": str((user_lora_root / "skills").resolve()),
+                        "project_skills_dir": str((workspace / ".lora" / "skills").resolve()),
+                        "skills_fingerprint": "old",
+                        "known_skills": {"code-review": user_skill_entry},
+                        "pending_new_skills": [],
+                        "pending_system_reminders": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            agent = FakeBashLoraAgent(config)
+            agent.llm = BashCreateNamedSkillThenAnswerLLM(
+                workspace / ".lora" / "skills",
+                name="code-review",
+                description="Project-level review guidance.",
+            )
+
+            result = asyncio.run(
+                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                    session=session,
+                    user_input="add project skill",
+                    case_run_ref=run,
+                    turn_id="turn-0001",
+                )
+            )
+
+            prompt_events = [
+                event for event in _read_jsonl(Path(run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
+            ]
+            second_rendered = Path(prompt_events[1]["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+
+            self.assertEqual(result["status"], "passed")
+            self.assertIn("runtime.skill_reminder", prompt_events[1]["payload"]["dynamic_module_ids"])
+            self.assertIn("<new-skills>", second_rendered)
+            self.assertIn("<description>Project-level review guidance.</description>", second_rendered)
+            self.assertIn("<scope>project</scope>", second_rendered)
+            self.assertIn("<uri>project://skills/code-review/SKILL.md</uri>", second_rendered)
+            self.assertIn("<shadowed>", second_rendered)
+            self.assertIn("<uri>user://skills/code-review/SKILL.md</uri>", second_rendered)
 
     def test_pending_new_cli_is_rendered_once_with_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

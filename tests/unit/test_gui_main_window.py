@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -230,6 +232,31 @@ class GuiMainWindowTests(unittest.TestCase):
 
             self.assertTrue(window._has_running_sessions())
             self.assertEqual(warnings[0][0], "Runs in progress")
+
+    def test_without_project_path_starts_in_conversation_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+
+            window = MainWindow(workspace_root=None, state_path=state_path)
+
+            self.assertEqual(window._active_scope_id, "conversation")
+            self.assertEqual(window.sidebar.scope_tabs.tabText(0), "对话")
+            self.assertIsNone(window.current_scope.workspace_root)
+
+    def test_set_project_path_remembers_default_and_switches_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = Path(tmp) / "repo"
+            project.mkdir()
+            window = MainWindow(workspace_root=None, state_path=state_path)
+
+            window.set_project_path(str(project))
+
+            restored = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(restored["default_project_path"], str(project.resolve()))
+            self.assertEqual(window._active_scope_id, f"project:{project.resolve()}")
+            self.assertEqual(window.config.workspace_root, str(project.resolve()))
+            self.assertEqual(window.sidebar.scope_tabs.tabText(1), "repo")
 
 
 if __name__ == "__main__":
