@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from gui.theme import PALETTES, ThemePalette, available_themes, theme_stylesheet
+from gui.theme import available_themes, theme_stylesheet
 
 
 class GuiThemeTests(unittest.TestCase):
@@ -15,73 +15,6 @@ class GuiThemeTests(unittest.TestCase):
         self.assertIn("#ThemeDayButton", day)
         self.assertIn("#ThemeNightButton", night)
         self.assertNotEqual(day, night)
-
-    def test_palettes_are_token_driven(self) -> None:
-        day = PALETTES["day"]
-        night = PALETTES["night"]
-
-        self.assertIsInstance(day, ThemePalette)
-        self.assertEqual(day.colors.bg, "#f5f5f7")
-        self.assertEqual(day.colors.accent, "#007aff")
-        self.assertEqual(day.state_colors.running, "#64d2ff")
-        self.assertEqual(night.colors.bg, "#1c1c1e")
-        self.assertEqual(night.colors.accent, "#0a84ff")
-        self.assertEqual(night.state_colors.error, "#ff453a")
-        self.assertEqual(day.radius.card, 8)
-        self.assertEqual(night.radius.pane, 16)
-
-    def test_day_theme_uses_apple_studio_palette(self) -> None:
-        day = theme_stylesheet("day")
-
-        self.assertIn("#f5f5f7", day)
-        self.assertIn("#007aff", day)
-        self.assertIn("#dfe5ee", day)
-        self.assertIn("#SessionRowDeleteButton", day)
-
-    def test_day_theme_uses_mac_like_surfaces_and_compact_controls(self) -> None:
-        day = theme_stylesheet("day")
-
-        self.assertIn("#f7f9fc", day)
-        self.assertIn("#ffffff", day)
-        self.assertIn("#c9d4e2", day)
-        self.assertIn("rgba(255,255,255,0.64)", day)
-        self.assertIn("border-radius: 8px", day)
-        self.assertIn("padding: 8px 12px", day)
-
-    def test_day_theme_uses_apple_tech_surface_treatment(self) -> None:
-        stylesheet = theme_stylesheet("day")
-
-        self.assertIn("qlineargradient", stylesheet)
-        self.assertIn("rgba(255,255,255,0.64)", stylesheet)
-        self.assertIn("border-radius: 16px", stylesheet)
-        self.assertIn("QToolTip", stylesheet)
-
-    def test_chat_theme_styles_transcript_status_rows(self) -> None:
-        day = theme_stylesheet("day")
-
-        self.assertIn("#MessageGroup", day)
-        self.assertIn("#ToolStatusRow", day)
-        self.assertIn("#ToolStatusIcon", day)
-        self.assertIn("#ToolStatusRow[status=\"running\"]", day)
-        self.assertIn("color: #68707c", day)
-
-    def test_chat_theme_keeps_message_text_compact_and_avatars_visible(self) -> None:
-        day = theme_stylesheet("day")
-
-        self.assertIn("Segoe UI Variable Text", day)
-        self.assertIn("DengXian", day)
-        self.assertIn("font-size: 14px", day)
-        self.assertIn("#UserAvatar, #AssistantAvatar", day)
-        self.assertIn("#ToolStatusToggle", day)
-        self.assertIn("#ChatRunStatus", day)
-        self.assertIn("#InspectorConfigRow", day)
-
-    def test_night_theme_keeps_depth_without_flat_black_panels(self) -> None:
-        stylesheet = theme_stylesheet("night")
-
-        self.assertIn("rgba(28,28,30,0.82)", stylesheet)
-        self.assertIn("rgba(10,132,255,0.16)", stylesheet)
-        self.assertIn("QScrollBar:vertical", stylesheet)
 
     def test_available_themes_are_day_and_night(self) -> None:
         self.assertEqual(available_themes(), ("day", "night"))

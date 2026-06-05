@@ -11,9 +11,12 @@ THEMES = ("day", "night")
 @dataclass(frozen=True, slots=True)
 class ThemeColors:
     bg: str
+    bg_secondary: str
     surface: str
     surface_alt: str
     surface_elevated: str
+    glass: str
+    glass_strong: str
     border: str
     border_strong: str
     text: str
@@ -31,24 +34,24 @@ class ThemeTypography:
     body_size: int = 13
     message_size: int = 14
     meta_size: int = 11
-    title_size: int = 22
+    title_size: int = 24
     section_size: int = 11
 
 
 @dataclass(frozen=True, slots=True)
 class ThemeSpacing:
-    pane_margin: int = 18
-    gutter: int = 18
-    pane_padding: int = 20
+    pane_margin: int = 16
+    gutter: int = 14
+    pane_padding: int = 16
     control_pad_y: int = 9
     control_pad_x: int = 12
 
 
 @dataclass(frozen=True, slots=True)
 class ThemeRadius:
-    chip: int = 6
-    card: int = 8
-    row: int = 8
+    chip: int = 7
+    card: int = 10
+    row: int = 11
     pane: int = 16
 
 
@@ -74,57 +77,63 @@ PALETTES: dict[str, ThemePalette] = {
     "day": ThemePalette(
         name="day",
         colors=ThemeColors(
-            bg="#f5f5f7",
+            bg="#f7f5f1",
+            bg_secondary="#eef4fb",
             surface="#ffffff",
-            surface_alt="#f7f9fc",
-            surface_elevated="#eef2f7",
-            border="#dfe5ee",
-            border_strong="#c9d4e2",
-            text="#1d1d1f",
-            text_muted="#68707c",
-            text_soft="#8e8e93",
-            accent="#007aff",
-            accent_hover="#0066d6",
+            surface_alt="#f8f9fb",
+            surface_elevated="#edf2f8",
+            glass="rgba(255,255,255,0.68)",
+            glass_strong="rgba(255,255,255,0.84)",
+            border="rgba(107,124,147,0.18)",
+            border_strong="rgba(107,124,147,0.30)",
+            text="#1f2329",
+            text_muted="#66707f",
+            text_soft="#8d96a3",
+            accent="#147efb",
+            accent_hover="#0d6fe6",
             accent_text="#ffffff",
-            selection="#e7f1ff",
-            input="#ffffff",
+            selection="#e8f2ff",
+            input="#fbfdff",
         ),
         typography=ThemeTypography(),
-        spacing=ThemeSpacing(control_pad_y=8),
+        spacing=ThemeSpacing(),
         radius=ThemeRadius(),
         state_colors=ThemeStateColors(
-            success="#34c759",
-            warning="#ff9f0a",
-            error="#ff453a",
-            running="#64d2ff",
+            success="#3eb37b",
+            warning="#e3a449",
+            error="#e35d58",
+            running="#4e9ef7",
         ),
     ),
     "night": ThemePalette(
         name="night",
         colors=ThemeColors(
-            bg="#1c1c1e",
-            surface="#202125",
-            surface_alt="#292b31",
-            surface_elevated="#343741",
-            border="#3d414c",
-            border_strong="#545a68",
-            text="#f5f5f7",
-            text_muted="#b4bac5",
-            text_soft="#8e8e93",
-            accent="#0a84ff",
-            accent_hover="#36a3ff",
+            bg="#171a20",
+            bg_secondary="#202833",
+            surface="#20242b",
+            surface_alt="#252b35",
+            surface_elevated="#2d3541",
+            glass="rgba(33,37,45,0.82)",
+            glass_strong="rgba(37,42,52,0.92)",
+            border="rgba(205,214,228,0.12)",
+            border_strong="rgba(205,214,228,0.22)",
+            text="#f5f7fb",
+            text_muted="#b2bac7",
+            text_soft="#88919f",
+            accent="#4a98ff",
+            accent_hover="#6eacff",
             accent_text="#ffffff",
-            selection="#183b64",
-            input="#191a1e",
+            selection="#213753",
+            input="#1a1f26",
         ),
         typography=ThemeTypography(),
-        spacing=ThemeSpacing(control_pad_y=8),
+        spacing=ThemeSpacing(),
         radius=ThemeRadius(),
         state_colors=ThemeStateColors(
-            success="#30d158",
-            warning="#ff9f0a",
-            error="#ff453a",
-            running="#64d2ff",
+            success="#43bf83",
+            warning="#e7a754",
+            error="#ea6f6a",
+            running="#67b0ff",
         ),
     ),
 }
@@ -166,38 +175,33 @@ def _stylesheet(palette: ThemePalette) -> str:
     r = palette.radius
     state = palette.state_colors
     if palette.name == "day":
-        app_bg = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f9fbff, stop:0.42 #f5f5f7, stop:1 #eef7f3)"
-        pane_fill = "rgba(255,255,255,0.64)"
-        pane_alt_fill = "rgba(255,255,255,0.82)"
-        toolbar_fill = "rgba(255,255,255,0.72)"
-        button_fill = "rgba(255,255,255,0.70)"
-        field_fill = "rgba(255,255,255,0.88)"
-        accent_fill = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0a84ff, stop:1 #32d3ff)"
-        selected_fill = "rgba(10,132,255,0.11)"
-        status_bg = "rgba(10,132,255,0.10)"
-        error_bg = "rgba(255,69,58,0.10)"
-        success_bg = "rgba(52,199,89,0.12)"
-        separator = "rgba(120,130,150,0.22)"
-        tooltip_bg = "rgba(28,28,30,0.92)"
-        tooltip_text = "#ffffff"
+        app_bg = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #fbf8f3, stop:0.38 #f5f4f2, stop:0.72 #eef3f9, stop:1 #eaf4ee)"
+        accent_fill = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f7aff, stop:1 #4ea8ff)"
+        pill_fill = "rgba(255,255,255,0.72)"
+        success_bg = "rgba(62,179,123,0.14)"
+        running_bg = "rgba(20,126,251,0.13)"
+        error_bg = "rgba(227,93,88,0.13)"
+        hover_fill = "rgba(255,255,255,0.88)"
+        list_hover = "rgba(255,255,255,0.70)"
+        shadow_color = "rgba(82,97,115,0.11)"
+        scrollbar_track = "rgba(130,144,161,0.08)"
+        scrollbar_thumb = "rgba(117,130,147,0.32)"
     else:
-        app_bg = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #111318, stop:0.48 #1c1d24, stop:1 #12263a)"
-        pane_fill = "rgba(28,28,30,0.82)"
-        pane_alt_fill = "rgba(38,40,48,0.88)"
-        toolbar_fill = "rgba(28,28,30,0.74)"
-        button_fill = "rgba(62,66,78,0.58)"
-        field_fill = "rgba(22,23,28,0.88)"
-        accent_fill = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0a84ff, stop:1 #54e4ff)"
-        selected_fill = "rgba(10,132,255,0.16)"
-        status_bg = "rgba(10,132,255,0.16)"
-        error_bg = "rgba(255,69,58,0.14)"
-        success_bg = "rgba(48,209,88,0.14)"
-        separator = "rgba(210,220,235,0.16)"
-        tooltip_bg = "rgba(245,245,247,0.94)"
-        tooltip_text = "#1d1d1f"
+        app_bg = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #14181e, stop:0.42 #1a1f27, stop:0.72 #1e2833, stop:1 #1a2330)"
+        accent_fill = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3e90ff, stop:1 #68bcff)"
+        pill_fill = "rgba(44,49,59,0.84)"
+        success_bg = "rgba(67,191,131,0.16)"
+        running_bg = "rgba(74,152,255,0.18)"
+        error_bg = "rgba(234,111,106,0.16)"
+        hover_fill = "rgba(49,56,67,0.95)"
+        list_hover = "rgba(45,51,61,0.82)"
+        shadow_color = "rgba(0,0,0,0.24)"
+        scrollbar_track = "rgba(205,214,228,0.04)"
+        scrollbar_thumb = "rgba(205,214,228,0.20)"
+    selected_fill = c.selection
     return f"""
 QWidget {{
-    font-family: "Microsoft YaHei UI", "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "PingFang SC", "DengXian", sans-serif;
+    font-family: "Microsoft YaHei UI", "Segoe UI Variable Text", "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
     font-size: {t.body_size}px;
     color: {c.text};
 }}
@@ -208,440 +212,472 @@ QMainWindow, #CentralShell {{
     border: 0;
 }}
 #SessionSidebar, #ChatPane, #TraceInspector {{
-    background: {pane_fill};
-    border: 1px solid {separator};
+    background: {c.glass};
+    border: 1px solid {c.border};
     border-radius: {r.pane}px;
+}}
+#SessionSidebar {{
+    background: {c.glass_strong};
+}}
+#ChatPane {{
+    background: {c.glass};
+    border: 1px solid {c.border};
+    border-radius: {r.pane}px;
+}}
+#ChatMainCard {{
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}}
+#ChatHeaderShell, #ChatScrollShell {{
+    background: transparent;
 }}
 #Brand {{
     color: {c.text};
-    font-size: {t.title_size + 1}px;
+    font-size: {t.title_size}px;
     font-weight: 700;
+    letter-spacing: 0.4px;
 }}
-#SidebarMeta, #SessionRowMeta, #InspectorMeta, #ChatHeaderMeta {{
+#SidebarMeta, #SessionRowMeta, #InspectorMeta, #ChatHeaderMeta, #InspectorConfigKey {{
     color: {c.text_muted};
     font-size: {t.meta_size}px;
 }}
 #SectionLabel {{
     color: {c.text_soft};
     font-size: {t.section_size}px;
-    font-weight: 650;
-    letter-spacing: 0px;
-    padding-top: 6px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 6px 2px 2px 2px;
 }}
 #AccentButton, #PrimaryButton {{
     background: {accent_fill};
-    border: 1px solid rgba(255,255,255,0.34);
+    border: 1px solid rgba(255,255,255,0.28);
     border-radius: {r.card}px;
     color: {c.accent_text};
     font-weight: 700;
-    padding: {s.control_pad_y + 1}px {s.control_pad_x}px;
+    padding: {s.control_pad_y + 1}px {s.control_pad_x + 2}px;
 }}
 #AccentButton:hover, #PrimaryButton:hover {{
     background: {c.accent_hover};
 }}
-#PrimaryButton:disabled {{
+#AccentButton:pressed, #PrimaryButton:pressed {{
+    padding-top: {s.control_pad_y + 2}px;
+}}
+#PrimaryButton:disabled, #AccentButton:disabled {{
     background: {c.surface_elevated};
     color: {c.text_muted};
     border-color: {c.border};
 }}
 QPushButton {{
-    background: {button_fill};
-    border: 1px solid {separator};
-    border-radius: {r.card}px;
+    background: {pill_fill};
+    border: 1px solid {c.border};
+    border-radius: {r.card - 2}px;
     color: {c.text};
     padding: {s.control_pad_y}px {s.control_pad_x}px;
 }}
 QPushButton:hover {{
+    background: {hover_fill};
     border-color: {c.border_strong};
-    background: {pane_alt_fill};
 }}
-QPushButton:disabled {{
-    color: {c.text_soft};
-    background: {c.surface_alt};
-}}
-#SessionList {{
-    background: transparent;
-    border: 0;
-    color: {c.text};
-    outline: 0;
-}}
-#SessionList::item {{
-    margin: 3px 0;
-    padding: 0;
-    border: 0;
-    outline: 0;
-}}
-#SessionList::item:selected {{
-    background: transparent;
-    border: 0;
-    outline: 0;
-}}
-#SessionScopeTabs {{
-    background: {button_fill};
-    border: 1px solid {separator};
-    border-radius: {r.card}px;
-}}
-#SessionScopeTabs::tab {{
-    background: transparent;
-    border: 1px solid transparent;
-    color: {c.text_muted};
-    padding: 7px 10px;
-    margin: 2px;
-    border-radius: {r.chip}px;
-}}
-#SessionScopeTabs::tab:selected {{
-    background: {pane_alt_fill};
-    border-color: {separator};
-    color: {c.text};
-}}
-#SessionRow {{
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: {r.row}px;
-}}
-#SessionRow:hover {{
-    background: {pane_alt_fill};
-    border-color: {separator};
-}}
-#SessionRow[selected="true"] {{
-    background: {selected_fill};
-    border: 1px solid rgba(10,132,255,0.26);
-}}
-#SessionRowRail {{
-    background: transparent;
-    border-radius: {r.chip}px;
-}}
-#SessionRowRail[selected="true"] {{
-    background: {c.accent};
-}}
-#SessionRowTitle {{
-    color: {c.text};
-    font-weight: 650;
-}}
-#SessionRowStatus {{
-    background: transparent;
-    border-radius: {r.chip}px;
-    color: {c.text_muted};
-    font-size: 11px;
-    font-weight: 650;
-    padding: 3px 6px;
-}}
-#SessionRowStatus[status="running"] {{
-    background: {status_bg};
-    color: {c.accent};
-}}
-#SessionRowStatus[status="error"] {{
-    background: {error_bg};
-    color: {state.error};
-}}
-#SessionRowStatus[status="success"] {{
-    background: {success_bg};
-    color: {state.success};
-}}
-#SessionRowDeleteButton {{
-    background: transparent;
-    border: 0;
-    border-radius: {r.chip}px;
-    color: {c.text_muted};
-    padding: 2px;
-}}
-#SessionRowDeleteButton:hover {{
+QPushButton:pressed {{
     background: {c.surface_elevated};
+}}
+QPushButton:checked {{
+    background: {selected_fill};
+    border-color: rgba(20,126,251,0.26);
     color: {c.text};
 }}
-#ThemeSegment {{
-    background: {button_fill};
-    border: 1px solid {separator};
-    border-radius: {r.card}px;
-}}
-#ThemeDayButton, #ThemeNightButton {{
+QLineEdit, QPlainTextEdit, QTextEdit, QListWidget, QTreeWidget, QTabWidget::pane {{
     background: transparent;
-    border: 0;
-    border-radius: {r.chip}px;
-    color: {c.text_muted};
-    padding: 8px 10px;
 }}
-#ThemeDayButton:checked, #ThemeNightButton:checked {{
-    background: {pane_alt_fill};
-    color: {c.text};
-    border: 1px solid {separator};
-}}
-#ProjectPickerButton {{
-    background: {button_fill};
-    border: 1px solid {separator};
-    border-radius: {r.card}px;
-    color: {c.text};
-    padding: {s.control_pad_y}px {s.control_pad_x}px;
-    text-align: left;
-}}
-#ProjectPickerButton:hover {{
-    background: {pane_alt_fill};
-    border-color: {c.border_strong};
-}}
-#SettingsButton {{
-    padding: {s.control_pad_y}px {s.control_pad_x}px;
-}}
-#ChatHeader {{
-    background: {toolbar_fill};
-    border-bottom: 1px solid {separator};
-    border-top-left-radius: {r.pane}px;
-    border-top-right-radius: {r.pane}px;
+#ChatHeader, #InspectorHeader {{
+    background: transparent;
+    border-bottom: 1px solid {c.border};
 }}
 #ChatHeaderTitle {{
+    font-size: {t.title_size - 4}px;
+    font-weight: 700;
     color: {c.text};
-    font-size: 16px;
-    font-weight: 650;
 }}
-#ChatRunStatus, #InspectorStatusIndicator {{
-    background: {button_fill};
-    border: 1px solid {separator};
+#ChatHeaderMeta {{
+    padding-top: 2px;
+}}
+#ChatRunStatus, #InspectorStatusIndicator, #ToolStatusIcon {{
+    background: {pill_fill};
+    border: 1px solid {c.border};
     border-radius: {r.chip}px;
     color: {c.text_muted};
     font-size: {t.meta_size}px;
-    font-weight: 650;
-    padding: 3px 7px;
+    font-weight: 700;
+    padding: 4px 10px;
 }}
-#ChatRunStatus[status="running"], #InspectorStatusIndicator[status="running"] {{
-    background: {status_bg};
-    border-color: {state.running};
-    color: {c.text};
-}}
-#ChatRunStatus[status="error"], #InspectorStatusIndicator[status="error"] {{
-    background: {error_bg};
-    border-color: {state.error};
-    color: {state.error};
-}}
-#ChatRunStatus[status="success"], #InspectorStatusIndicator[status="success"] {{
-    background: {success_bg};
-    border-color: {state.success};
-    color: {state.success};
-}}
-#ChatScroll, #ChatScrollBody {{
-    background: transparent;
-    border: 0;
-}}
-#MessageGroup, #UserMessageGroup, #AssistantMessageGroup {{
-    background: transparent;
-    border: 0;
-}}
-#UserBubble, #AssistantBubble {{
-    border-radius: {r.card}px;
-    padding: 12px 15px;
-    max-width: 720px;
-    line-height: 1.45;
-    font-size: {t.message_size}px;
-}}
-#UserBubble {{
-    background: {accent_fill};
-    color: {c.accent_text};
-    border: 1px solid rgba(255,255,255,0.28);
-}}
-#AssistantBubble {{
-    background: {pane_alt_fill};
-    color: {c.text};
-    border: 1px solid {separator};
-}}
-#AssistantBubble[format="json"] {{
-    background: {toolbar_fill};
-    color: {c.text};
-    border: 1px solid {c.border_strong};
-    font-family: "Cascadia Mono", "Consolas", "Courier New", monospace;
-    font-size: {max(t.message_size - 1, 12)}px;
-}}
-#UserAvatar, #AssistantAvatar {{
-    background: {button_fill};
-    border: 1px solid {separator};
-    border-radius: {r.card}px;
-    color: {c.text_muted};
-    font-weight: 650;
-}}
-#ToolStatusRow {{
-    background: {toolbar_fill};
-    border: 1px solid {separator};
-    border-radius: {r.card}px;
-}}
-#ToolStatusRow[status="running"] {{
-    border-color: {state.running};
-    background: {status_bg};
-}}
-#ToolStatusRow[status="success"] {{
-    border-color: {state.success};
-    background: {success_bg};
-}}
-#ToolStatusRow[status="error"] {{
-    border-color: {state.error};
-    background: {error_bg};
-}}
-#ToolStatusIcon {{
-    background: {pane_alt_fill};
-    border: 1px solid {separator};
-    border-radius: {r.chip}px;
-    color: {c.text_soft};
-    font-size: 12px;
-    font-weight: 650;
-    padding: 0;
-}}
-#ToolStatusToggle {{
-    background: transparent;
-    border: 1px solid {separator};
-    border-radius: {r.chip}px;
-    color: {c.text_soft};
-    padding: 0;
-}}
-#ToolStatusToggle:hover {{
-    background: {pane_alt_fill};
-}}
-#ToolStatusTitle {{
-    color: {c.text};
-    font-size: 13px;
-    font-weight: 650;
-}}
-#ToolStatusDetail {{
-    color: {c.text_muted};
-    font-size: {t.meta_size}px;
-}}
-#ToolCallRow {{
-    background: {pane_alt_fill};
-    border: 1px solid {separator};
-    border-radius: {r.chip}px;
-}}
-#ToolCallStatus {{
-    color: {c.text_soft};
-    font-size: {t.meta_size}px;
-    font-weight: 650;
-}}
-#ToolCallStatus[status="running"] {{
+#ChatRunStatus[status="running"], #InspectorStatusIndicator[status="running"], #SessionRowStatus[status="running"], #ToolStatusIcon[status="running"] {{
+    background: {running_bg};
+    border-color: rgba(20,126,251,0.18);
     color: {state.running};
 }}
-#ToolCallStatus[status="success"] {{
+#ChatRunStatus[status="success"], #InspectorStatusIndicator[status="success"], #SessionRowStatus[status="success"], #ToolStatusIcon[status="success"] {{
+    background: {success_bg};
+    border-color: rgba(62,179,123,0.18);
     color: {state.success};
 }}
-#ToolCallStatus[status="error"] {{
+#ChatRunStatus[status="error"], #InspectorStatusIndicator[status="error"], #SessionRowStatus[status="error"], #ToolStatusIcon[status="error"] {{
+    background: {error_bg};
+    border-color: rgba(227,93,88,0.18);
     color: {state.error};
 }}
-#ToolCallLine {{
-    color: {c.text_muted};
-    font-size: 12px;
-}}
-#Composer {{
-    background: {toolbar_fill};
-    border-top: 1px solid {separator};
-    border-bottom-left-radius: {r.pane}px;
-    border-bottom-right-radius: {r.pane}px;
-}}
-#MessageInput, QLineEdit, QPlainTextEdit, QSpinBox {{
-    background: {field_fill};
-    border: 1px solid {separator};
-    border-radius: {r.card}px;
-    color: {c.text};
-    padding: 10px;
-    selection-background-color: {c.selection};
-}}
-#MessageInput:focus, QLineEdit:focus, QPlainTextEdit:focus {{
-    border-color: {c.accent};
-}}
-#InspectorHeader {{
+#SessionScopeTabs, #InspectorTabs, QTabBar {{
     background: transparent;
-    border: 0;
-}}
-#InspectorStatus {{
-    color: {c.text};
-    font-size: 16px;
-    font-weight: 650;
-}}
-QTabWidget::pane {{
-    border: 1px solid {separator};
-    background: {pane_alt_fill};
-    border-radius: {r.card}px;
-    top: -1px;
 }}
 QTabBar::tab {{
     background: transparent;
     border: 1px solid transparent;
-    color: {c.text_muted};
-    padding: 7px 13px;
-    margin: 0;
     border-radius: {r.chip}px;
+    color: {c.text_muted};
+    padding: 8px 14px;
+    margin-right: 4px;
+    font-weight: 600;
 }}
 QTabBar::tab:selected {{
+    background: {pill_fill};
+    border-color: {c.border};
     color: {c.text};
-    background: {pane_alt_fill};
-    border: 1px solid {separator};
 }}
-QTreeWidget, QListWidget {{
+QTabBar::tab:hover {{
+    background: {list_hover};
+}}
+#SessionList, #TraceInspector QListWidget, #TraceInspector QTreeWidget, #ChatScroll {{
+    border: 0;
+    outline: none;
+}}
+#SessionList::item {{
+    padding: 0;
+    margin: 0;
+}}
+#SessionRow {{
+    background: transparent;
+    border: 1px solid {c.border};
+    border-radius: 9px;
+}}
+#SessionRow[selected="true"] {{
+    background: {selected_fill};
+    border-color: rgba(20,126,251,0.22);
+}}
+#SessionRow:hover {{
+    background: {list_hover};
+    border-color: {c.border_strong};
+}}
+#SessionRowRail {{
+    background: transparent;
+    border-radius: 2px;
+}}
+#SessionRowRail[selected="true"] {{
+    background: transparent;
+}}
+#SessionRowIcon {{
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 5px;
+}}
+#SessionRowTitle {{
+    font-size: {t.body_size}px;
+    font-weight: 600;
+    color: {c.text_muted};
+}}
+#SessionRowMeta, #SessionRowStatus {{
+    color: {c.text_soft};
+    font-size: {t.meta_size + 1}px;
+}}
+#SessionRowStatus {{
     background: transparent;
     border: 0;
-    color: {c.text};
-    alternate-background-color: {c.surface_alt};
+    padding: 0;
+    font-weight: 500;
 }}
-QHeaderView::section {{
-    background: {pane_alt_fill};
+#SessionRowStatus[status="running"] {{
+    color: {state.running};
+}}
+#SessionRowStatus[status="success"], #SessionRowStatus[status="ready"] {{
+    color: {c.text_soft};
+}}
+#SessionRowStatus[status="error"] {{
+    color: {state.error};
+}}
+#SessionRowMenuButton {{
+    background: transparent;
+    border: 0;
+    color: {c.text_soft};
+    padding: 0 2px 2px 2px;
+    font-size: 18px;
+    font-weight: 600;
+    min-width: 14px;
+}}
+#SessionRowMenuButton:hover {{
+    background: transparent;
+    color: {c.text_muted};
+}}
+#SessionRowMenuButton::menu-indicator {{
+    image: none;
+}}
+#ThemeSegment, #SidebarInfoCard, #SidebarToolsCard, #InspectorStatusCard {{
+    background: {pill_fill};
+    border: 1px solid {c.border};
+    border-radius: {r.card}px;
+}}
+#SidebarInfoCard, #SidebarToolsCard, #InspectorStatusCard {{
+    background: transparent;
+    border-color: transparent;
+}}
+#ThemeDayButton, #ThemeNightButton {{
+    border: 0;
+    border-radius: {r.card - 4}px;
+    background: transparent;
+    padding: {s.control_pad_y}px {s.control_pad_x}px;
+}}
+#ThemeDayButton:checked, #ThemeNightButton:checked {{
+    background: {c.surface};
+    border: 1px solid rgba(20,126,251,0.12);
+}}
+#ProjectPickerButton, #SettingsButton {{
+    text-align: left;
+    padding-left: 14px;
+}}
+#SidebarInfoTitle, #InspectorStatus, #ThinkingStatusTitle {{
+    font-size: {t.body_size}px;
+    font-weight: 700;
+    color: {c.text};
+}}
+#InspectorStatus {{
+    font-size: {t.body_size + 1}px;
+}}
+#SidebarInfoValue, #InspectorConfigValue {{
+    color: {c.text_muted};
+    font-size: {t.meta_size + 1}px;
+}}
+#ChatScrollBody {{
+    background: transparent;
+}}
+#UserBubble, #AssistantBubble {{
+    font-size: {t.message_size}px;
+    line-height: 1.55;
+}}
+#UserBubble {{
+    background: {pill_fill};
+    color: {c.text};
+    border: 1px solid {c.border};
+    border-radius: 18px;
+    padding: 13px 18px;
+}}
+#AssistantBubble {{
+    background: transparent;
+    color: {c.text};
+    border: 0;
+    border-radius: 0;
+    padding: 2px 0 2px 0;
+}}
+#Composer {{
+    background: {c.surface};
+    border: 1px solid {c.border};
+    border-radius: {r.pane - 2}px;
+}}
+#MessageInput {{
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    selection-background-color: {c.selection};
+}}
+#MessageInput:focus {{
+    background: transparent;
+}}
+#ChatScroll {{
+    background: transparent;
+}}
+#ToolStatusRow, #ToolCallCard, #ToolResultCard, #InspectorConfigRow, #ToolExpandedCard, #ToolStatusSummary {{
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}}
+#ToolStatusRow {{
+    background: transparent;
+    border: 0;
+}}
+#ToolStatusSummary {{
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}}
+#ToolStatusSummary[status="running"] {{
+    background: transparent;
+    border: 0;
+}}
+#ToolStatusSummary[status="running"][blinkPhase="alt"] {{
+    background: transparent;
+    border: 0;
+}}
+#ToolStatusSummary[status="success"] {{
+    background: transparent;
+    border: 0;
+}}
+#ToolStatusSummary[status="error"] {{
+    background: transparent;
+    border: 0;
+}}
+#ToolStatusTitle {{
+    font-size: {t.meta_size + 1}px;
+    font-weight: 600;
+    color: {c.text_muted};
+    padding: 0;
+}}
+#ToolStatusTitle[status="running"] {{
+    color: {c.text_muted};
+}}
+#ToolStatusTitle[status="running"][blinkPhase="alt"] {{
+    color: {state.running};
+}}
+#ToolStatusTitle[status="success"] {{
+    color: {state.success};
+}}
+#ToolStatusTitle[status="error"] {{
+    color: {state.error};
+}}
+#ToolStatusToggle {{
+    background: transparent;
+    border: 0;
+    color: {c.text_muted};
+    font-size: {t.meta_size + 2}px;
+    font-weight: 600;
+    padding: 0;
+    min-width: 0;
+}}
+#ToolStatusToggle[status="running"] {{
+    color: {c.text_muted};
+}}
+#ToolStatusToggle[status="running"][blinkPhase="alt"] {{
+    color: {state.running};
+}}
+#ToolStatusToggle[status="error"] {{
+    color: {state.error};
+}}
+#ToolStatusToggle[status="success"] {{
+    color: {state.success};
+}}
+#ToolExpandedPanel {{
+    background: transparent;
+}}
+#ToolTimeline {{
+    background: transparent;
+}}
+#ToolTimelineDot {{
+    background: {c.surface};
+    border: 2px solid {c.border_strong};
+    border-radius: 5px;
+}}
+#ToolTimelineDot[status="running"] {{
+    background: rgba(20,126,251,0.14);
+    border-color: {state.running};
+}}
+#ToolTimelineDot[status="success"] {{
+    background: rgba(62,179,123,0.16);
+    border-color: {state.success};
+}}
+#ToolTimelineDot[status="error"] {{
+    background: rgba(227,93,88,0.16);
+    border-color: {state.error};
+}}
+#ToolTimelineLine {{
+    background: transparent;
+    border: 0;
+}}
+#ToolExpandedCard {{
+    background: transparent;
+    border: 0;
+}}
+#ToolCallRow {{
+    background: transparent;
+    border: 0;
+    border-bottom: 0;
+}}
+#ToolCallLine {{
+    font-size: {t.body_size}px;
+    font-weight: 600;
+    color: {c.text_muted};
+}}
+#ToolCallStatus {{
+    font-size: {t.meta_size}px;
+    font-weight: 600;
+}}
+#ToolCallStatus[status="running"] {{
+    color: {c.text_muted};
+}}
+#ToolCallStatus[status="success"] {{
+    color: {c.text_muted};
+}}
+#ToolCallStatus[status="error"] {{
+    color: {c.text_muted};
+}}
+#ToolCallStartTime {{
+    color: {c.text_muted};
+    font-size: {t.meta_size}px;
+}}
+#ToolCallDuration {{
+    color: {c.text_muted};
+    font-size: {t.meta_size}px;
+    font-weight: 600;
+    background: transparent;
+    border: 0;
+    padding: 0;
+}}
+#ToolCallTitle, #ToolResultTitle {{
+    font-weight: 700;
+    color: {c.text};
+}}
+#ToolCallMeta, #ToolResultMeta {{
+    color: {c.text_muted};
+    font-size: {t.meta_size}px;
+}}
+#TraceInspector QHeaderView::section {{
+    background: transparent;
     border: 0;
     border-bottom: 1px solid {c.border};
-    color: {c.text_muted};
-    font-weight: 650;
-    padding: 7px;
+    color: {c.text_soft};
+    padding: 8px 6px;
+    font-size: {t.meta_size}px;
+    font-weight: 700;
 }}
-QTreeWidget::item, QListWidget::item {{
-    padding: 7px;
-    border-bottom: 1px solid {separator};
+#TraceInspector QTreeWidget::item, #TraceInspector QListWidget::item {{
+    padding: 10px 8px;
+    border-bottom: 1px solid {c.border};
+}}
+#TraceInspector QTreeWidget::item:selected, #TraceInspector QListWidget::item:selected {{
+    background: {selected_fill};
+    color: {c.text};
 }}
 QScrollBar:vertical {{
-    background: transparent;
+    background: {scrollbar_track};
     width: 10px;
-    margin: 0;
-    border: 0;
+    margin: 6px 2px 6px 2px;
+    border-radius: 5px;
 }}
 QScrollBar::handle:vertical {{
-    background: {c.border_strong};
-    border-radius: 4px;
-    min-height: 34px;
+    background: {scrollbar_thumb};
+    min-height: 28px;
+    border-radius: 5px;
 }}
 QScrollBar::handle:vertical:hover {{
     background: {c.text_soft};
 }}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+QScrollBar:horizontal, QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal, QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    border: 0;
+    background: transparent;
     height: 0;
-    border: 0;
-    background: transparent;
-}}
-QScrollBar:horizontal {{
-    background: transparent;
-    height: 10px;
-    margin: 0;
-    border: 0;
-}}
-QScrollBar::handle:horizontal {{
-    background: {c.border_strong};
-    border-radius: 5px;
-    min-width: 34px;
-}}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
-    border: 0;
-    background: transparent;
-}}
-#InspectorConfigRow {{
-    background: {pane_alt_fill};
-    border: 1px solid {separator};
-    border-radius: {r.row}px;
-}}
-#InspectorConfigKey {{
-    color: {c.text_muted};
-    font-size: {t.meta_size}px;
-    font-weight: 650;
-}}
-#InspectorConfigValue {{
-    color: {c.text};
-    font-size: 12px;
-}}
-QDialog {{
-    background: {app_bg};
 }}
 QToolTip {{
-    background: {tooltip_bg};
-    color: {tooltip_text};
-    border: 1px solid {separator};
+    background: {c.surface};
+    color: {c.text};
+    border: 1px solid {c.border};
     border-radius: {r.chip}px;
     padding: 6px 8px;
 }}
