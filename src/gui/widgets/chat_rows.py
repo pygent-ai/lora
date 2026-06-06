@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import re
+import math
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QLayoutItem,
     QSizePolicy,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -239,23 +241,7 @@ def _paragraph_block(block: ParagraphBlockData) -> QWidget:
         layout.addWidget(label)
         return container
 
-    current_line = _inline_line_widget()
-    line_layout = current_line.layout()
-    assert isinstance(line_layout, _FlowLayout)
-
-    for kind, text in _flatten_inline_segments(block.spans):
-        if kind == "newline":
-            if line_layout.count() > 0:
-                layout.addWidget(current_line)
-            current_line = _inline_line_widget()
-            line_layout = current_line.layout()
-            assert isinstance(line_layout, _FlowLayout)
-            continue
-        for widget in _inline_widgets(kind, text):
-            line_layout.addWidget(widget)
-
-    if line_layout.count() > 0 or layout.count() == 0:
-        layout.addWidget(current_line)
+    layout.addWidget(_formatted_paragraph_view(block))
     return container
 
 
@@ -339,61 +325,30 @@ def _code_block(block: CodeBlockData) -> QFrame:
     return frame
 
 
-def _inline_line_widget() -> QWidget:
-    line = QWidget()
-    line.setMinimumWidth(0)
-    line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-    line.setLayout(_FlowLayout(line, margin=0, h_spacing=4, v_spacing=4))
-    return line
+def _formatted_paragraph_view(block: ParagraphBlockData) -> QTextEdit:
+    view = _InlineParagraphView()
+    view.setProperty("plain_text", block.plain_text)
+    cursor = view.textCursor()
+    base_format = QTextCharFormat()
+    code_format = _inline_code_char_format(view)
+
+    for span in block.spans:
+        cursor.insertText(span.text, code_format if span.kind == "code" else base_format)
+    view.setTextCursor(cursor)
+    view.moveCursor(QTextCursor.MoveOperation.Start)
+    view.ensureCursorVisible()
+    view.sync_height()
+    return view
 
 
-def _flatten_inline_segments(spans: list[InlineSpan]) -> list[tuple[str, str]]:
-    segments: list[tuple[str, str]] = []
-    for span in spans:
-        parts = span.text.split("\n")
-        for index, part in enumerate(parts):
-            if part:
-                segments.append((span.kind, part))
-            if index < len(parts) - 1:
-                segments.append(("newline", "\n"))
-    return segments
-
-
-def _inline_widgets(kind: str, text: str) -> list[QWidget]:
-    if kind == "code":
-        return [_inline_code_label(text)]
-    widgets: list[QWidget] = []
-    for token in re.findall(r"\S+|\s+", text):
-        if token.isspace():
-            spacer = QWidget()
-            spacer.setFixedSize(_space_size(token))
-            widgets.append(spacer)
-        else:
-            widgets.append(_paragraph_text_label(token))
-    return widgets
-
-
-def _paragraph_text_label(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setObjectName("ChatParagraphText")
-    label.setTextFormat(Qt.PlainText)
-    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
-    return label
-
-
-def _inline_code_label(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setObjectName("ChatInlineCodeSpan")
-    label.setTextFormat(Qt.PlainText)
-    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
-    return label
-
-
-def _space_size(token: str) -> QSize:
-    width = max(4, 4 * len(token.expandtabs(4)))
-    return QSize(width, 1)
+def _inline_code_char_format(widget: QWidget) -> QTextCharFormat:
+    is_dark = widget.palette().window().color().lightness() < 128
+    code_format = QTextCharFormat()
+    code_format.setFontFamilies(["Consolas", "Courier New", "monospace"])
+    code_format.setFontFixedPitch(True)
+    code_format.setBackground(QColor("#24364a" if is_dark else "#e8f2ff"))
+    code_format.setForeground(QColor("#d7ebff" if is_dark else "#1e5f9e"))
+    return code_format
 
 
 def _message_avatar(role: str) -> QLabel:
@@ -416,3 +371,33 @@ def _clear_layout(layout: QLayout) -> None:
         if widget is not None:
             widget.setParent(None)
             widget.deleteLater()
+
+
+class _InlineParagraphView(QTextEdit):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("ChatParagraphText")
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMinimumWidth(0)
+        self.document().setDocumentMargin(0)
+        self.document().contentsChanged.connect(self.sync_height)
+
+        font = QFont(self.font())
+        font.setPointSizeF(font.pointSizeF() + 1)
+        self.setFont(font)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override.
+        super().resizeEvent(event)
+        self.sync_height()
+
+    def sync_height(self) -> None:
+        self.document().setTextWidth(max(0, self.viewport().width()))
+        height = self.document().documentLayout().documentSize().height()
+        vertical_margins = self.contentsMargins().top() + self.contentsMargins().bottom() + (self.frameWidth() * 2)
+        self.setFixedHeight(int(math.ceil(height + vertical_margins + 2)))

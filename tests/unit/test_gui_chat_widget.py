@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSizePolicy, QTextEdit, QWidget
 
 from gui.theme import theme_stylesheet
 from gui.workers import InspectorEvent
@@ -583,7 +583,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(len(pane.findChildren(QWidget, "ChatListBlock")), 1)
         self.assertEqual(len(pane.findChildren(QWidget, "ChatCodeBlock")), 1)
         self.assertEqual(len(pane.findChildren(QLabel, "ChatCodeBlockLanguage")), 1)
-        self.assertEqual(len(pane.findChildren(QLabel, "ChatInlineCodeSpan")), 1)
+        self.assertEqual(len(pane.findChildren(QTextEdit, "ChatParagraphText")), 1)
         self.assertEqual(len(pane.findChildren(QLabel, "ChatCodeBlockText")), 1)
 
     def test_assistant_markdown_renders_code_block_widget_instead_of_rich_text_label(self) -> None:
@@ -600,13 +600,11 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         pane.add_message("assistant", "Paragraph with `code`")
 
-        paragraph_labels = pane.findChildren(QLabel, "ChatParagraphText")
-        code_labels = pane.findChildren(QLabel, "ChatInlineCodeSpan")
-        self.assertTrue(paragraph_labels)
-        self.assertTrue(code_labels)
-        self.assertTrue(
-            all(label.textInteractionFlags() & Qt.TextSelectableByMouse for label in paragraph_labels + code_labels)
-        )
+        paragraph = pane.findChild(QTextEdit, "ChatParagraphText")
+        self.assertIsNotNone(paragraph)
+        assert paragraph is not None
+        self.assertEqual(paragraph.toPlainText(), "Paragraph with code")
+        self.assertTrue(paragraph.textInteractionFlags() & Qt.TextSelectableByMouse)
 
     def test_plain_assistant_paragraph_renders_as_single_selectable_label(self) -> None:
         pane = ChatPane()
@@ -617,6 +615,16 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(len(paragraph_labels), 1)
         self.assertEqual(paragraph_labels[0].text(), "Just a plain paragraph without inline code.")
         self.assertTrue(paragraph_labels[0].textInteractionFlags() & Qt.TextSelectableByMouse)
+
+    def test_visible_chat_flow_includes_native_non_paragraph_assistant_rows(self) -> None:
+        pane = ChatPane()
+
+        pane.add_message("assistant", "# Heading only")
+        pane.add_message("assistant", "> Quote only")
+        pane.add_message("assistant", "- one\n- two")
+        pane.add_message("assistant", "```python\nprint('hi')\n```")
+
+        self.assertEqual(_visible_chat_flow(pane), ["Heading only", "Quote only", "one\ntwo", "print('hi')"])
 
     def test_running_state_keeps_send_button_width_and_updates_status_chip(self) -> None:
         pane = ChatPane()
@@ -927,12 +935,42 @@ def _message_widget_texts(widget: QWidget) -> list[str]:
 
 
 def _assistant_row_texts(widget: QWidget) -> list[str]:
-    texts: list[str] = []
-    for paragraph in widget.findChildren(QWidget, "ChatParagraphBlock"):
-        plain_text = paragraph.property("plain_text")
-        if plain_text:
-            texts.append(str(plain_text))
-    return texts
+    body = _first_assistant_body(widget)
+    if body is None or body.layout() is None:
+        return []
+
+    block_texts: list[str] = []
+    for index in range(body.layout().count()):
+        item = body.layout().itemAt(index)
+        block = item.widget() if item is not None else None
+        if block is None:
+            continue
+        block_text = _assistant_block_text(block)
+        if block_text:
+            block_texts.append(block_text)
+    return ["\n\n".join(block_texts)] if block_texts else []
+
+
+def _assistant_block_text(block: QWidget) -> str:
+    if isinstance(block, QLabel) and block.objectName() == "ChatHeadingBlock":
+        return block.text()
+    if block.objectName() == "ChatParagraphBlock":
+        plain_text = block.property("plain_text")
+        return str(plain_text) if plain_text else ""
+    if block.objectName() == "ChatQuoteBlock":
+        label = block.findChild(QLabel)
+        return label.text() if label is not None else ""
+    if block.objectName() == "ChatListBlock":
+        items: list[str] = []
+        for row in block.findChildren(QWidget, "ChatListItem"):
+            labels = row.findChildren(QLabel)
+            if len(labels) >= 2:
+                items.append(labels[1].text())
+        return "\n".join(items)
+    if block.objectName() == "ChatCodeBlock":
+        label = block.findChild(QLabel, "ChatCodeBlockText")
+        return label.text() if label is not None else ""
+    return ""
 
 
 def _first_assistant_body(widget: QWidget) -> QWidget | None:
