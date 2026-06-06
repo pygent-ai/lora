@@ -260,12 +260,16 @@ class GuiMainWindowTests(unittest.TestCase):
 
 def _visible_chat_flow(widget: QWidget) -> list[str]:
     texts: list[str] = []
-    for user_bubble in widget.findChildren(QLabel, "UserBubble"):
-        texts.append(user_bubble.text())
     for index in range(widget.messages.count()):
         item = widget.messages.itemAt(index)
         row = item.widget() if item is not None else None
         if row is None:
+            continue
+        if (thinking := row.findChild(QLabel, "ThinkingStatusTitle")) is not None:
+            texts.append(thinking.text())
+            continue
+        if (user := row.findChild(QLabel, "UserBubble")) is not None:
+            texts.append(user.text())
             continue
         if (tool := row.findChild(QLabel, "ToolStatusTitle")) is not None:
             texts.append(tool.text())
