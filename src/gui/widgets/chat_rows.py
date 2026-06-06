@@ -220,6 +220,7 @@ def _heading_block(block: HeadingBlockData) -> QLabel:
 def _paragraph_block(block: ParagraphBlockData) -> QWidget:
     container = QWidget()
     container.setObjectName("ChatParagraphBlock")
+    container.setProperty("plain_text", block.plain_text)
     container.setMinimumWidth(0)
     container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 

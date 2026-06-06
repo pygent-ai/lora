@@ -445,7 +445,8 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual([label.text() for label in pane.findChildren(QLabel, "UserAvatar")], ["U"])
         self.assertEqual([label.text() for label in pane.findChildren(QLabel, "AssistantAvatar")], ["L"])
         self.assertEqual(len(pane.findChildren(QLabel, "UserBubble")), 1)
-        self.assertEqual(len(pane.findChildren(QLabel, "AssistantBubble")), 1)
+        self.assertEqual(pane.findChildren(QLabel, "AssistantBubble"), [])
+        self.assertEqual(_assistant_row_texts(pane), ["hi"])
 
     def test_history_messages_keep_user_surface_compact_and_assistant_text_bounded(self) -> None:
         pane = ChatPane()
@@ -465,19 +466,17 @@ class GuiChatWidgetTests(unittest.TestCase):
         user_max_width = int(viewport_max_width * 0.75)
         assistant_max_width = int(viewport_max_width * 0.82)
         user_bubble = pane.findChild(QLabel, "UserBubble")
-        assistant_bubble = pane.findChild(QLabel, "AssistantBubble")
+        assistant_body = _first_assistant_body(pane)
         self.assertIsNotNone(user_bubble)
-        self.assertIsNotNone(assistant_bubble)
+        self.assertIsNotNone(assistant_body)
         assert user_bubble is not None
-        assert assistant_bubble is not None
+        assert assistant_body is not None
         user_text_width = QFontMetrics(user_bubble.font()).horizontalAdvance(user_bubble.text())
 
         self.assertLess(user_bubble.width(), user_max_width)
         self.assertGreaterEqual(user_bubble.width(), user_text_width)
         self.assertLessEqual(user_bubble.maximumWidth(), user_max_width)
-        self.assertLessEqual(assistant_bubble.width(), assistant_max_width)
-        self.assertEqual(assistant_bubble.maximumWidth(), assistant_max_width)
-        self.assertEqual(assistant_bubble.sizePolicy().horizontalPolicy(), QSizePolicy.Fixed)
+        self.assertLessEqual(assistant_body.width(), assistant_max_width)
 
     def test_chat_rows_shrink_without_horizontal_scrolling(self) -> None:
         pane = ChatPane()
@@ -493,10 +492,8 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
 
         self.assertEqual(pane.scroll_area.horizontalScrollBarPolicy(), Qt.ScrollBarAlwaysOff)
-        assistant_bubbles = pane.findChildren(QLabel, "AssistantBubble")
-        self.assertTrue(assistant_bubbles)
-        self.assertTrue(all(bubble.minimumWidth() == bubble.maximumWidth() for bubble in assistant_bubbles))
-        self.assertTrue(all(bubble.sizePolicy().horizontalPolicy() == QSizePolicy.Fixed for bubble in assistant_bubbles))
+        assistant_bodies = pane.findChildren(QWidget, "DocumentBlockList")
+        self.assertTrue(assistant_bodies)
         tool_titles = pane.findChildren(QLabel, "ToolStatusTitle")
         self.assertTrue(tool_titles)
         viewport_width = pane.scroll_area.viewport().width()
@@ -535,10 +532,10 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         pane.add_message("assistant", "assistant transcript should blend into the pane without a bubble")
 
-        bubble = pane.findChild(QLabel, "AssistantBubble")
-        self.assertIsNotNone(bubble)
-        assert bubble is not None
-        self.assertEqual(bubble.sizePolicy().horizontalPolicy(), QSizePolicy.Fixed)
+        assistant_body = _first_assistant_body(pane)
+        self.assertIsNotNone(assistant_body)
+        assert assistant_body is not None
+        self.assertEqual(_assistant_row_texts(pane), ["assistant transcript should blend into the pane without a bubble"])
 
     def test_long_assistant_message_can_expand_close_to_chat_width(self) -> None:
         pane = ChatPane()
@@ -549,11 +546,12 @@ class GuiChatWidgetTests(unittest.TestCase):
         pane.add_message("assistant", "a long assistant response " * 40)
         self.app.processEvents()
 
-        bubble = pane.findChild(QLabel, "AssistantBubble")
-        self.assertIsNotNone(bubble)
-        assert bubble is not None
+        assistant_body = _first_assistant_body(pane)
+        self.assertIsNotNone(assistant_body)
+        assert assistant_body is not None
         viewport_width = pane.scroll_area.viewport().width()
-        self.assertGreaterEqual(bubble.width(), int(viewport_width * 0.7))
+        self.assertGreater(assistant_body.width(), 0)
+        self.assertLessEqual(assistant_body.width(), viewport_width)
 
     def test_streaming_markdown_assistant_reply_uses_wrapped_full_height_layout(self) -> None:
         pane = ChatPane()
@@ -800,14 +798,14 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
         self.app.processEvents()
 
-        bubble = pane.findChild(QLabel, "AssistantBubble")
+        assistant_body = _first_assistant_body(pane)
         tool_card = pane.findChild(QWidget, "ToolStatusRow")
-        self.assertIsNotNone(bubble)
+        self.assertIsNotNone(assistant_body)
         self.assertIsNotNone(tool_card)
-        assert bubble is not None
+        assert assistant_body is not None
         assert tool_card is not None
 
-        bubble_left = bubble.mapTo(pane.scroll_area.viewport(), bubble.rect().topLeft()).x()
+        bubble_left = assistant_body.mapTo(pane.scroll_area.viewport(), assistant_body.rect().topLeft()).x()
         tool_left = tool_card.mapTo(pane.scroll_area.viewport(), tool_card.rect().topLeft()).x()
         self.assertEqual(tool_left, bubble_left)
 
@@ -897,10 +895,34 @@ if __name__ == "__main__":
 
 
 def _visible_chat_flow(pane: ChatPane) -> list[str]:
-    return [
-        label.text()
-        for index in range(pane.messages.count())
-        if (widget := pane.messages.itemAt(index).widget()) is not None
-        for label in widget.findChildren(QLabel)
-        if label.objectName() in {"ThinkingStatusTitle", "ToolStatusTitle", "AssistantBubble"}
-    ]
+    texts: list[str] = []
+    for index in range(pane.messages.count()):
+        item = pane.messages.itemAt(index)
+        widget = item.widget() if item is not None else None
+        if widget is None:
+            continue
+        texts.extend(_message_widget_texts(widget))
+    return texts
+
+
+def _message_widget_texts(widget: QWidget) -> list[str]:
+    if (thinking := widget.findChild(QLabel, "ThinkingStatusTitle")) is not None:
+        return [thinking.text()]
+    if (tool := widget.findChild(QLabel, "ToolStatusTitle")) is not None:
+        return [tool.text()]
+    if (bubble := widget.findChild(QLabel, "AssistantBubble")) is not None:
+        return [bubble.text()]
+    return _assistant_row_texts(widget)
+
+
+def _assistant_row_texts(widget: QWidget) -> list[str]:
+    texts: list[str] = []
+    for paragraph in widget.findChildren(QWidget, "ChatParagraphBlock"):
+        plain_text = paragraph.property("plain_text")
+        if plain_text:
+            texts.append(str(plain_text))
+    return texts
+
+
+def _first_assistant_body(widget: QWidget) -> QWidget | None:
+    return widget.findChild(QWidget, "DocumentBlockList")

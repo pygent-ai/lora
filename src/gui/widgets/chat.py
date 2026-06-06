@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from gui.icons import icon
 from gui.workers import InspectorEvent
-from gui.widgets.chat_markdown import BlockData, ParagraphBlockData, parse_markdown_blocks
+from gui.widgets.chat_markdown import parse_markdown_blocks
 from gui.widgets.chat_rows import AssistantMessageRow
 
 
@@ -192,13 +192,11 @@ class ChatPane(QWidget):
         self._remove_thinking_status()
         self._active_tool_group = None
         if role == "assistant":
-            native_blocks = _native_assistant_blocks(content)
-            if native_blocks is not None:
-                row = AssistantMessageRow()
-                row.render_blocks(native_blocks)
-                self.messages.insertWidget(self.messages.count() - 1, row)
-                self._scroll_to_bottom()
-                return
+            row = AssistantMessageRow()
+            row.render_blocks(parse_markdown_blocks(content))
+            self.messages.insertWidget(self.messages.count() - 1, row)
+            self._scroll_to_bottom()
+            return
         row = QFrame()
         row.setObjectName("UserMessageGroup" if role == "user" else "AssistantMessageGroup")
         row.setMinimumWidth(0)
@@ -780,25 +778,6 @@ def _message_bubble_format(label: QLabel, text: str) -> str:
     if _looks_like_markdown_stream(text):
         return "markdown"
     return "text"
-
-
-def _native_assistant_blocks(text: str) -> list[BlockData] | None:
-    stripped = text.strip()
-    if not stripped:
-        return None
-    blocks = parse_markdown_blocks(text)
-    if _should_render_native_assistant_blocks(blocks):
-        return blocks
-    return None
-
-
-def _should_render_native_assistant_blocks(blocks: list[BlockData]) -> bool:
-    for block in blocks:
-        if not isinstance(block, ParagraphBlockData):
-            return True
-        if any(span.kind == "code" for span in block.spans):
-            return True
-    return False
 
 
 def _sync_assistant_label_height(label: QLabel) -> None:
