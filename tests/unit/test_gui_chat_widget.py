@@ -337,22 +337,10 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
         pane.append_assistant_delta("done")
 
-        visible_flow = [
-            label.text()
-            for index in range(pane.messages.count())
-            if (widget := pane.messages.itemAt(index).widget()) is not None
-            for label in widget.findChildren(QLabel)
-            if label.objectName() in {"ThinkingStatusTitle", "ToolStatusTitle", "AssistantBubble"}
-        ]
+        visible_flow = _visible_chat_flow(pane)
         self.assertEqual(visible_flow, ["Thinking", "Run diagnostics", "done"])
 
-        ordered_labels = [
-            label.text()
-            for index in range(pane.messages.count())
-            if (widget := pane.messages.itemAt(index).widget()) is not None
-            for label in widget.findChildren(QLabel)
-            if label.objectName() in {"ToolStatusTitle", "AssistantBubble"}
-        ]
+        ordered_labels = [text for text in _visible_chat_flow(pane) if text != "Thinking"]
         self.assertEqual(ordered_labels, ["Run diagnostics", "done"])
 
     def test_streaming_assistant_reply_without_tools_replaces_thinking_status(self) -> None:
@@ -366,9 +354,10 @@ class GuiChatWidgetTests(unittest.TestCase):
             for index in range(pane.messages.count())
             if (widget := pane.messages.itemAt(index).widget()) is not None
             for label in widget.findChildren(QLabel)
-            if label.objectName() in {"ToolStatusTitle", "AssistantBubble"}
+            if label.objectName() == "ToolStatusTitle"
         ]
-        self.assertEqual(ordered_labels, ["hello"])
+        self.assertEqual(ordered_labels, [])
+        self.assertEqual(_visible_chat_flow(pane), ["hello"])
 
     def test_streaming_json_assistant_reply_uses_live_json_format_before_complete_parse(self) -> None:
         pane = ChatPane()
@@ -376,11 +365,8 @@ class GuiChatWidgetTests(unittest.TestCase):
         pane.start_assistant_message()
         pane.append_assistant_delta('{"status": ')
 
-        bubble = pane.findChild(QLabel, "AssistantBubble")
-        self.assertIsNotNone(bubble)
-        assert bubble is not None
-        self.assertEqual(bubble.text(), '{"status": ')
-        self.assertEqual(bubble.property("format"), "json")
+        self.assertEqual(pane.findChildren(QLabel, "AssistantBubble"), [])
+        self.assertEqual(_visible_chat_flow(pane), ['{"status":'])
 
     def test_streaming_markdown_assistant_reply_renders_before_final_answer(self) -> None:
         pane = ChatPane()
@@ -427,13 +413,7 @@ class GuiChatWidgetTests(unittest.TestCase):
             )
         )
 
-        visible_flow = [
-            label.text()
-            for index in range(pane.messages.count())
-            if (widget := pane.messages.itemAt(index).widget()) is not None
-            for label in widget.findChildren(QLabel)
-            if label.objectName() in {"ThinkingStatusTitle", "ToolStatusTitle", "AssistantBubble"}
-        ]
+        visible_flow = _visible_chat_flow(pane)
         self.assertEqual(visible_flow, ["Thinking", "Read files", "first reply", "Run tests"])
 
     def test_user_and_assistant_messages_keep_opposite_sides_and_avatars(self) -> None:
@@ -563,11 +543,44 @@ class GuiChatWidgetTests(unittest.TestCase):
         pane.append_assistant_delta("# Heading\n\n" + ("markdown content " * 80))
         self.app.processEvents()
 
-        bubble = pane.findChild(QLabel, "AssistantBubble")
-        self.assertIsNotNone(bubble)
-        assert bubble is not None
-        self.assertEqual(bubble.property("format"), "markdown")
-        self.assertGreaterEqual(bubble.height(), bubble.sizeHint().height())
+        body = _first_assistant_body(pane)
+        self.assertIsNotNone(body)
+        assert body is not None
+        self.assertGreaterEqual(body.height(), body.sizeHint().height())
+
+    def test_history_assistant_message_replays_as_componentized_row(self) -> None:
+        pane = ChatPane()
+
+        pane.render_history([{"role": "assistant", "content": "# Heading\n\nBody"}])
+
+        self.assertEqual(len(pane.findChildren(QWidget, "AssistantMessageGroup")), 1)
+        self.assertEqual(len(pane.findChildren(QWidget, "ChatHeadingBlock")), 1)
+        self.assertEqual(len(pane.findChildren(QLabel, "AssistantBubble")), 0)
+
+    def test_streaming_assistant_message_rebuilds_active_block_list(self) -> None:
+        pane = ChatPane()
+
+        pane.start_assistant_message()
+        pane.append_assistant_delta("# Heading")
+        pane.append_assistant_delta("\n\n```python\nprint('hi')\n```")
+
+        self.assertEqual(len(pane.findChildren(QWidget, "AssistantMessageGroup")), 1)
+        self.assertEqual(len(pane.findChildren(QWidget, "ChatCodeBlock")), 1)
+        self.assertEqual(
+            [label.text() for label in pane.findChildren(QLabel, "ChatCodeBlockText")],
+            ["print('hi')"],
+        )
+
+    def test_streaming_markdown_assistant_reply_renders_before_final_answer(self) -> None:
+        pane = ChatPane()
+
+        pane.start_assistant_message()
+        pane.append_assistant_delta("# Heading")
+
+        heading = pane.findChild(QLabel, "ChatHeadingBlock")
+        self.assertIsNotNone(heading)
+        assert heading is not None
+        self.assertEqual(heading.text(), "Heading")
 
     def test_markdown_assistant_reply_uses_native_notebook_block_widgets(self) -> None:
         pane = ChatPane()

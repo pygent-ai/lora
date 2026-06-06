@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from gui.icons import icon
 from gui.workers import InspectorEvent
 from gui.widgets.chat_markdown import parse_markdown_blocks
-from gui.widgets.chat_rows import AssistantMessageRow
+from gui.widgets.chat_rows import AssistantMessageRow, ThinkingRow, UserMessageRow
 
 
 class ChatPane(QWidget):
@@ -36,10 +36,9 @@ class ChatPane(QWidget):
         super().__init__(parent)
         self.setObjectName("ChatPane")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self._assistant_label: QLabel | None = None
-        self._assistant_row: QFrame | None = None
+        self._assistant_row: AssistantMessageRow | None = None
         self._assistant_text = ""
-        self._thinking_widget: QWidget | None = None
+        self._thinking_widget: ThinkingRow | None = None
         self._active_tool_group: _ToolGroupWidget | None = None
         self._composer_bottom_inset = 18
         self._composer_height = 152
@@ -182,7 +181,6 @@ class ChatPane(QWidget):
         while self.messages.count() > 1:
             item = self.messages.takeAt(0)
             _delete_layout_item(item)
-        self._assistant_label = None
         self._assistant_row = None
         self._assistant_text = ""
         self._thinking_widget = None
@@ -197,29 +195,7 @@ class ChatPane(QWidget):
             self.messages.insertWidget(self.messages.count() - 1, row)
             self._scroll_to_bottom()
             return
-        row = QFrame()
-        row.setObjectName("UserMessageGroup" if role == "user" else "AssistantMessageGroup")
-        row.setMinimumWidth(0)
-        row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.MinimumExpanding)
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        bubble = QLabel(" ")
-        bubble.setObjectName("UserBubble" if role == "user" else "AssistantBubble")
-        if role == "user":
-            _configure_user_message_bubble(bubble)
-        else:
-            _configure_assistant_message_label(bubble)
-        _set_message_bubble_text(bubble, content or " ")
-        avatar = _message_avatar(role)
-        if role == "user":
-            layout.addStretch(1)
-            layout.addWidget(bubble, 0, Qt.AlignRight)
-            layout.addWidget(avatar)
-        else:
-            layout.addWidget(avatar)
-            layout.addWidget(bubble, 1, Qt.AlignLeft)
-            layout.addStretch(1)
+        row = UserMessageRow(content)
         self.messages.insertWidget(self.messages.count() - 1, row)
         self._update_bubble_widths()
         self._scroll_to_bottom()
@@ -228,58 +204,42 @@ class ChatPane(QWidget):
         self._active_tool_group = None
         self._assistant_text = ""
         self._remove_thinking_status()
-        self._thinking_widget = self._thinking_status_widget("Thinking")
+        self._thinking_widget = ThinkingRow("Thinking")
         self.messages.insertWidget(self.messages.count() - 1, self._thinking_widget)
         self._scroll_to_bottom()
 
     def _create_assistant_message_row(self) -> None:
-        row = QFrame()
-        row.setObjectName("AssistantMessageGroup")
-        row.setMinimumWidth(0)
-        row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.MinimumExpanding)
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        avatar = _message_avatar("assistant")
-        self._assistant_label = QLabel(" ")
-        self._assistant_label.setObjectName("AssistantBubble")
-        _configure_assistant_message_label(self._assistant_label)
-        self._assistant_label.hide()
-        layout.addWidget(avatar)
-        layout.addWidget(self._assistant_label, 1, Qt.AlignLeft)
-        layout.addStretch(1)
+        row = AssistantMessageRow()
         row.hide()
         self._assistant_row = row
         self.messages.insertWidget(self.messages.count() - 1, row)
-        self._update_bubble_widths()
         self._active_tool_group = None
 
     def append_assistant_delta(self, delta: str) -> None:
-        if self._assistant_label is None:
+        if self._assistant_row is None:
             if self._thinking_widget is None:
                 self.start_assistant_message()
             if self._active_tool_group is None:
                 self._remove_thinking_status()
             self._create_assistant_message_row()
         self._assistant_text += delta
-        assert self._assistant_label is not None
-        if self._assistant_row is not None:
-            self._assistant_row.show()
-        self._assistant_label.show()
-        _set_message_bubble_text(self._assistant_label, self._assistant_text or " ")
+        assert self._assistant_row is not None
+        self._assistant_row.show()
+        self._assistant_row.render_blocks(parse_markdown_blocks(self._assistant_text or " "))
         self._active_tool_group = None
         self._update_bubble_widths()
         self._scroll_to_bottom()
 
     def finish_assistant_message(self, final_answer: str | None = None) -> None:
-        if final_answer and self._assistant_label is not None and final_answer != self._assistant_text:
-            self._remove_thinking_status()
-            self._assistant_text = final_answer
-            if self._assistant_row is not None:
+        if final_answer:
+            if self._assistant_row is None:
+                if self._thinking_widget is not None and self._active_tool_group is None:
+                    self._remove_thinking_status()
+                self._create_assistant_message_row()
+            if final_answer != self._assistant_text and self._assistant_row is not None:
+                self._assistant_text = final_answer
                 self._assistant_row.show()
-            self._assistant_label.show()
-            _set_message_bubble_text(self._assistant_label, final_answer)
-        self._assistant_label = None
+                self._assistant_row.render_blocks(parse_markdown_blocks(final_answer or " "))
         self._assistant_row = None
         self._assistant_text = ""
 
@@ -373,27 +333,8 @@ class ChatPane(QWidget):
                 return
 
     def _close_assistant_stream(self) -> None:
-        self._assistant_label = None
         self._assistant_row = None
         self._assistant_text = ""
-
-    def _thinking_status_widget(self, title: str) -> QWidget:
-        row = QFrame()
-        row.setObjectName("ToolStatusRow")
-        row.setProperty("status", "running")
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(3, 2, 3, 2)
-        layout.setSpacing(2)
-        status_icon = QLabel("Live")
-        status_icon.setObjectName("ToolStatusIcon")
-        status_icon.setProperty("status", "running")
-        status_icon.setAlignment(Qt.AlignCenter)
-        status_icon.setFixedSize(42, 22)
-        title_label = QLabel(title)
-        title_label.setObjectName("ThinkingStatusTitle")
-        layout.addWidget(status_icon)
-        layout.addWidget(title_label, 1)
-        return row
 
     def _append_tool_calls(self, tool_calls: list[dict[str, object] | "_ToolCallState"]) -> None:
         if self._active_tool_group is None:
