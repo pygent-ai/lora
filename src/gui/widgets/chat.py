@@ -232,6 +232,7 @@ class ChatPane(QWidget):
 
     def finish_assistant_message(self, final_answer: str | None = None) -> None:
         if final_answer:
+            updated_row = False
             if self._assistant_row is None:
                 if self._thinking_widget is not None and self._active_tool_group is None:
                     self._remove_thinking_status()
@@ -240,6 +241,11 @@ class ChatPane(QWidget):
                 self._assistant_text = final_answer
                 self._assistant_row.show()
                 self._assistant_row.render_blocks(parse_markdown_blocks(final_answer or " "))
+                updated_row = True
+            if updated_row:
+                self._update_bubble_widths()
+                self._scroll_to_bottom()
+                QTimer.singleShot(0, self._scroll_to_bottom)
         self._assistant_row = None
         self._assistant_text = ""
 

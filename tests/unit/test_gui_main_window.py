@@ -8,7 +8,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from gui.main_window import MainWindow
 from gui.workers import InspectorEvent
@@ -72,12 +72,7 @@ class GuiMainWindowTests(unittest.TestCase):
             window.select_session(second)
             window._on_assistant_delta(first, "hidden answer")
 
-            visible_texts = [
-                label.text()
-                for label in window.chat.findChildren(type(window.chat.header))
-                if label.objectName() == "AssistantBubble"
-            ]
-            self.assertEqual(visible_texts, [])
+            self.assertEqual(_visible_chat_flow(window.chat), [])
             self.assertEqual(window._running_sessions[first].updates[0].kind, "assistant_delta")
 
     def test_select_running_session_replays_cached_live_updates(self) -> None:
@@ -106,16 +101,15 @@ class GuiMainWindowTests(unittest.TestCase):
             window.select_session(session_id)
 
             bubble_texts = [
-                label.text()
-                for label in window.chat.findChildren(type(window.chat.header))
-                if label.objectName() in {"UserBubble", "AssistantBubble"}
+                label.text() for label in window.chat.findChildren(QLabel) if label.objectName() == "UserBubble"
             ]
             status_texts = [
                 label.text()
-                for label in window.chat.findChildren(type(window.chat.header))
+                for label in window.chat.findChildren(QLabel)
                 if label.objectName() == "ToolStatusTitle"
             ]
-            self.assertEqual(bubble_texts, ["live prompt", "live answer"])
+            self.assertEqual(bubble_texts, ["live prompt"])
+            self.assertEqual(_visible_chat_flow(window.chat), ["live prompt", "live answer", "Read files"])
             self.assertEqual(status_texts, ["Read files"])
             self.assertFalse(window.chat.input.isEnabled())
 
@@ -188,12 +182,7 @@ class GuiMainWindowTests(unittest.TestCase):
             window._on_turn_completed(first, {"status": "passed", "final_answer": "hidden final"})
 
             self.assertEqual(window._active_session_id, second)
-            visible_texts = [
-                label.text()
-                for label in window.chat.findChildren(type(window.chat.header))
-                if label.objectName() == "AssistantBubble"
-            ]
-            self.assertEqual(visible_texts, [])
+            self.assertEqual(_visible_chat_flow(window.chat), [])
             self.assertNotIn(first, window._running_sessions)
 
     def test_delete_running_session_is_blocked(self) -> None:
@@ -267,6 +256,42 @@ class GuiMainWindowTests(unittest.TestCase):
 
             self.assertEqual(layout.spacing(), 14)
             self.assertEqual((margins.left(), margins.top(), margins.right(), margins.bottom()), (16, 16, 16, 16))
+
+
+def _visible_chat_flow(widget: QWidget) -> list[str]:
+    texts: list[str] = []
+    for user_bubble in widget.findChildren(QLabel, "UserBubble"):
+        texts.append(user_bubble.text())
+    for index in range(widget.messages.count()):
+        item = widget.messages.itemAt(index)
+        row = item.widget() if item is not None else None
+        if row is None:
+            continue
+        if (tool := row.findChild(QLabel, "ToolStatusTitle")) is not None:
+            texts.append(tool.text())
+            continue
+        body = row.findChild(QWidget, "DocumentBlockList")
+        if body is None or body.layout() is None:
+            continue
+        block_texts: list[str] = []
+        for block_index in range(body.layout().count()):
+            block_item = body.layout().itemAt(block_index)
+            block = block_item.widget() if block_item is not None else None
+            if block is None:
+                continue
+            if isinstance(block, QLabel) and block.objectName() == "ChatHeadingBlock":
+                block_texts.append(block.text())
+            elif block.objectName() == "ChatParagraphBlock":
+                plain_text = block.property("plain_text")
+                if plain_text:
+                    block_texts.append(str(plain_text))
+            elif block.objectName() == "ChatCodeBlock":
+                code = block.findChild(QLabel, "ChatCodeBlockText")
+                if code is not None:
+                    block_texts.append(code.text())
+        if block_texts:
+            texts.append("\n\n".join(block_texts))
+    return texts
 
 
 if __name__ == "__main__":

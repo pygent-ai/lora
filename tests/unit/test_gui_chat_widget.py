@@ -368,7 +368,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(pane.findChildren(QLabel, "AssistantBubble"), [])
         self.assertEqual(_visible_chat_flow(pane), ['{"status":'])
 
-    def test_streaming_markdown_assistant_reply_renders_before_final_answer(self) -> None:
+    def _legacy_streaming_markdown_assistant_reply_renders_before_final_answer(self) -> None:
         pane = ChatPane()
 
         pane.start_assistant_message()
@@ -570,6 +570,23 @@ class GuiChatWidgetTests(unittest.TestCase):
             [label.text() for label in pane.findChildren(QLabel, "ChatCodeBlockText")],
             ["print('hi')"],
         )
+
+    def test_finish_assistant_message_renders_final_only_reply_and_scrolls_to_bottom(self) -> None:
+        pane = ChatPane()
+        pane.resize(420, 220)
+        pane.show()
+        self.app.processEvents()
+
+        for index in range(12):
+            pane.add_message("user", f"message {index}")
+        pane.start_assistant_message()
+        pane.finish_assistant_message("# Heading\n\nBody")
+        self.app.processEvents()
+
+        self.assertEqual(len(pane.findChildren(QWidget, "AssistantMessageGroup")), 1)
+        self.assertEqual(_visible_chat_flow(pane)[-1], "Heading\n\nBody")
+        scrollbar = pane.scroll_area.verticalScrollBar()
+        self.assertEqual(scrollbar.value(), scrollbar.maximum())
 
     def test_streaming_markdown_assistant_reply_renders_before_final_answer(self) -> None:
         pane = ChatPane()
