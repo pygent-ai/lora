@@ -43,6 +43,34 @@ class GuiChatMarkdownTests(unittest.TestCase):
         self.assertEqual(blocks[4].code, "print('hi')")
         self.assertTrue(blocks[4].closed)
 
+    def test_parse_markdown_blocks_accepts_realistic_fence_languages(self) -> None:
+        blocks = parse_markdown_blocks(
+            "```c++\n"
+            "std::cout << \"hi\";\n"
+            "```\n"
+        )
+
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], CodeBlockData)
+        self.assertEqual(blocks[0].language, "c++")
+        self.assertEqual(blocks[0].code, 'std::cout << "hi";')
+        self.assertTrue(blocks[0].closed)
+
+    def test_parse_markdown_blocks_keeps_bare_closing_fence_only(self) -> None:
+        blocks = parse_markdown_blocks(
+            "```python\n"
+            "print('hi')\n"
+            "```python\n"
+            "print('still code')\n"
+            "```\n"
+        )
+
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], CodeBlockData)
+        self.assertEqual(blocks[0].language, "python")
+        self.assertEqual(blocks[0].code, "print('hi')\n```python\nprint('still code')")
+        self.assertTrue(blocks[0].closed)
+
     def test_parse_markdown_blocks_keeps_incomplete_fence_as_code_like_text(self) -> None:
         blocks = parse_markdown_blocks("```python\nprint('hi')\n")
 
@@ -60,6 +88,14 @@ class GuiChatMarkdownTests(unittest.TestCase):
         self.assertEqual(blocks[0].plain_text, "First plain line\nSecond plain line")
         self.assertIsInstance(blocks[1], ParagraphBlockData)
         self.assertEqual(blocks[1].plain_text, "Third plain line")
+
+    def test_parse_markdown_blocks_parses_ordered_lists(self) -> None:
+        blocks = parse_markdown_blocks("1. one\n2. two\n")
+
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], ListBlockData)
+        self.assertTrue(blocks[0].ordered)
+        self.assertEqual(blocks[0].items, ["one", "two"])
 
 
 if __name__ == "__main__":

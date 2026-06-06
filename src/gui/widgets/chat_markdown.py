@@ -16,14 +16,14 @@ __all__ = [
 
 
 @dataclass(frozen=True, slots=True)
-class BlockData:
-    pass
+class InlineSpan:
+    kind: str
+    text: str
 
 
 @dataclass(frozen=True, slots=True)
-class InlineSpan(BlockData):
-    kind: str
-    text: str
+class BlockData:
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +59,7 @@ class CodeBlockData(BlockData):
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _UNORDERED_LIST_RE = re.compile(r"^[-*+]\s+(.*)$")
 _ORDERED_LIST_RE = re.compile(r"^\d+\.\s+(.*)$")
-_FENCE_RE = re.compile(r"^```(?:\s*(\w+))?\s*$")
+_OPEN_FENCE_RE = re.compile(r"^```(?:[ \t]*(.*?))?[ \t]*$")
 
 
 def parse_markdown_blocks(text: str) -> list[BlockData]:
@@ -114,16 +114,16 @@ def _parse_heading(line: str) -> HeadingBlockData | None:
 
 
 def _parse_fenced_code_block(lines: list[str], start_index: int) -> tuple[CodeBlockData | None, int]:
-    match = _FENCE_RE.match(lines[start_index])
-    if not match:
+    opener = _parse_opening_fence(lines[start_index])
+    if opener is None:
         return None, start_index
 
-    language = match.group(1) or None
+    language = opener or None
     code_lines: list[str] = []
     index = start_index + 1
     closed = False
     while index < len(lines):
-        if _FENCE_RE.match(lines[index]):
+        if _is_closing_fence(lines[index]):
             closed = True
             index += 1
             break
@@ -196,7 +196,7 @@ def _parse_paragraph_block(lines: list[str], start_index: int) -> tuple[Paragrap
 def _starts_new_block(line: str) -> bool:
     return (
         _parse_heading(line) is not None
-        or _FENCE_RE.match(line) is not None
+        or _parse_opening_fence(line) is not None
         or line.lstrip().startswith(">")
         or _parse_list_item(line) is not None
     )
@@ -225,3 +225,15 @@ def _parse_inline_spans(text: str) -> list[InlineSpan]:
     if buffer or not spans:
         spans.append(InlineSpan(kind="text", text="".join(buffer)))
     return spans
+
+
+def _parse_opening_fence(line: str) -> str | None:
+    match = _OPEN_FENCE_RE.match(line)
+    if match is None:
+        return None
+    info = (match.group(1) or "").strip()
+    return info
+
+
+def _is_closing_fence(line: str) -> bool:
+    return line.strip() == "```"
