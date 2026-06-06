@@ -5,7 +5,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton
 
 from gui.session_model import ChatSessionRecord
 from gui.widgets.sessions import SessionSidebar
@@ -16,7 +16,7 @@ class GuiSessionSidebarTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_each_session_row_has_own_delete_button(self) -> None:
+    def test_each_session_row_has_own_delete_action_in_menu(self) -> None:
         sidebar = SessionSidebar()
         sidebar.set_sessions(
             [
@@ -45,9 +45,14 @@ class GuiSessionSidebarTests(unittest.TestCase):
 
         row = sidebar.sessions.itemWidget(sidebar.sessions.item(1))
         assert row is not None
-        delete_button = row.findChild(QPushButton, "SessionRowDeleteButton")
-        assert delete_button is not None
-        delete_button.click()
+        menu_button = row.findChild(QToolButton, "SessionRowMenuButton")
+        assert menu_button is not None
+        delete_action = next(
+            (action for action in menu_button.actions() if action.objectName() == "SessionRowDeleteAction"),
+            None,
+        )
+        assert delete_action is not None
+        delete_action.trigger()
 
         self.assertEqual(emitted, ["chat-two"])
 
@@ -69,11 +74,17 @@ class GuiSessionSidebarTests(unittest.TestCase):
 
         row = sidebar.sessions.itemWidget(sidebar.sessions.item(0))
         assert row is not None
-        delete_button = row.findChild(QPushButton, "SessionRowDeleteButton")
-        assert delete_button is not None
+        menu_button = row.findChild(QToolButton, "SessionRowMenuButton")
+        assert menu_button is not None
+        delete_action = next(
+            (action for action in menu_button.actions() if action.objectName() == "SessionRowDeleteAction"),
+            None,
+        )
+        assert delete_action is not None
 
         self.assertEqual(row.property("dev_id"), "chat-one")
-        self.assertEqual(delete_button.property("dev_id"), "delete:chat-one")
+        self.assertEqual(menu_button.property("dev_id"), "menu:chat-one")
+        self.assertEqual(delete_action.property("dev_id"), "delete:chat-one")
 
     def test_settings_button_has_stable_object_name(self) -> None:
         sidebar = SessionSidebar()
@@ -127,6 +138,30 @@ class GuiSessionSidebarTests(unittest.TestCase):
         self.assertIn("2026-06-02", metadata.text())
         self.assertTrue(row.property("selected"))
         self.assertEqual(rail.property("selected"), True)
+
+    def test_session_row_has_chat_icon_and_overflow_menu(self) -> None:
+        sidebar = SessionSidebar()
+        sidebar.set_sessions(
+            [
+                ChatSessionRecord(
+                    session_id="chat-one",
+                    session_dir="sessions/chat-one",
+                    case_id="chat",
+                    mode="chat",
+                    created_at="1",
+                    updated_at="1",
+                    title="Chat one",
+                )
+            ]
+        )
+
+        row = sidebar.sessions.itemWidget(sidebar.sessions.item(0))
+        assert row is not None
+        icon_label = row.findChild(QLabel, "SessionRowIcon")
+        menu_button = row.findChild(QToolButton, "SessionRowMenuButton")
+
+        self.assertIsNotNone(icon_label)
+        self.assertIsNotNone(menu_button)
 
     def test_primary_sidebar_actions_have_icons_and_tooltips(self) -> None:
         sidebar = SessionSidebar()

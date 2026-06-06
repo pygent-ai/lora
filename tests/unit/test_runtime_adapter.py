@@ -892,6 +892,14 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertIn("Use glob or grep before bash find/cat", rendered_prompt)
             self.assertIn("For large files, do not read the whole file first.", rendered_prompt)
             self.assertIn("call read with offset and limit around those matches", rendered_prompt)
+            self.assertIn(
+                "File and bash path arguments resolve from workspace_root. Prefer workspace-relative paths when possible; absolute paths are also supported when they stay inside the workspace.",
+                rendered_prompt,
+            )
+            self.assertNotIn(
+                "Use Windows absolute paths for read/write/edit file_path values; use bash working_directory for shell commands rooted in the workspace.",
+                rendered_prompt,
+            )
             self.assertIn("Use bash as a fallback for verification or composed shell commands", rendered_prompt)
             self.assertIn("runtime.system_reminder", prompt_event["payload"]["dynamic_module_ids"])
             self.assertIn("<system-reminder>", rendered_prompt)

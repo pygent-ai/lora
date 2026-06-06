@@ -6,6 +6,7 @@ from typing import Any
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -28,17 +29,17 @@ class TraceInspector(QWidget):
         self.setObjectName("TraceInspector")
         self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 22, 20, 20)
+        layout.setContentsMargins(20, 20, 20, 18)
         layout.setSpacing(12)
 
-        header = QWidget()
-        header.setObjectName("InspectorHeader")
+        header = QFrame()
+        header.setObjectName("InspectorStatusCard")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setContentsMargins(14, 12, 14, 12)
         header_layout.setSpacing(10)
         header_text = QVBoxLayout()
         header_text.setContentsMargins(0, 0, 0, 0)
-        header_text.setSpacing(3)
+        header_text.setSpacing(4)
         self.status = QLabel("Ready")
         self.status.setObjectName("InspectorStatus")
         self.ids = QLabel("")
@@ -48,18 +49,19 @@ class TraceInspector(QWidget):
         self.status_indicator.setObjectName("InspectorStatusIndicator")
         self.status_indicator.setProperty("status", "ready")
         self.status_indicator.setAlignment(Qt.AlignCenter)
-        self.status_indicator.setFixedWidth(70)
+        self.status_indicator.setFixedWidth(72)
         header_text.addWidget(self.status)
         header_text.addWidget(self.ids)
         header_layout.addLayout(header_text, 1)
         header_layout.addWidget(self.status_indicator)
 
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("InspectorTabs")
         self.events = QTreeWidget()
         self.events.setHeaderLabels(["Event type", "Detail"])
         self.events.setRootIsDecorated(True)
         self.events.setAlternatingRowColors(True)
-        self.events.setColumnWidth(0, 190)
+        self.events.setColumnWidth(0, 168)
         self.tools = _trace_tree(["Tool", "Event"])
         self.files = _trace_tree(["File", "Event"])
         self.config = QListWidget()
@@ -83,7 +85,7 @@ class TraceInspector(QWidget):
             parts.append(f"Session: {session_id}")
         if case_run_id:
             parts.append(f"Run: {case_run_id}")
-        self.ids.setText("\n".join(parts))
+        self.ids.setText(_format_meta_lines(parts))
         self._set_empty_states()
 
     def set_status(self, status: str) -> None:
@@ -171,7 +173,7 @@ def _trace_tree(headers: list[str]) -> QTreeWidget:
     tree.setHeaderLabels(headers)
     tree.setRootIsDecorated(True)
     tree.setAlternatingRowColors(True)
-    tree.setColumnWidth(0, 170)
+    tree.setColumnWidth(0, 150)
     return tree
 
 
@@ -285,3 +287,15 @@ def _refresh_widget(widget: QWidget) -> None:
     widget.style().unpolish(widget)
     widget.style().polish(widget)
     widget.update()
+
+
+def _format_meta_lines(parts: list[str]) -> str:
+    lines: list[str] = []
+    for entry in parts:
+        if ": " not in entry:
+            lines.append(entry)
+            continue
+        label, value = entry.split(": ", 1)
+        shortened = value if len(value) <= 34 else f"{value[:18]}...{value[-10:]}"
+        lines.append(f"{label}: {shortened}")
+    return "\n".join(lines)

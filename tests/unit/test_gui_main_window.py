@@ -258,6 +258,16 @@ class GuiMainWindowTests(unittest.TestCase):
             self.assertEqual(window.config.workspace_root, str(project.resolve()))
             self.assertEqual(window.sidebar.scope_tabs.tabText(1), "repo")
 
+    def test_main_layout_uses_tighter_three_pane_spacing_and_margins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            window = MainWindow(workspace_root=tmp)
+
+            layout = window.centralWidget().layout()
+            margins = layout.contentsMargins()
+
+            self.assertEqual(layout.spacing(), 14)
+            self.assertEqual((margins.left(), margins.top(), margins.right(), margins.bottom()), (16, 16, 16, 16))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1276,7 +1276,7 @@ def _render_available_tools_prompt(ctx: PromptRenderContext) -> str:
             "For large files, do not read the whole file first. Use grep/rg/glob to locate relevant symbols, headings, or line numbers, then call read with offset and limit around those matches.",
             "Read full files only when they are small, roughly under 200 lines, or when whole-file structure is necessary. For files over 300 lines, prefer targeted reads of 80-150 lines and expand only if needed.",
             "If a previous tool result provides exact line numbers or headings, use read with offset/limit for those ranges instead of re-reading the whole file.",
-            "Use Windows absolute paths for read/write/edit file_path values; use bash working_directory for shell commands rooted in the workspace.",
+            "File and bash path arguments resolve from workspace_root. Prefer workspace-relative paths when possible; absolute paths are also supported when they stay inside the workspace.",
             "Use diff to inspect persisted Lora file changes. Use bash git diff only for live repository state.",
             "Use bash as a fallback for verification or composed shell commands, especially when a narrower structured tool cannot do the job.",
             "Use tools to ground claims in the workspace. Pick the smallest tool call that can answer the question, and avoid unnecessary repeat reads when the session already contains current file content.",
