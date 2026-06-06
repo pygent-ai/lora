@@ -582,6 +582,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(len(pane.findChildren(QWidget, "ChatQuoteBlock")), 1)
         self.assertEqual(len(pane.findChildren(QWidget, "ChatListBlock")), 1)
         self.assertEqual(len(pane.findChildren(QWidget, "ChatCodeBlock")), 1)
+        self.assertEqual(len(pane.findChildren(QLabel, "ChatCodeBlockLanguage")), 1)
         self.assertEqual(len(pane.findChildren(QLabel, "ChatInlineCodeSpan")), 1)
         self.assertEqual(len(pane.findChildren(QLabel, "ChatCodeBlockText")), 1)
 
@@ -606,6 +607,16 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertTrue(
             all(label.textInteractionFlags() & Qt.TextSelectableByMouse for label in paragraph_labels + code_labels)
         )
+
+    def test_plain_assistant_paragraph_renders_as_single_selectable_label(self) -> None:
+        pane = ChatPane()
+
+        pane.add_message("assistant", "Just a plain paragraph without inline code.")
+
+        paragraph_labels = pane.findChildren(QLabel, "ChatParagraphText")
+        self.assertEqual(len(paragraph_labels), 1)
+        self.assertEqual(paragraph_labels[0].text(), "Just a plain paragraph without inline code.")
+        self.assertTrue(paragraph_labels[0].textInteractionFlags() & Qt.TextSelectableByMouse)
 
     def test_running_state_keeps_send_button_width_and_updates_status_chip(self) -> None:
         pane = ChatPane()

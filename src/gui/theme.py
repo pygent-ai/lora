@@ -515,6 +515,13 @@ QTabBar::tab:hover {{
     border: 1px solid {"#243244" if palette.name == "day" else "#2b3b4d"};
     border-radius: {r.pane - 2}px;
 }}
+#ChatCodeBlockLanguage {{
+    color: {"#9fc3ea" if palette.name == "day" else "#a9cfff"};
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: {t.meta_size}px;
+    font-weight: 700;
+    padding: 0 0 2px 0;
+}}
 #ChatCodeBlockText {{
     color: {"#eaf2ff" if palette.name == "day" else "#edf4ff"};
     font-family: "Consolas", "Courier New", monospace;

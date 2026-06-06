@@ -228,6 +228,17 @@ def _paragraph_block(block: ParagraphBlockData) -> QWidget:
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(4)
 
+    if all(span.kind == "text" for span in block.spans):
+        label = QLabel(block.plain_text)
+        label.setObjectName("ChatParagraphText")
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.PlainText)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setMinimumWidth(0)
+        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        layout.addWidget(label)
+        return container
+
     current_line = _inline_line_widget()
     line_layout = current_line.layout()
     assert isinstance(line_layout, _FlowLayout)
