@@ -135,6 +135,19 @@ class GuiChatWidgetTests(unittest.TestCase):
         expected = ["thinking", "Read files", "first reply", "Run tests", "second reply"]
         self.assertEqual(_visible_chat_flow(history_pane), expected)
         self.assertEqual(_visible_chat_flow(runtime_pane), expected)
+        self.assertEqual(
+            _visible_chat_rows(history_pane),
+            [
+                ("assistant", "thinking"),
+                ("tool", "Read files"),
+                ("assistant", "first reply"),
+                ("tool", "Run tests"),
+                ("assistant", "second reply"),
+            ],
+        )
+        self.assertEqual(_visible_chat_rows(runtime_pane), _visible_chat_rows(history_pane))
+        self.assertEqual(len(history_pane.findChildren(QWidget, "ToolStatusGroup")), 2)
+        self.assertEqual(len(runtime_pane.findChildren(QWidget, "ToolStatusGroup")), 2)
 
     def test_runtime_multiple_tool_results_match_calls_by_id(self) -> None:
         pane = ChatPane()
@@ -415,6 +428,49 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         visible_flow = _visible_chat_flow(pane)
         self.assertEqual(visible_flow, ["Thinking", "Read files", "first reply", "Run tests"])
+        self.assertEqual(
+            _visible_chat_rows(pane),
+            [
+                ("thinking", "Thinking"),
+                ("tool", "Read files"),
+                ("assistant", "first reply"),
+                ("tool", "Run tests"),
+            ],
+        )
+        self.assertEqual(len(pane.findChildren(QWidget, "ToolStatusGroup")), 2)
+
+    def test_finish_assistant_message_breaks_tool_group_before_later_runtime_call(self) -> None:
+        pane = ChatPane()
+
+        pane.start_assistant_message()
+        pane.add_runtime_event(
+            InspectorEvent(
+                kind="tool",
+                title="Tool call: read",
+                detail='{"description": "Read files", "path": "README.md"}',
+                tone="accent",
+            )
+        )
+        pane.finish_assistant_message("first reply")
+        pane.add_runtime_event(
+            InspectorEvent(
+                kind="tool",
+                title="Tool call: bash",
+                detail='{"description": "Run tests", "command": "pytest"}',
+                tone="accent",
+            )
+        )
+
+        self.assertEqual(
+            _visible_chat_rows(pane),
+            [
+                ("thinking", "Thinking"),
+                ("tool", "Read files"),
+                ("assistant", "first reply"),
+                ("tool", "Run tests"),
+            ],
+        )
+        self.assertEqual(len(pane.findChildren(QWidget, "ToolStatusGroup")), 2)
 
     def test_user_and_assistant_messages_keep_opposite_sides_and_avatars(self) -> None:
         pane = ChatPane()
@@ -944,24 +1000,38 @@ if __name__ == "__main__":
 
 
 def _visible_chat_flow(pane: ChatPane) -> list[str]:
-    texts: list[str] = []
+    return [text for _, text in _visible_chat_rows(pane)]
+
+
+def _visible_chat_rows(pane: ChatPane) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
     for index in range(pane.messages.count()):
         item = pane.messages.itemAt(index)
         widget = item.widget() if item is not None else None
         if widget is None:
             continue
-        texts.extend(_message_widget_texts(widget))
-    return texts
+        row = _message_widget_row(widget)
+        if row is not None:
+            rows.append(row)
+    return rows
 
 
 def _message_widget_texts(widget: QWidget) -> list[str]:
+    row = _message_widget_row(widget)
+    return [row[1]] if row is not None else []
+
+
+def _message_widget_row(widget: QWidget) -> tuple[str, str] | None:
     if (thinking := widget.findChild(QLabel, "ThinkingStatusTitle")) is not None:
-        return [thinking.text()]
+        return ("thinking", thinking.text())
     if (tool := widget.findChild(QLabel, "ToolStatusTitle")) is not None:
-        return [tool.text()]
+        return ("tool", tool.text())
     if (bubble := widget.findChild(QLabel, "AssistantBubble")) is not None:
-        return [bubble.text()]
-    return _assistant_row_texts(widget)
+        return ("assistant", bubble.text())
+    texts = _assistant_row_texts(widget)
+    if not texts:
+        return None
+    return ("assistant", texts[0])
 
 
 def _assistant_row_texts(widget: QWidget) -> list[str]:

@@ -184,11 +184,11 @@ class ChatPane(QWidget):
         self._assistant_row = None
         self._assistant_text = ""
         self._thinking_widget = None
-        self._active_tool_group = None
+        self._break_tool_group()
 
     def add_message(self, role: str, content: str) -> None:
         self._remove_thinking_status()
-        self._active_tool_group = None
+        self._break_tool_group()
         if role == "assistant":
             row = AssistantMessageRow()
             row.render_blocks(parse_markdown_blocks(content))
@@ -201,7 +201,7 @@ class ChatPane(QWidget):
         self._scroll_to_bottom()
 
     def start_assistant_message(self) -> None:
-        self._active_tool_group = None
+        self._break_tool_group()
         self._assistant_text = ""
         self._remove_thinking_status()
         self._thinking_widget = ThinkingRow("Thinking")
@@ -213,7 +213,7 @@ class ChatPane(QWidget):
         row.hide()
         self._assistant_row = row
         self.messages.insertWidget(self.messages.count() - 1, row)
-        self._active_tool_group = None
+        self._break_tool_group()
 
     def append_assistant_delta(self, delta: str) -> None:
         if self._assistant_row is None:
@@ -226,7 +226,7 @@ class ChatPane(QWidget):
         assert self._assistant_row is not None
         self._assistant_row.show()
         self._assistant_row.render_blocks(parse_markdown_blocks(self._assistant_text or " "))
-        self._active_tool_group = None
+        self._break_tool_group()
         self._update_bubble_widths()
         self._scroll_to_bottom()
 
@@ -339,8 +339,13 @@ class ChatPane(QWidget):
                 return
 
     def _close_assistant_stream(self) -> None:
+        # Intentionally preserve the current tool group so runtime tool call/result
+        # rows stay in arrival order; assistant prose owns the group boundary.
         self._assistant_row = None
         self._assistant_text = ""
+
+    def _break_tool_group(self) -> None:
+        self._active_tool_group = None
 
     def _append_tool_calls(self, tool_calls: list[dict[str, object] | "_ToolCallState"]) -> None:
         if self._active_tool_group is None:
