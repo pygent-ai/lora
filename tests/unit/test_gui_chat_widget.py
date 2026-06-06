@@ -571,6 +571,44 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(bubble.property("format"), "markdown")
         self.assertGreaterEqual(bubble.height(), bubble.sizeHint().height())
 
+    def test_markdown_assistant_reply_uses_native_notebook_block_widgets(self) -> None:
+        pane = ChatPane()
+
+        pane.add_message(
+            "assistant",
+            "# Heading\n\nParagraph with `code`.\n\n> Quote\n\n- one\n- two\n\n```python\nprint('hi')\n```",
+        )
+
+        self.assertEqual(pane.findChildren(QLabel, "AssistantBubble"), [])
+        self.assertEqual(len(pane.findChildren(QWidget, "ChatHeadingBlock")), 1)
+        self.assertEqual(len(pane.findChildren(QWidget, "ChatQuoteBlock")), 1)
+        self.assertEqual(len(pane.findChildren(QWidget, "ChatListBlock")), 1)
+        self.assertEqual(len(pane.findChildren(QWidget, "ChatCodeBlock")), 1)
+        self.assertEqual(len(pane.findChildren(QLabel, "ChatInlineCodeSpan")), 1)
+        self.assertEqual(len(pane.findChildren(QLabel, "ChatCodeBlockText")), 1)
+
+    def test_assistant_markdown_renders_code_block_widget_instead_of_rich_text_label(self) -> None:
+        pane = ChatPane()
+
+        pane.add_message("assistant", "# Heading\n\n```python\nprint('hi')\n```")
+
+        self.assertEqual(pane.findChildren(QLabel, "AssistantBubble"), [])
+        self.assertEqual(len(pane.findChildren(QWidget, "ChatHeadingBlock")), 1)
+        self.assertEqual(len(pane.findChildren(QWidget, "ChatCodeBlock")), 1)
+
+    def test_assistant_markdown_blocks_remain_selectable(self) -> None:
+        pane = ChatPane()
+
+        pane.add_message("assistant", "Paragraph with `code`")
+
+        paragraph_labels = pane.findChildren(QLabel, "ChatParagraphText")
+        code_labels = pane.findChildren(QLabel, "ChatInlineCodeSpan")
+        self.assertTrue(paragraph_labels)
+        self.assertTrue(code_labels)
+        self.assertTrue(
+            all(label.textInteractionFlags() & Qt.TextSelectableByMouse for label in paragraph_labels + code_labels)
+        )
+
     def test_running_state_keeps_send_button_width_and_updates_status_chip(self) -> None:
         pane = ChatPane()
         idle_width = pane.send_button.width()
@@ -824,6 +862,34 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(status.text(), "Running")
         self.assertRegex(start_time.text(), r"^\d{2}:\d{2}:\d{2}$")
         self.assertEqual(duration.text(), "Running")
+
+    def test_chat_layout_uses_tighter_message_and_tool_spacing(self) -> None:
+        pane = ChatPane()
+        pane.add_message("assistant", "spacing check")
+        pane.add_runtime_event(
+            InspectorEvent(
+                kind="tool",
+                title="Tool call: bash",
+                detail='{"description": "Run diagnostics", "command": "pytest"}',
+                tone="accent",
+            )
+        )
+
+        assistant_group = pane.findChild(QWidget, "AssistantMessageGroup")
+        tool_group = pane.findChild(QWidget, "ToolStatusGroup")
+        tool_summary = pane.findChild(QWidget, "ToolStatusSummary")
+        self.assertIsNotNone(assistant_group)
+        self.assertIsNotNone(tool_group)
+        self.assertIsNotNone(tool_summary)
+        assert assistant_group is not None
+        assert tool_group is not None
+        assert tool_summary is not None
+
+        self.assertEqual(pane.messages.spacing(), 4)
+        self.assertEqual(assistant_group.layout().spacing(), 2)
+        self.assertEqual(tool_group.layout().contentsMargins().left(), 38)
+        self.assertEqual(tool_summary.layout().contentsMargins().top(), 1)
+        self.assertEqual(tool_summary.layout().contentsMargins().bottom(), 1)
 
 
 if __name__ == "__main__":

@@ -466,14 +466,59 @@ QTabBar::tab:hover {{
     color: {c.text};
     border: 1px solid {c.border};
     border-radius: 18px;
-    padding: 13px 18px;
+    padding: 3px 5px;
 }}
 #AssistantBubble {{
     background: transparent;
     color: {c.text};
     border: 0;
     border-radius: 0;
-    padding: 2px 0 2px 0;
+    padding: 0;
+}}
+#DocumentBlockList {{
+    background: transparent;
+    border: 0;
+}}
+#ChatHeadingBlock {{
+    color: {c.text};
+    font-size: {t.message_size + 7}px;
+    font-weight: 700;
+    padding: 2px 0 4px 0;
+}}
+#ChatParagraphText {{
+    color: {c.text};
+    font-size: {t.message_size}px;
+}}
+#ChatInlineCodeSpan {{
+    color: {"#1e5f9e" if palette.name == "day" else "#d7ebff"};
+    background: {"#e8f2ff" if palette.name == "day" else "#24364a"};
+    border: 1px solid {"#cfe0f5" if palette.name == "day" else "#34506c"};
+    border-radius: {r.chip}px;
+    font-family: "Consolas", "Courier New", monospace;
+    padding: 2px 6px;
+}}
+#ChatQuoteBlock {{
+    background: {"rgba(233,239,248,0.82)" if palette.name == "day" else "rgba(40,49,61,0.92)"};
+    border: 1px solid {"#dce4ef" if palette.name == "day" else "#364454"};
+    border-radius: {r.card + 2}px;
+}}
+#ChatListBlock {{
+    background: transparent;
+    border: 0;
+}}
+#ChatListItem {{
+    background: transparent;
+    border: 0;
+}}
+#ChatCodeBlock {{
+    background: {"#1c2430" if palette.name == "day" else "#11161d"};
+    border: 1px solid {"#243244" if palette.name == "day" else "#2b3b4d"};
+    border-radius: {r.pane - 2}px;
+}}
+#ChatCodeBlockText {{
+    color: {"#eaf2ff" if palette.name == "day" else "#edf4ff"};
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: {t.message_size - 1}px;
 }}
 #Composer {{
     background: {c.surface};

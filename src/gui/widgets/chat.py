@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import html
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,8 @@ from PySide6.QtWidgets import (
 
 from gui.icons import icon
 from gui.workers import InspectorEvent
+from gui.widgets.chat_markdown import BlockData, ParagraphBlockData, parse_markdown_blocks
+from gui.widgets.chat_rows import AssistantMessageRow
 
 
 class ChatPane(QWidget):
@@ -101,8 +104,8 @@ class ChatPane(QWidget):
         self.scroll_body.setAttribute(Qt.WA_StyledBackground, True)
         self.scroll_body.setMinimumWidth(0)
         self.messages = QVBoxLayout(self.scroll_body)
-        self.messages.setContentsMargins(34, 24, 34, 26)
-        self.messages.setSpacing(18)
+        self.messages.setContentsMargins(34, 7, 34, 7)
+        self.messages.setSpacing(4)
         self.messages.addStretch(1)
         self.scroll_area.setWidget(self.scroll_body)
         scroll_shell_layout.addWidget(self.scroll_area)
@@ -126,7 +129,7 @@ class ChatPane(QWidget):
         self.composer = composer
         self.composer.setParent(self.main_card)
         self.composer.raise_()
-        self.messages.setContentsMargins(34, 24, 34, 52)
+        self.messages.setContentsMargins(34, 7, 34, 52)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override.
         super().resizeEvent(event)
@@ -188,13 +191,21 @@ class ChatPane(QWidget):
     def add_message(self, role: str, content: str) -> None:
         self._remove_thinking_status()
         self._active_tool_group = None
+        if role == "assistant":
+            native_blocks = _native_assistant_blocks(content)
+            if native_blocks is not None:
+                row = AssistantMessageRow()
+                row.render_blocks(native_blocks)
+                self.messages.insertWidget(self.messages.count() - 1, row)
+                self._scroll_to_bottom()
+                return
         row = QFrame()
         row.setObjectName("UserMessageGroup" if role == "user" else "AssistantMessageGroup")
         row.setMinimumWidth(0)
         row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.MinimumExpanding)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(2)
         bubble = QLabel(" ")
         bubble.setObjectName("UserBubble" if role == "user" else "AssistantBubble")
         if role == "user":
@@ -230,7 +241,7 @@ class ChatPane(QWidget):
         row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.MinimumExpanding)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(2)
         avatar = _message_avatar("assistant")
         self._assistant_label = QLabel(" ")
         self._assistant_label.setObjectName("AssistantBubble")
@@ -373,8 +384,8 @@ class ChatPane(QWidget):
         row.setObjectName("ToolStatusRow")
         row.setProperty("status", "running")
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(3, 2, 3, 2)
+        layout.setSpacing(2)
         status_icon = QLabel("Live")
         status_icon.setObjectName("ToolStatusIcon")
         status_icon.setProperty("status", "running")
@@ -471,7 +482,7 @@ class _ToolGroupWidget(QFrame):
         self._blink_timer.timeout.connect(self._advance_blink_phase)
 
         outer_layout = QHBoxLayout(self)
-        outer_layout.setContentsMargins(48, 0, 0, 0)
+        outer_layout.setContentsMargins(38, 0, 0, 0)
         outer_layout.setSpacing(0)
 
         self.card = QFrame()
@@ -489,11 +500,11 @@ class _ToolGroupWidget(QFrame):
         layout.addWidget(self.summary_frame)
 
         summary = QHBoxLayout(self.summary_frame)
-        summary.setContentsMargins(10, 6, 10, 6)
+        summary.setContentsMargins(2, 1, 2, 1)
         summary.setSpacing(0)
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(4)
+        title_row.setSpacing(1)
         self.toggle = QPushButton("+")
         self.toggle.setObjectName("ToolStatusToggle")
         self.toggle.setFixedSize(16, 16)
@@ -510,8 +521,8 @@ class _ToolGroupWidget(QFrame):
         summary.setAlignment(title_row, Qt.AlignLeft | Qt.AlignVCenter)
 
         self.detail_holder = QVBoxLayout()
-        self.detail_holder.setContentsMargins(0, 6, 0, 0)
-        self.detail_holder.setSpacing(6)
+        self.detail_holder.setContentsMargins(0, 1, 0, 0)
+        self.detail_holder.setSpacing(1)
         layout.addLayout(self.detail_holder)
 
     def add_call(self, call: _ToolCallState) -> None:
@@ -771,6 +782,25 @@ def _message_bubble_format(label: QLabel, text: str) -> str:
     return "text"
 
 
+def _native_assistant_blocks(text: str) -> list[BlockData] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    blocks = parse_markdown_blocks(text)
+    if _should_render_native_assistant_blocks(blocks):
+        return blocks
+    return None
+
+
+def _should_render_native_assistant_blocks(blocks: list[BlockData]) -> bool:
+    for block in blocks:
+        if not isinstance(block, ParagraphBlockData):
+            return True
+        if any(span.kind == "code" for span in block.spans):
+            return True
+    return False
+
+
 def _sync_assistant_label_height(label: QLabel) -> None:
     if label.objectName() != "AssistantBubble":
         return
@@ -798,7 +828,121 @@ def _looks_like_markdown_stream(text: str) -> bool:
 def _markdown_to_html(text: str) -> str:
     document = QTextDocument()
     document.setMarkdown(text)
-    return document.toHtml()
+    return _style_markdown_html(document.toHtml(), text)
+
+
+def _style_markdown_html(html_text: str, markdown_text: str) -> str:
+    pre_blocks: list[str] = []
+
+    def _stash_pre_block(match: re.Match[str]) -> str:
+        content = re.sub(r"</?span[^>]*>", "", match.group(1))
+        token = f"@@PRE_BLOCK_{len(pre_blocks)}@@"
+        pre_blocks.append(
+            (
+                "<table cellspacing=\"0\" cellpadding=\"0\" "
+                "style=\"margin:0 0 14px 0; width:100%;\">"
+                "<tr><td style=\""
+                "background-color:#1c2430;"
+                "border-radius:16px;"
+                "padding:14px;"
+                "\">"
+                "<pre style=\""
+                "margin:0;"
+                "color:#eaf2ff;"
+                "background-color:#1c2430;"
+                "font-family:'Consolas','Courier New',monospace;"
+                "white-space:pre-wrap;"
+                "\">"
+                f"{content}</pre></td></tr></table>"
+            )
+        )
+        return token
+
+    html_text = re.sub(r"<pre[^>]*>(.*?)</pre>", _stash_pre_block, html_text, flags=re.DOTALL)
+    styled = html_text.replace(
+        "<body style=\" font-family:'Sans Serif'; font-size:9pt; font-weight:400; font-style:normal;\">",
+        (
+            "<body style=\""
+            "font-family:'Microsoft YaHei UI','Segoe UI Variable Text','Segoe UI',sans-serif;"
+            "font-size:14px;"
+            "line-height:1.66;"
+            "font-weight:400;"
+            "font-style:normal;"
+            "color:#243044;"
+            "\">"
+        ),
+    )
+    styled = re.sub(
+        r"<h1 style=\"[^\"]*\"><span style=\"[^\"]*\">",
+        "<h1 style=\"margin:0 0 10px 0; font-size:25px; font-weight:700; color:#243044;\"><span>",
+        styled,
+        count=1,
+    )
+    styled = re.sub(
+        r"<p style=\"[^\"]*\">",
+        "<p style=\"margin:0 0 12px 0; color:#243044;\">",
+        styled,
+    )
+    styled = re.sub(
+        r"<ul style=\"[^\"]*\">",
+        "<ul style=\"margin:2px 0 12px 18px; color:#243044;\">",
+        styled,
+    )
+    styled = re.sub(
+        r"<ol style=\"[^\"]*\">",
+        "<ol style=\"margin:2px 0 12px 20px; color:#243044;\">",
+        styled,
+    )
+    styled = re.sub(
+        r"<li style=\"[^\"]*\">",
+        "<li style=\"margin:0 0 5px 0;\">",
+        styled,
+    )
+    styled = styled.replace(
+        "<span style=\" font-family:'monospace';\">",
+        (
+            "<span style=\""
+            "font-family:'Consolas','SFMono-Regular',monospace;"
+            "background-color:#e9eff8;"
+            "color:#1c5c98;"
+            "padding:2px 6px;"
+            "border-radius:7px;"
+            "\">"
+        ),
+    )
+    for index, block in enumerate(pre_blocks):
+        styled = styled.replace(f"@@PRE_BLOCK_{index}@@", block)
+    for quote_text in _markdown_quote_blocks(markdown_text):
+        escaped_quote = html.escape(quote_text, quote=False).replace("\n", "<br />")
+        default_paragraph = f"<p style=\"margin:0 0 12px 0; color:#243044;\">{escaped_quote}</p>"
+        quoted_paragraph = (
+            "<p style=\""
+            "margin:0 0 12px 0;"
+            "padding:10px 12px;"
+            "background-color:#f2f6fb;"
+            "border:1px solid #dce4ef;"
+            "border-radius:10px;"
+            "color:#5a6b82;"
+            "\">"
+            f"{escaped_quote}</p>"
+        )
+        styled = styled.replace(default_paragraph, quoted_paragraph, 1)
+    return styled
+
+
+def _markdown_quote_blocks(text: str) -> list[str]:
+    quotes: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if line.startswith(">"):
+            current.append(line[1:].lstrip())
+            continue
+        if current:
+            quotes.append("\n".join(current).strip())
+            current = []
+    if current:
+        quotes.append("\n".join(current).strip())
+    return [quote for quote in quotes if quote]
 
 
 def _tool_status_label(status: str) -> str:
