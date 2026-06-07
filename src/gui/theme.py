@@ -162,6 +162,11 @@ def _candidate_ui_font_paths() -> tuple[Path, ...]:
     return (
         fonts_dir / "msyh.ttc",
         fonts_dir / "msyhbd.ttc",
+        fonts_dir / "consola.ttf",
+        fonts_dir / "consolab.ttf",
+        fonts_dir / "cour.ttf",
+        fonts_dir / "DejaVuSansMono.ttf",
+        fonts_dir / "LiberationMono-Regular.ttf",
         fonts_dir / "NotoSansSC-VF.ttf",
         fonts_dir / "Deng.ttf",
         fonts_dir / "simhei.ttf",

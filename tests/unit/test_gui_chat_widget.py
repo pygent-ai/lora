@@ -6,11 +6,11 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QFontInfo, QFontMetrics
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSizePolicy, QTextEdit, QWidget
 
-from gui.theme import theme_stylesheet
+from gui.theme import register_ui_fonts, theme_stylesheet
 from gui.workers import InspectorEvent
 from gui.widgets.chat import ChatPane
 
@@ -19,6 +19,7 @@ class GuiChatWidgetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
+        register_ui_fonts()
 
     def test_render_history_removes_existing_message_rows(self) -> None:
         pane = ChatPane()
@@ -687,6 +688,19 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(len(pane.findChildren(QWidget, "ChatQuoteBlock")), 1)
         self.assertEqual(len(pane.findChildren(QWidget, "ChatListBlock")), 1)
         self.assertEqual(len(pane.findChildren(QTextEdit, "ChatParagraphText")), 1)
+
+    def test_code_block_text_uses_fixed_pitch_font(self) -> None:
+        pane = ChatPane()
+
+        pane.add_message("assistant", "```python\nprint('hi')\n```")
+
+        label = pane.findChild(QLabel, "ChatCodeBlockText")
+        self.assertIsNotNone(label)
+        assert label is not None
+        self.assertTrue(label.font().fixedPitch())
+        self.assertNotEqual(QFontInfo(label.font()).family(), pane.font().family())
+        metrics = QFontMetrics(label.font())
+        self.assertEqual(metrics.horizontalAdvance("iiii"), metrics.horizontalAdvance("WWWW"))
 
     def test_assistant_markdown_renders_code_block_widget_instead_of_rich_text_label(self) -> None:
         pane = ChatPane()

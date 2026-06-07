@@ -324,6 +324,7 @@ def _code_block(block: CodeBlockData) -> QFrame:
         language = QLabel(block.language)
         language.setObjectName("ChatCodeBlockLanguage")
         language.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        language.setFont(_code_block_font(language.font(), bold=True))
         layout.addWidget(language, 0, Qt.AlignLeft)
 
     text = QLabel(block.code)
@@ -332,6 +333,7 @@ def _code_block(block: CodeBlockData) -> QFrame:
     text.setTextInteractionFlags(Qt.TextSelectableByMouse)
     text.setWordWrap(True)
     text.setMinimumWidth(0)
+    text.setFont(_code_block_font(text.font()))
     layout.addWidget(text)
     return frame
 
@@ -360,6 +362,17 @@ def _inline_code_char_format(widget: QWidget) -> QTextCharFormat:
     code_format.setBackground(QColor("#24364a" if is_dark else "#e8f2ff"))
     code_format.setForeground(QColor("#d7ebff" if is_dark else "#1e5f9e"))
     return code_format
+
+
+def _code_block_font(base_font: QFont, *, bold: bool = False) -> QFont:
+    font = QFont(base_font)
+    font.setFamilies(["Consolas", "DejaVu Sans Mono", "Liberation Mono", "Courier New"])
+    font.setFixedPitch(True)
+    font.setStyleHint(QFont.StyleHint.TypeWriter)
+    font.setKerning(False)
+    if bold:
+        font.setBold(True)
+    return font
 
 
 def _message_avatar(role: str) -> QLabel:
