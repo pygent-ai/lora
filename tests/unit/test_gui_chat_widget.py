@@ -712,6 +712,25 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         self.assertEqual(_visible_chat_flow(pane), ["Heading only", "Quote only", "one\ntwo", "print('hi')"])
 
+    def test_visible_chat_rows_includes_user_rows_in_order(self) -> None:
+        pane = ChatPane()
+
+        pane.add_message("user", "hello")
+        pane.add_message("assistant", "hi")
+        pane.add_runtime_event(
+            InspectorEvent(
+                kind="tool",
+                title="Tool call: read",
+                detail='{"description": "Read files"}',
+                tone="accent",
+            )
+        )
+
+        self.assertEqual(
+            _visible_chat_rows(pane),
+            [("user", "hello"), ("assistant", "hi"), ("tool", "Read files")],
+        )
+
     def test_running_state_keeps_send_button_width_and_updates_status_chip(self) -> None:
         pane = ChatPane()
         idle_width = pane.send_button.width()
@@ -1026,6 +1045,8 @@ def _message_widget_row(widget: QWidget) -> tuple[str, str] | None:
         return ("thinking", thinking.text())
     if (tool := widget.findChild(QLabel, "ToolStatusTitle")) is not None:
         return ("tool", tool.text())
+    if (bubble := widget.findChild(QLabel, "UserBubble")) is not None:
+        return ("user", bubble.text())
     if (bubble := widget.findChild(QLabel, "AssistantBubble")) is not None:
         return ("assistant", bubble.text())
     texts = _assistant_row_texts(widget)
