@@ -71,13 +71,24 @@ class AssistantMessageRow(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
+        self._layout = layout
+        self._avatar = _message_avatar("assistant")
         self.document_blocks = DocumentBlockList()
-        layout.addWidget(_message_avatar("assistant"), 0, Qt.AlignTop)
+        layout.addWidget(self._avatar, 0, Qt.AlignTop)
         layout.addWidget(self.document_blocks, 1, Qt.AlignLeft | Qt.AlignTop)
         layout.addStretch(1)
 
     def render_blocks(self, blocks: list[BlockData]) -> None:
         self.document_blocks.render_blocks(blocks)
+
+    def set_viewport_width(self, viewport_width: int) -> None:
+        chrome_width = (
+            self._layout.contentsMargins().left()
+            + self._layout.contentsMargins().right()
+            + self._layout.spacing()
+            + self._avatar.width()
+        )
+        self.document_blocks.setMaximumWidth(max(1, viewport_width - chrome_width))
 
 
 class ThinkingRow(QFrame):

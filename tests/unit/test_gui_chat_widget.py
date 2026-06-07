@@ -514,8 +514,11 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertLessEqual(user_bubble.maximumWidth(), user_max_width)
         self.assertLessEqual(assistant_body.width(), assistant_max_width)
 
-    def test_chat_rows_shrink_without_horizontal_scrolling(self) -> None:
+    def test_component_assistant_rows_fit_inside_viewport_without_horizontal_scroll(self) -> None:
         pane = ChatPane()
+        pane.resize(320, 420)
+        pane.show()
+        self.app.processEvents()
 
         pane.add_message("assistant", "a long assistant response " * 40)
         pane.add_runtime_event(
@@ -526,6 +529,7 @@ class GuiChatWidgetTests(unittest.TestCase):
                 tone="accent",
             )
         )
+        self.app.processEvents()
 
         self.assertEqual(pane.scroll_area.horizontalScrollBarPolicy(), Qt.ScrollBarAlwaysOff)
         assistant_bodies = pane.findChildren(QWidget, "DocumentBlockList")
@@ -533,6 +537,11 @@ class GuiChatWidgetTests(unittest.TestCase):
         tool_titles = pane.findChildren(QLabel, "ToolStatusTitle")
         self.assertTrue(tool_titles)
         viewport_width = pane.scroll_area.viewport().width()
+        for body in assistant_bodies:
+            left = body.mapTo(pane.scroll_area.viewport(), body.rect().topLeft()).x()
+            right = left + body.width()
+            self.assertGreaterEqual(left, 0)
+            self.assertLessEqual(right, viewport_width)
         for title in tool_titles:
             left = title.mapTo(pane.scroll_area.viewport(), title.rect().topLeft()).x()
             right = left + title.width()
@@ -557,11 +566,18 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(pane.scroll_area.horizontalScrollBar().maximum(), 0)
         viewport_width = pane.scroll_area.viewport().width()
         for label in pane.findChildren(QLabel):
-            if label.objectName() in {"UserBubble", "AssistantBubble", "UserAvatar", "AssistantAvatar"}:
+            if label.objectName() in {"UserBubble", "UserAvatar", "AssistantAvatar"}:
                 left = label.mapTo(pane.scroll_area.viewport(), label.rect().topLeft()).x()
                 right = left + label.width()
                 self.assertGreaterEqual(left, 0)
                 self.assertLessEqual(right, viewport_width)
+        assistant_body = _first_assistant_body(pane)
+        self.assertIsNotNone(assistant_body)
+        assert assistant_body is not None
+        body_left = assistant_body.mapTo(pane.scroll_area.viewport(), assistant_body.rect().topLeft()).x()
+        body_right = body_left + assistant_body.width()
+        self.assertGreaterEqual(body_left, 0)
+        self.assertLessEqual(body_right, viewport_width)
 
     def test_assistant_stream_uses_flexible_full_width_text_layout(self) -> None:
         pane = ChatPane()
@@ -655,7 +671,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         assert heading is not None
         self.assertEqual(heading.text(), "Heading")
 
-    def test_markdown_assistant_reply_uses_native_notebook_block_widgets(self) -> None:
+    def test_code_block_uses_notebook_style_widget_names(self) -> None:
         pane = ChatPane()
 
         pane.add_message(
@@ -664,13 +680,13 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
 
         self.assertEqual(pane.findChildren(QLabel, "AssistantBubble"), [])
+        self.assertEqual(len(pane.findChildren(QWidget, "ChatCodeBlock")), 1)
+        self.assertEqual(len(pane.findChildren(QLabel, "ChatCodeBlockLanguage")), 1)
+        self.assertEqual(len(pane.findChildren(QLabel, "ChatCodeBlockText")), 1)
         self.assertEqual(len(pane.findChildren(QWidget, "ChatHeadingBlock")), 1)
         self.assertEqual(len(pane.findChildren(QWidget, "ChatQuoteBlock")), 1)
         self.assertEqual(len(pane.findChildren(QWidget, "ChatListBlock")), 1)
-        self.assertEqual(len(pane.findChildren(QWidget, "ChatCodeBlock")), 1)
-        self.assertEqual(len(pane.findChildren(QLabel, "ChatCodeBlockLanguage")), 1)
         self.assertEqual(len(pane.findChildren(QTextEdit, "ChatParagraphText")), 1)
-        self.assertEqual(len(pane.findChildren(QLabel, "ChatCodeBlockText")), 1)
 
     def test_assistant_markdown_renders_code_block_widget_instead_of_rich_text_label(self) -> None:
         pane = ChatPane()
@@ -879,9 +895,9 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         self.assertIn("#UserBubble {", stylesheet)
         self.assertIn("background: rgba(255,255,255,0.72);", stylesheet)
-        self.assertIn("#AssistantBubble {", stylesheet)
-        self.assertIn("background: transparent;", stylesheet)
-        self.assertIn("border: 0;", stylesheet)
+        self.assertIn("#ChatHeadingBlock {", stylesheet)
+        self.assertIn("#ChatParagraphText {", stylesheet)
+        self.assertIn("#ChatCodeBlock {", stylesheet)
 
     def test_chat_theme_makes_tool_transcript_fully_blend_into_background(self) -> None:
         stylesheet = theme_stylesheet("day")

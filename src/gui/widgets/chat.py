@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import html
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic
 
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QFontMetrics, QKeyEvent, QTextDocument
+from PySide6.QtGui import QFontMetrics, QKeyEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -193,6 +192,7 @@ class ChatPane(QWidget):
             row = AssistantMessageRow()
             row.render_blocks(parse_markdown_blocks(content))
             self.messages.insertWidget(self.messages.count() - 1, row)
+            self._update_bubble_widths()
             self._scroll_to_bottom()
             return
         row = UserMessageRow(content)
@@ -211,6 +211,7 @@ class ChatPane(QWidget):
     def _create_assistant_message_row(self) -> None:
         row = AssistantMessageRow()
         row.hide()
+        row.set_viewport_width(self.scroll_area.viewport().width())
         self._assistant_row = row
         self.messages.insertWidget(self.messages.count() - 1, row)
         self._break_tool_group()
@@ -311,17 +312,16 @@ class ChatPane(QWidget):
     def _update_bubble_widths(self) -> None:
         maximum_width = self._maximum_bubble_width()
         for bubble in self.findChildren(QLabel):
-            if bubble.objectName() == "UserBubble":
-                bubble_limit = int(maximum_width * 0.72)
-                bubble_width = min(_natural_label_width(bubble), bubble_limit)
-                bubble.setFixedWidth(bubble_width)
-                bubble.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.MinimumExpanding)
-            elif bubble.objectName() == "AssistantBubble":
-                bubble_limit = int(maximum_width * 0.82)
-                bubble_width = min(_natural_label_width(bubble), bubble_limit)
-                bubble.setFixedWidth(bubble_width)
-                bubble.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.MinimumExpanding)
-                _sync_assistant_label_height(bubble)
+            if bubble.objectName() != "UserBubble":
+                continue
+            bubble_limit = int(maximum_width * 0.72)
+            bubble_width = min(_natural_label_width(bubble), bubble_limit)
+            bubble.setFixedWidth(bubble_width)
+            bubble.setMaximumWidth(bubble_limit)
+            bubble.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.MinimumExpanding)
+        viewport_width = self.scroll_area.viewport().width()
+        for row in self.findChildren(AssistantMessageRow):
+            row.set_viewport_width(viewport_width)
 
     def _remove_thinking_status(self) -> None:
         if self._thinking_widget is None:
@@ -463,8 +463,8 @@ class _ToolGroupWidget(QFrame):
         self.title.setObjectName("ToolStatusTitle")
         self.title.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.title.setMinimumWidth(0)
-        self.title.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-        self.title.setWordWrap(False)
+        self.title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.title.setWordWrap(True)
         title_row.addWidget(self.title, 0)
         title_row.addWidget(self.toggle, 0)
         summary.addLayout(title_row, 0)
@@ -674,26 +674,6 @@ def _tool_call_line(call: _ToolCallState) -> QWidget:
     return row
 
 
-def _configure_user_message_bubble(label: QLabel) -> None:
-    label.setMinimumWidth(0)
-    label.setWordWrap(True)
-    label.setTextFormat(Qt.PlainText)
-    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    label.setProperty("format", "text")
-    label.setProperty("raw_text", "")
-    label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.MinimumExpanding)
-
-
-def _configure_assistant_message_label(label: QLabel) -> None:
-    label.setMinimumWidth(0)
-    label.setWordWrap(True)
-    label.setTextFormat(Qt.PlainText)
-    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    label.setProperty("format", "text")
-    label.setProperty("raw_text", "")
-    label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.MinimumExpanding)
-
-
 def _configure_wrapping_label(label: QLabel) -> None:
     label.setMinimumWidth(0)
     label.setWordWrap(True)
@@ -710,170 +690,9 @@ def _natural_label_width(label: QLabel) -> int:
     return metrics.horizontalAdvance(text) + margins.left() + margins.right() + frame_width + padding_width
 
 
-def _set_message_bubble_text(label: QLabel, text: str) -> None:
-    label.setProperty("raw_text", text)
-    next_format = _message_bubble_format(label, text)
-    label.setTextFormat(Qt.RichText if next_format == "markdown" else Qt.PlainText)
-    label.setText(_markdown_to_html(text) if next_format == "markdown" else text)
-    if label.objectName() == "AssistantBubble":
-        _sync_assistant_label_height(label)
-    if label.property("format") != next_format:
-        label.setProperty("format", next_format)
-        _refresh_widget(label)
-
-
-def _message_bubble_format(label: QLabel, text: str) -> str:
-    if label.objectName() != "AssistantBubble":
-        return "text"
-    if _looks_like_json_stream(text):
-        return "json"
-    if _looks_like_markdown_stream(text):
-        return "markdown"
-    return "text"
-
-
-def _sync_assistant_label_height(label: QLabel) -> None:
-    if label.objectName() != "AssistantBubble":
-        return
-    label.setMinimumHeight(0)
-    label.setMaximumHeight(16777215)
-    label.updateGeometry()
-    target_height = max(label.sizeHint().height(), label.minimumSizeHint().height(), 24)
-    label.setFixedHeight(target_height)
-
-
 def _looks_like_json_stream(text: str) -> bool:
     stripped = text.lstrip()
     return stripped.startswith("{") or stripped.startswith("[")
-
-
-def _looks_like_markdown_stream(text: str) -> bool:
-    stripped = text.lstrip()
-    if not stripped:
-        return False
-    if stripped.startswith(("```", "#", "> ", "- ", "* ", "+ ")):
-        return True
-    return bool(re.search(r"(^|\n)\s*(#{1,6}\s|[-*+]\s|>\s|\d+\.\s|```)|(\*\*|__|`[^`]*$|\[[^\]]+\]\()", text))
-
-
-def _markdown_to_html(text: str) -> str:
-    document = QTextDocument()
-    document.setMarkdown(text)
-    return _style_markdown_html(document.toHtml(), text)
-
-
-def _style_markdown_html(html_text: str, markdown_text: str) -> str:
-    pre_blocks: list[str] = []
-
-    def _stash_pre_block(match: re.Match[str]) -> str:
-        content = re.sub(r"</?span[^>]*>", "", match.group(1))
-        token = f"@@PRE_BLOCK_{len(pre_blocks)}@@"
-        pre_blocks.append(
-            (
-                "<table cellspacing=\"0\" cellpadding=\"0\" "
-                "style=\"margin:0 0 14px 0; width:100%;\">"
-                "<tr><td style=\""
-                "background-color:#1c2430;"
-                "border-radius:16px;"
-                "padding:14px;"
-                "\">"
-                "<pre style=\""
-                "margin:0;"
-                "color:#eaf2ff;"
-                "background-color:#1c2430;"
-                "font-family:'Consolas','Courier New',monospace;"
-                "white-space:pre-wrap;"
-                "\">"
-                f"{content}</pre></td></tr></table>"
-            )
-        )
-        return token
-
-    html_text = re.sub(r"<pre[^>]*>(.*?)</pre>", _stash_pre_block, html_text, flags=re.DOTALL)
-    styled = html_text.replace(
-        "<body style=\" font-family:'Sans Serif'; font-size:9pt; font-weight:400; font-style:normal;\">",
-        (
-            "<body style=\""
-            "font-family:'Microsoft YaHei UI','Segoe UI Variable Text','Segoe UI',sans-serif;"
-            "font-size:14px;"
-            "line-height:1.66;"
-            "font-weight:400;"
-            "font-style:normal;"
-            "color:#243044;"
-            "\">"
-        ),
-    )
-    styled = re.sub(
-        r"<h1 style=\"[^\"]*\"><span style=\"[^\"]*\">",
-        "<h1 style=\"margin:0 0 10px 0; font-size:25px; font-weight:700; color:#243044;\"><span>",
-        styled,
-        count=1,
-    )
-    styled = re.sub(
-        r"<p style=\"[^\"]*\">",
-        "<p style=\"margin:0 0 12px 0; color:#243044;\">",
-        styled,
-    )
-    styled = re.sub(
-        r"<ul style=\"[^\"]*\">",
-        "<ul style=\"margin:2px 0 12px 18px; color:#243044;\">",
-        styled,
-    )
-    styled = re.sub(
-        r"<ol style=\"[^\"]*\">",
-        "<ol style=\"margin:2px 0 12px 20px; color:#243044;\">",
-        styled,
-    )
-    styled = re.sub(
-        r"<li style=\"[^\"]*\">",
-        "<li style=\"margin:0 0 5px 0;\">",
-        styled,
-    )
-    styled = styled.replace(
-        "<span style=\" font-family:'monospace';\">",
-        (
-            "<span style=\""
-            "font-family:'Consolas','SFMono-Regular',monospace;"
-            "background-color:#e9eff8;"
-            "color:#1c5c98;"
-            "padding:2px 6px;"
-            "border-radius:7px;"
-            "\">"
-        ),
-    )
-    for index, block in enumerate(pre_blocks):
-        styled = styled.replace(f"@@PRE_BLOCK_{index}@@", block)
-    for quote_text in _markdown_quote_blocks(markdown_text):
-        escaped_quote = html.escape(quote_text, quote=False).replace("\n", "<br />")
-        default_paragraph = f"<p style=\"margin:0 0 12px 0; color:#243044;\">{escaped_quote}</p>"
-        quoted_paragraph = (
-            "<p style=\""
-            "margin:0 0 12px 0;"
-            "padding:10px 12px;"
-            "background-color:#f2f6fb;"
-            "border:1px solid #dce4ef;"
-            "border-radius:10px;"
-            "color:#5a6b82;"
-            "\">"
-            f"{escaped_quote}</p>"
-        )
-        styled = styled.replace(default_paragraph, quoted_paragraph, 1)
-    return styled
-
-
-def _markdown_quote_blocks(text: str) -> list[str]:
-    quotes: list[str] = []
-    current: list[str] = []
-    for line in text.splitlines():
-        if line.startswith(">"):
-            current.append(line[1:].lstrip())
-            continue
-        if current:
-            quotes.append("\n".join(current).strip())
-            current = []
-    if current:
-        quotes.append("\n".join(current).strip())
-    return [quote for quote in quotes if quote]
 
 
 def _tool_status_label(status: str) -> str:

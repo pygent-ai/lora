@@ -457,7 +457,7 @@ QTabBar::tab:hover {{
 #ChatScrollBody {{
     background: transparent;
 }}
-#UserBubble, #AssistantBubble {{
+#UserBubble {{
     font-size: {t.message_size}px;
     line-height: 1.55;
 }}
@@ -468,16 +468,13 @@ QTabBar::tab:hover {{
     border-radius: 18px;
     padding: 3px 5px;
 }}
-#AssistantBubble {{
-    background: transparent;
-    color: {c.text};
-    border: 0;
-    border-radius: 0;
-    padding: 0;
-}}
 #DocumentBlockList {{
     background: transparent;
     border: 0;
+}}
+#ChatHeadingBlock, #ChatParagraphText, #ChatQuoteBlock QLabel, #ChatListItem QLabel {{
+    color: {c.text};
+    font-size: {t.message_size}px;
 }}
 #ChatHeadingBlock {{
     color: {c.text};
