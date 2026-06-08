@@ -191,7 +191,7 @@ class ConfigTests(unittest.TestCase):
             config = load_run_config(workspace_root=tmp)
 
         self.assertEqual(config.user_identity, "default")
-        self.assertEqual([preset.name for preset in config.cli_bash_presets], ["rg", "pyright"])
+        self.assertEqual([preset.name for preset in config.cli_bash_presets], ["rg", "pyright", "lora-chat"])
         self.assertEqual(config.bash_full_output_allowlist, [])
 
     def test_bash_full_output_allowlist_must_be_a_list(self) -> None:

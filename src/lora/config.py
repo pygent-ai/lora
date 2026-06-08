@@ -21,6 +21,14 @@ DEFAULT_CLI_BASH_PRESETS = [
         command="pyright --help",
         description="Python type checker. Use it for static type validation when available.",
     ),
+    BashCliPreset(
+        name="lora-chat",
+        command='uv run lora chat --help',
+        description=(
+            'Project chat CLI. Use `uv run lora chat --new -m "<task>"` to start a new sub-agent session, '
+            'or `uv run lora chat --session <session_id> -m "<task>"` to continue one.'
+        ),
+    ),
 ]
 
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic
 
+import shiboken6
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFontMetrics, QKeyEvent
 from PySide6.QtWidgets import (
@@ -39,9 +40,11 @@ class ChatPane(QWidget):
         self._assistant_text = ""
         self._thinking_widget: ThinkingRow | None = None
         self._active_tool_group: _ToolGroupWidget | None = None
-        self._composer_bottom_inset = 18
-        self._composer_height = 152
-        self._composer_side_inset = 18
+        self._activity_group: _ActivityGroupWidget | None = None
+        self._assistant_rendered_text = ""
+        self._assistant_render_pending = False
+        self._stick_to_bottom = True
+        self._scrollbar_update_in_progress = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -51,7 +54,7 @@ class ChatPane(QWidget):
         self.main_card.setObjectName("ChatMainCard")
         self.main_card.setAttribute(Qt.WA_StyledBackground, True)
         card_layout = QVBoxLayout(self.main_card)
-        card_layout.setContentsMargins(0, 0, 0, self._composer_reserved_space())
+        card_layout.setContentsMargins(0, 0, 0, 0)
         card_layout.setSpacing(0)
         self._card_layout = card_layout
         root.addWidget(self.main_card)
@@ -59,11 +62,14 @@ class ChatPane(QWidget):
         header_shell = QFrame()
         header_shell.setObjectName("ChatHeaderShell")
         header_shell.setAttribute(Qt.WA_StyledBackground, True)
+        header_shell.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.header_shell = header_shell
         header_shell_layout = QVBoxLayout(header_shell)
         header_shell_layout.setContentsMargins(0, 0, 0, 0)
         header_shell_layout.setSpacing(0)
         header_frame = QFrame()
         header_frame.setObjectName("ChatHeader")
+        header_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(24, 14, 24, 12)
         header_layout.setSpacing(12)
@@ -89,6 +95,7 @@ class ChatPane(QWidget):
         scroll_shell = QFrame()
         scroll_shell.setObjectName("ChatScrollShell")
         scroll_shell.setAttribute(Qt.WA_StyledBackground, True)
+        self.scroll_shell = scroll_shell
         scroll_shell_layout = QVBoxLayout(scroll_shell)
         scroll_shell_layout.setContentsMargins(0, 0, 0, 0)
         scroll_shell_layout.setSpacing(0)
@@ -97,14 +104,16 @@ class ChatPane(QWidget):
         self.scroll_area.setObjectName("ChatScroll")
         self.scroll_area.setFrameShape(QFrame.NoFrame)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.verticalScrollBar().rangeChanged.connect(self._handle_scroll_range_changed)
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._handle_scroll_value_changed)
         self.scroll_body = QWidget()
         self.scroll_body.setObjectName("ChatScrollBody")
         self.scroll_body.setAttribute(Qt.WA_StyledBackground, True)
         self.scroll_body.setMinimumWidth(0)
         self.messages = QVBoxLayout(self.scroll_body)
-        self.messages.setContentsMargins(34, 7, 34, 7)
-        self.messages.setSpacing(4)
-        self.messages.addStretch(1)
+        self.messages.setContentsMargins(34, 7, 34, 12)
+        self.messages.setSpacing(0)
+        self.messages.setAlignment(Qt.AlignTop)
         self.scroll_area.setWidget(self.scroll_body)
         scroll_shell_layout.addWidget(self.scroll_area)
         card_layout.addWidget(scroll_shell, 1)
@@ -112,27 +121,38 @@ class ChatPane(QWidget):
         composer = QFrame()
         composer.setObjectName("Composer")
         composer.setAttribute(Qt.WA_StyledBackground, True)
+        composer.setFixedHeight(152)
+        composer_layout = QHBoxLayout(composer)
+        composer_layout.setContentsMargins(20, 18, 20, 18)
+        composer_layout.setSpacing(18)
         self.input = _MessageInput()
         self.input.setPlaceholderText("Message Lora...")
         self.input.setObjectName("MessageInput")
-        self.input.setParent(composer)
+        composer_layout.addWidget(self.input, 1)
         self.send_button = QPushButton("Send")
         self.send_button.setObjectName("PrimaryButton")
         self.send_button.setIcon(icon("send"))
         self.send_button.setToolTip("Send message")
         self.send_button.setFixedSize(132, 38)
-        self.send_button.setParent(composer)
+        composer_layout.addWidget(self.send_button, 0, Qt.AlignBottom)
         self.send_button.clicked.connect(self._submit)
         self.input.submit_requested.connect(self._submit)
         self.composer = composer
-        self.composer.setParent(self.main_card)
-        self.composer.raise_()
-        self.messages.setContentsMargins(34, 7, 34, 52)
+        card_layout.addWidget(composer, 0)
+
+        self._assistant_render_timer = QTimer(self)
+        self._assistant_render_timer.setSingleShot(True)
+        self._assistant_render_timer.setInterval(33)
+        self._assistant_render_timer.timeout.connect(self._flush_assistant_render)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override.
         super().resizeEvent(event)
-        self._position_floating_composer()
         self._update_bubble_widths()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override.
+        super().showEvent(event)
+        self._sync_transcript_width_after_layout()
+        QTimer.singleShot(0, self._sync_transcript_width_after_layout)
 
     def set_session_title(self, title: str) -> None:
         metrics = QFontMetrics(self.header.font())
@@ -162,11 +182,20 @@ class ChatPane(QWidget):
 
     def render_history(self, history: list[dict[str, object]]) -> None:
         self.clear()
-        for message in history:
+        index = 0
+        while index < len(history):
+            message = history[index]
             role = str(message.get("role") or "")
             content = str(message.get("content") or "")
             if role == "user":
                 self.add_message("user", _clean_user_content(content))
+                turn_messages: list[dict[str, object]] = []
+                index += 1
+                while index < len(history) and str(history[index].get("role") or "") != "user":
+                    turn_messages.append(history[index])
+                    index += 1
+                self._render_turn_segment(turn_messages)
+                continue
             elif role == "assistant":
                 tool_calls = _tool_calls(message)
                 if content.strip():
@@ -175,61 +204,75 @@ class ChatPane(QWidget):
                     self._append_tool_calls(tool_calls)
             elif role == "tool":
                 self._apply_tool_result(_tool_result_state(message))
+            index += 1
 
     def clear(self) -> None:
-        while self.messages.count() > 1:
+        while self.messages.count():
             item = self.messages.takeAt(0)
             _delete_layout_item(item)
         self._assistant_row = None
         self._assistant_text = ""
+        self._assistant_rendered_text = ""
+        self._assistant_render_pending = False
+        if hasattr(self, "_assistant_render_timer"):
+            self._assistant_render_timer.stop()
         self._thinking_widget = None
         self._break_tool_group()
+        self._activity_group = None
 
     def add_message(self, role: str, content: str) -> None:
         self._remove_thinking_status()
         self._break_tool_group()
+        self._break_activity_group()
         if role == "assistant":
             row = AssistantMessageRow()
             row.render_blocks(parse_markdown_blocks(content))
-            self.messages.insertWidget(self.messages.count() - 1, row)
+            self._insert_message_widget(row)
             self._update_bubble_widths()
             self._scroll_to_bottom()
             return
         row = UserMessageRow(content)
-        self.messages.insertWidget(self.messages.count() - 1, row)
+        self._insert_message_widget(row)
         self._update_bubble_widths()
         self._scroll_to_bottom()
 
     def start_assistant_message(self) -> None:
         self._break_tool_group()
+        self._break_activity_group()
         self._assistant_text = ""
+        self._assistant_rendered_text = ""
+        self._assistant_render_pending = False
+        self._assistant_render_timer.stop()
         self._remove_thinking_status()
         self._thinking_widget = ThinkingRow("Thinking")
-        self.messages.insertWidget(self.messages.count() - 1, self._thinking_widget)
+        activity = self._ensure_activity_group()
+        activity.add_row(self._thinking_widget)
         self._scroll_to_bottom()
 
     def _create_assistant_message_row(self) -> None:
         row = AssistantMessageRow()
         row.hide()
-        row.set_viewport_width(self.scroll_area.viewport().width())
+        row.set_viewport_width(self._maximum_bubble_width())
         self._assistant_row = row
-        self.messages.insertWidget(self.messages.count() - 1, row)
+        self._insert_message_widget(row)
         self._break_tool_group()
 
     def append_assistant_delta(self, delta: str) -> None:
         if self._assistant_row is None:
-            if self._thinking_widget is None:
+            if self._thinking_widget is None and self._activity_group is None:
                 self.start_assistant_message()
             if self._active_tool_group is None:
                 self._remove_thinking_status()
+                self._remove_empty_activity_group()
             self._create_assistant_message_row()
         self._assistant_text += delta
         assert self._assistant_row is not None
         self._assistant_row.show()
-        self._assistant_row.render_blocks(parse_markdown_blocks(self._assistant_text or " "))
         self._break_tool_group()
-        self._update_bubble_widths()
-        self._scroll_to_bottom()
+        if not self._assistant_rendered_text:
+            self._flush_assistant_render()
+            return
+        self._schedule_assistant_render()
 
     def finish_assistant_message(self, final_answer: str | None = None) -> None:
         if final_answer:
@@ -237,18 +280,25 @@ class ChatPane(QWidget):
             if self._assistant_row is None:
                 if self._thinking_widget is not None and self._active_tool_group is None:
                     self._remove_thinking_status()
+                self._break_activity_group()
                 self._create_assistant_message_row()
             if final_answer != self._assistant_text and self._assistant_row is not None:
                 self._assistant_text = final_answer
                 self._assistant_row.show()
-                self._assistant_row.render_blocks(parse_markdown_blocks(final_answer or " "))
+                self._flush_assistant_render()
+                updated_row = True
+            elif self._assistant_render_pending:
+                self._flush_assistant_render()
                 updated_row = True
             if updated_row:
-                self._update_bubble_widths()
-                self._scroll_to_bottom()
                 QTimer.singleShot(0, self._scroll_to_bottom)
+        else:
+            self._flush_assistant_render()
         self._assistant_row = None
         self._assistant_text = ""
+        self._assistant_rendered_text = ""
+        self._assistant_render_pending = False
+        self._assistant_render_timer.stop()
 
     def show_error(self, message: str) -> None:
         self.set_run_status("error")
@@ -258,7 +308,9 @@ class ChatPane(QWidget):
         if event.kind != "tool":
             return
         if event.title.startswith("Tool call:"):
+            self._move_active_assistant_to_activity()
             self._close_assistant_stream()
+            self._ensure_activity_group()
             self._append_tool_calls([_tool_call_from_event(event)])
         elif event.title.startswith("Tool result:"):
             self._apply_tool_result(_tool_result_state_from_event(event))
@@ -274,36 +326,63 @@ class ChatPane(QWidget):
         self.input.clear()
         self.message_submitted.emit(text)
 
-    def _position_floating_composer(self) -> None:
-        if not hasattr(self, "composer"):
+    def _has_transcript_widgets(self) -> bool:
+        return self._last_transcript_widget() is not None
+
+    def _schedule_transcript_layout_update(self) -> None:
+        self.scroll_body.updateGeometry()
+
+    def _schedule_assistant_render(self) -> None:
+        self._assistant_render_pending = True
+        if not self._assistant_render_timer.isActive():
+            self._assistant_render_timer.start()
+
+    def _flush_assistant_render(self) -> None:
+        self._assistant_render_timer.stop()
+        self._assistant_render_pending = False
+        if self._assistant_row is None:
             return
-        self._card_layout.setContentsMargins(0, 0, 0, self._composer_reserved_space())
-        composer_width = max(240, self.main_card.width() - (self._composer_side_inset * 2))
-        composer_y = self.main_card.height() - self._composer_height - self._composer_bottom_inset
-        self.composer.setGeometry(self._composer_side_inset, composer_y, composer_width, self._composer_height)
-        composer_padding_x = 20
-        composer_padding_top = 18
-        composer_padding_bottom = 18
-        button_margin_right = 20
-        button_margin_bottom = 20
-        button_width = self.send_button.width()
-        button_height = self.send_button.height()
-        button_x = composer_width - button_width - button_margin_right
-        button_y = self._composer_height - button_height - button_margin_bottom
-        self.send_button.move(button_x, button_y)
+        text = self._assistant_text or " "
+        if text == self._assistant_rendered_text:
+            return
+        self._assistant_row.render_blocks(parse_markdown_blocks(text), preserve_height=True)
+        self._assistant_rendered_text = text
+        self._update_bubble_widths()
+        self._scroll_to_bottom()
 
-        input_right_margin = button_width + 40
-        input_width = max(160, composer_width - (composer_padding_x * 2) - input_right_margin)
-        input_height = self._composer_height - composer_padding_top - composer_padding_bottom
-        self.input.setGeometry(composer_padding_x, composer_padding_top, input_width, input_height)
-        self.composer.raise_()
-
-    def _composer_reserved_space(self) -> int:
-        return self._composer_height + self._composer_bottom_inset + 12
+    def _sync_transcript_width_after_layout(self) -> None:
+        if not shiboken6.isValid(self):
+            return
+        self._update_bubble_widths()
+        self.scroll_body.updateGeometry()
 
     def _scroll_to_bottom(self) -> None:
+        self._stick_to_bottom = True
+        self._schedule_transcript_layout_update()
+        self._scroll_to_bottom_now()
+        QTimer.singleShot(0, self._scroll_to_bottom_now)
+
+    def _scroll_to_bottom_now(self) -> None:
+        if not shiboken6.isValid(self) or not hasattr(self, "scroll_area") or not shiboken6.isValid(self.scroll_area):
+            return
         bar = self.scroll_area.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self._scrollbar_update_in_progress = True
+        try:
+            bar.setValue(bar.maximum())
+        finally:
+            self._scrollbar_update_in_progress = False
+
+    def _handle_scroll_range_changed(self, _minimum: int, _maximum: int) -> None:
+        if not self._stick_to_bottom:
+            return
+        self._scroll_to_bottom_now()
+        QTimer.singleShot(0, self._scroll_to_bottom_now)
+
+    def _handle_scroll_value_changed(self, value: int) -> None:
+        if self._scrollbar_update_in_progress:
+            return
+        bar = self.scroll_area.verticalScrollBar()
+        self._stick_to_bottom = value >= bar.maximum()
 
     def _maximum_bubble_width(self) -> int:
         viewport_width = self.scroll_area.viewport().width()
@@ -318,8 +397,8 @@ class ChatPane(QWidget):
             bubble_width = min(_natural_label_width(bubble), bubble_limit)
             bubble.setFixedWidth(bubble_width)
             bubble.setMaximumWidth(bubble_limit)
-            bubble.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.MinimumExpanding)
-        viewport_width = self.scroll_area.viewport().width()
+            bubble.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
+        viewport_width = self._maximum_bubble_width()
         for row in self.findChildren(AssistantMessageRow):
             row.set_viewport_width(viewport_width)
 
@@ -327,30 +406,80 @@ class ChatPane(QWidget):
         if self._thinking_widget is None:
             return
         self._remove_widget_from_messages(self._thinking_widget)
-        self._thinking_widget.setParent(None)
-        self._thinking_widget.deleteLater()
+        _destroy_widget(self._thinking_widget)
         self._thinking_widget = None
+        self._remove_empty_activity_group()
 
     def _remove_widget_from_messages(self, widget: QWidget) -> None:
         for index in range(self.messages.count()):
             item = self.messages.itemAt(index)
             if item is not None and item.widget() is widget:
+                if index > 0:
+                    previous = self.messages.itemAt(index - 1)
+                    if previous is not None and previous.spacerItem() is not None:
+                        self.messages.takeAt(index - 1)
+                        index -= 1
                 self.messages.takeAt(index)
                 return
+        if self._activity_group is not None:
+            self._activity_group.remove_row(widget)
 
     def _close_assistant_stream(self) -> None:
         # Intentionally preserve the current tool group so runtime tool call/result
         # rows stay in arrival order; assistant prose owns the group boundary.
+        self._flush_assistant_render()
         self._assistant_row = None
         self._assistant_text = ""
+        self._assistant_rendered_text = ""
+        self._assistant_render_pending = False
+        self._assistant_render_timer.stop()
 
     def _break_tool_group(self) -> None:
         self._active_tool_group = None
 
+    def _break_activity_group(self) -> None:
+        self._activity_group = None
+
+    def _message_insert_index(self) -> int:
+        return self.messages.count()
+
+    def _insert_message_widget(self, widget: QWidget, *, before: QWidget | None = None) -> None:
+        if before is not None:
+            for index in range(self.messages.count()):
+                item = self.messages.itemAt(index)
+                if item is not None and item.widget() is before:
+                    self.messages.insertWidget(index, widget)
+                    self.messages.insertSpacing(index + 1, self._spacing_before(widget, before))
+                    return
+        previous = self._last_transcript_widget()
+        if previous is not None:
+            self.messages.addSpacing(self._spacing_before(previous, widget))
+        self.messages.insertWidget(self._message_insert_index(), widget)
+
+    def _last_transcript_widget(self) -> QWidget | None:
+        for index in range(self.messages.count() - 1, -1, -1):
+            item = self.messages.itemAt(index)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                return widget
+        return None
+
+    def _spacing_before(self, previous: QWidget, current: QWidget) -> int:
+        previous_name = previous.objectName()
+        current_name = current.objectName()
+        if previous_name == "UserMessageGroup" or current_name == "UserMessageGroup":
+            return 12
+        return 4
+
     def _append_tool_calls(self, tool_calls: list[dict[str, object] | "_ToolCallState"]) -> None:
         if self._active_tool_group is None:
             self._active_tool_group = _ToolGroupWidget()
-            self.messages.insertWidget(self.messages.count() - 1, self._active_tool_group)
+            if self._activity_group is not None:
+                self._activity_group.add_row(self._active_tool_group)
+            else:
+                self._insert_message_widget(self._active_tool_group)
         for tool_call in tool_calls:
             if isinstance(tool_call, _ToolCallState):
                 state = tool_call
@@ -364,6 +493,59 @@ class ChatPane(QWidget):
             return
         self._active_tool_group.apply_result(result)
         self._scroll_to_bottom()
+
+    def _render_turn_segment(self, messages: list[dict[str, object]]) -> None:
+        final_assistant_index = -1
+        for index, message in enumerate(messages):
+            if str(message.get("role") or "") == "assistant" and str(message.get("content") or "").strip():
+                final_assistant_index = index
+        for index, message in enumerate(messages):
+            role = str(message.get("role") or "")
+            content = str(message.get("content") or "")
+            if role == "assistant":
+                tool_calls = _tool_calls(message)
+                if index == final_assistant_index and content.strip():
+                    self._activity_group = None
+                    self._break_tool_group()
+                    self.add_message("assistant", content)
+                    if tool_calls:
+                        self._append_tool_calls(tool_calls)
+                    continue
+                if content.strip():
+                    self._active_tool_group = None
+                    row = AssistantMessageRow()
+                    row.render_blocks(parse_markdown_blocks(content))
+                    self._ensure_activity_group().add_row(row)
+                if tool_calls:
+                    self._ensure_activity_group()
+                    self._append_tool_calls(tool_calls)
+            elif role == "tool":
+                self._apply_tool_result(_tool_result_state(message))
+        self._activity_group = None
+        self._break_tool_group()
+        self._update_bubble_widths()
+        self._scroll_to_bottom()
+
+    def _ensure_activity_group(self) -> "_ActivityGroupWidget":
+        if self._activity_group is None:
+            self._activity_group = _ActivityGroupWidget()
+            self._insert_message_widget(self._activity_group, before=self._assistant_row)
+        return self._activity_group
+
+    def _move_active_assistant_to_activity(self) -> None:
+        if self._assistant_row is None or not self._assistant_text.strip():
+            return
+        row = self._assistant_row
+        self._remove_widget_from_messages(row)
+        self._ensure_activity_group().add_row(row)
+
+    def _remove_empty_activity_group(self) -> None:
+        if self._activity_group is None or not self._activity_group.is_empty():
+            return
+        activity = self._activity_group
+        self._activity_group = None
+        self._remove_widget_from_messages(activity)
+        _destroy_widget(activity)
 
 
 class _MessageInput(QPlainTextEdit):
@@ -420,13 +602,89 @@ class _ToolResultState:
     finished_monotonic: float | None = None
 
 
+class _ActivityGroupWidget(QFrame):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("ActivityGroup")
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self._expanded = False
+        self._row_widgets: list[QWidget] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(38, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self.summary = QFrame()
+        self.summary.setObjectName("ActivityGroupSummary")
+        summary_layout = QHBoxLayout(self.summary)
+        summary_layout.setContentsMargins(2, 1, 2, 1)
+        summary_layout.setSpacing(1)
+        self.title = QLabel("Activity")
+        self.title.setObjectName("ToolStatusTitle")
+        self.title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.toggle = QPushButton(">")
+        self.toggle.setObjectName("ActivityGroupToggle")
+        self.toggle.setFixedSize(16, 16)
+        self.toggle.clicked.connect(self._toggle_detail)
+        summary_layout.addWidget(self.title, 0)
+        summary_layout.addWidget(self.toggle, 0)
+        summary_layout.addStretch(1)
+        layout.addWidget(self.summary)
+
+        self.detail = QWidget()
+        self.detail.setObjectName("ActivityGroupDetail")
+        self.detail.setVisible(False)
+        self.detail_layout = QVBoxLayout(self.detail)
+        self.detail_layout.setContentsMargins(0, 2, 0, 0)
+        self.detail_layout.setSpacing(4)
+        layout.addWidget(self.detail)
+
+    def add_row(self, widget: QWidget) -> None:
+        if widget in self._row_widgets:
+            return
+        self._row_widgets.append(widget)
+        self.detail_layout.addWidget(widget)
+        widget.setVisible(self._expanded)
+        self._refresh_title()
+        self.updateGeometry()
+
+    def is_empty(self) -> bool:
+        return not self._row_widgets
+
+    def remove_row(self, widget: QWidget) -> None:
+        if widget not in self._row_widgets:
+            return
+        self._row_widgets.remove(widget)
+        for index in range(self.detail_layout.count()):
+            item = self.detail_layout.itemAt(index)
+            if item is not None and item.widget() is widget:
+                self.detail_layout.takeAt(index)
+                break
+        self._refresh_title()
+        self.updateGeometry()
+
+    def _toggle_detail(self) -> None:
+        self._expanded = not self._expanded
+        self.detail.setVisible(self._expanded)
+        for widget in self._row_widgets:
+            widget.setVisible(self._expanded)
+        self.toggle.setText("v" if self._expanded else ">")
+        self.updateGeometry()
+
+    def _refresh_title(self) -> None:
+        self.title.setText("Activity")
+
+
 class _ToolGroupWidget(QFrame):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("ToolStatusGroup")
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self._calls: list[_ToolCallState] = []
         self._expanded = False
         self._blink_phase = False
+        self._detail_panel: QWidget | None = None
+        self._detail_rows_layout: QVBoxLayout | None = None
         self._blink_timer = QTimer(self)
         self._blink_timer.setInterval(520)
         self._blink_timer.timeout.connect(self._advance_blink_phase)
@@ -438,6 +696,7 @@ class _ToolGroupWidget(QFrame):
         self.card = QFrame()
         self.card.setObjectName("ToolStatusRow")
         self.card.setProperty("status", "running")
+        self.card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         outer_layout.addWidget(self.card, 1)
 
         layout = QVBoxLayout(self.card)
@@ -564,45 +823,112 @@ class _ToolGroupWidget(QFrame):
         _refresh_widget(self.summary_frame)
         self.toggle.setEnabled(True)
         self.toggle.setText("v" if self._expanded else ">")
-        _clear_layout(self.detail_holder)
+        if self._detail_panel is not None:
+            self._detail_panel.setVisible(self._expanded)
         if not self._expanded:
             return
-        self.detail_holder.addWidget(_tool_group_detail(self._calls))
+        self._render_detail_rows()
+
+    def _render_detail_rows(self) -> None:
+        rows_layout = self._ensure_detail_panel()
+        card = rows_layout.parentWidget()
+        last_index = len(self._calls) - 1
+
+        while rows_layout.count() > len(self._calls):
+            item = rows_layout.takeAt(rows_layout.count() - 1)
+            if item is not None:
+                _delete_layout_item(item)
+
+        for index, call in enumerate(self._calls):
+            if index < rows_layout.count():
+                item = rows_layout.itemAt(index)
+                row_widget = item.widget() if item is not None else None
+                if row_widget is not None:
+                    _update_tool_detail_row(row_widget, call, trailing=index < last_index)
+                    continue
+            rows_layout.addWidget(_tool_detail_row(call, trailing=index < last_index, parent=card))
+
+    def _ensure_detail_panel(self) -> QVBoxLayout:
+        if self._detail_panel is not None and self._detail_rows_layout is not None:
+            self._detail_panel.setVisible(True)
+            return self._detail_rows_layout
+
+        panel = QWidget()
+        panel.setObjectName("ToolExpandedPanel")
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(0)
+
+        card = QFrame()
+        card.setObjectName("ToolExpandedCard")
+        card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        rows_layout = QVBoxLayout(card)
+        rows_layout.setContentsMargins(0, 6, 0, 6)
+        rows_layout.setSpacing(0)
+
+        panel_layout.addWidget(card)
+        self.detail_holder.addWidget(panel)
+
+        self._detail_panel = panel
+        self._detail_rows_layout = rows_layout
+        return rows_layout
 
 
-def _tool_group_detail(calls: list[_ToolCallState]) -> QWidget:
-    panel = QWidget()
-    panel.setObjectName("ToolExpandedPanel")
-    layout = QHBoxLayout(panel)
+def _update_tool_detail_row(row: QWidget, call: _ToolCallState, *, trailing: bool) -> None:
+    marker = row.findChild(QWidget, "ToolTimelineMarker")
+    if marker is not None:
+        dot = marker.findChild(QLabel, "ToolTimelineDot")
+        if dot is not None:
+            dot.setProperty("status", call.status)
+            _refresh_widget(dot)
+        connector = marker.findChild(QFrame, "ToolTimelineLine")
+        if connector is not None:
+            connector.setProperty("active", trailing)
+            connector.setVisible(trailing)
+            _refresh_widget(connector)
+
+    call_row = row.findChild(QFrame, "ToolCallRow")
+    if call_row is not None:
+        _update_tool_call_line(call_row, call)
+
+
+def _update_tool_call_line(row: QFrame, call: _ToolCallState) -> None:
+    row.setProperty("status", call.status)
+    line = row.findChild(QLabel, "ToolCallLine")
+    status = row.findChild(QLabel, "ToolCallStatus")
+    start_time = row.findChild(QLabel, "ToolCallStartTime")
+    duration = row.findChild(QLabel, "ToolCallDuration")
+    if line is not None:
+        line.setText(_tool_line_text(call))
+    if status is not None:
+        status.setText(_tool_detail_status_label(call.status))
+        status.setProperty("status", call.status)
+        _refresh_widget(status)
+    if start_time is not None:
+        start_time.setText(call.started_at_text or "--:--:--")
+    if duration is not None:
+        duration.setText(_tool_duration_text(call))
+    _refresh_widget(row)
+
+
+def _tool_detail_row(call: _ToolCallState, *, trailing: bool, parent: QWidget | None = None) -> QWidget:
+    row = QWidget(parent)
+    row.setObjectName("ToolDetailRow")
+    row.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+    layout = QHBoxLayout(row)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
-
-    timeline = QWidget()
-    timeline.setObjectName("ToolTimeline")
-    timeline_layout = QVBoxLayout(timeline)
-    timeline_layout.setContentsMargins(0, 6, 0, 6)
-    timeline_layout.setSpacing(0)
-
-    card = QFrame()
-    card.setObjectName("ToolExpandedCard")
-    card_layout = QVBoxLayout(card)
-    card_layout.setContentsMargins(0, 0, 0, 0)
-    card_layout.setSpacing(0)
-
-    for index, call in enumerate(calls):
-        timeline_layout.addWidget(_tool_timeline_marker(call.status, trailing=index < len(calls) - 1))
-        card_layout.addWidget(_tool_call_line(call))
-
-    layout.addWidget(timeline, 0)
-    layout.addWidget(card, 1)
-    return panel
+    layout.addWidget(_tool_timeline_marker(call.status, trailing=trailing, parent=row), 0, Qt.AlignTop)
+    layout.addWidget(_tool_call_line(call, parent=row), 1)
+    return row
 
 
-def _tool_timeline_marker(status: str, *, trailing: bool) -> QWidget:
-    marker = QWidget()
+def _tool_timeline_marker(status: str, *, trailing: bool, parent: QWidget | None = None) -> QWidget:
+    marker = QWidget(parent)
     marker.setObjectName("ToolTimelineMarker")
     marker.setFixedWidth(18)
-    marker.setMinimumHeight(32)
+    marker.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
     layout = QVBoxLayout(marker)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(0)
@@ -610,7 +936,7 @@ def _tool_timeline_marker(status: str, *, trailing: bool) -> QWidget:
     dot_row = QHBoxLayout()
     dot_row.setContentsMargins(0, 0, 0, 0)
     dot_row.addStretch(1)
-    dot = QLabel("")
+    dot = QLabel("", marker)
     dot.setObjectName("ToolTimelineDot")
     dot.setProperty("status", status)
     dot.setFixedSize(10, 10)
@@ -618,12 +944,12 @@ def _tool_timeline_marker(status: str, *, trailing: bool) -> QWidget:
     dot_row.addStretch(1)
     layout.addLayout(dot_row)
 
-    line = QFrame()
+    line = QFrame(marker)
     line.setObjectName("ToolTimelineLine")
     line.setProperty("active", trailing)
     line.setFixedWidth(2)
     line.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-    line.setVisible(False)
+    line.setVisible(trailing)
     line_row = QHBoxLayout()
     line_row.setContentsMargins(0, 1, 0, 0)
     line_row.addStretch(1)
@@ -633,10 +959,11 @@ def _tool_timeline_marker(status: str, *, trailing: bool) -> QWidget:
     return marker
 
 
-def _tool_call_line(call: _ToolCallState) -> QWidget:
-    row = QFrame()
+def _tool_call_line(call: _ToolCallState, parent: QWidget | None = None) -> QWidget:
+    row = QFrame(parent)
     row.setObjectName("ToolCallRow")
     row.setProperty("status", call.status)
+    row.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
     layout = QHBoxLayout(row)
     layout.setContentsMargins(12, 9, 12, 9)
     layout.setSpacing(8)
@@ -645,17 +972,17 @@ def _tool_call_line(call: _ToolCallState) -> QWidget:
     text_block.setContentsMargins(0, 0, 0, 0)
     text_block.setSpacing(2)
 
-    line = QLabel(_tool_line_text(call))
+    line = QLabel(_tool_line_text(call), row)
     line.setObjectName("ToolCallLine")
     _configure_wrapping_label(line)
 
     meta_row = QHBoxLayout()
     meta_row.setContentsMargins(0, 0, 0, 0)
     meta_row.setSpacing(6)
-    status = QLabel(_tool_detail_status_label(call.status))
+    status = QLabel(_tool_detail_status_label(call.status), row)
     status.setObjectName("ToolCallStatus")
     status.setProperty("status", call.status)
-    start_time = QLabel(call.started_at_text or "--:--:--")
+    start_time = QLabel(call.started_at_text or "--:--:--", row)
     start_time.setObjectName("ToolCallStartTime")
     meta_row.addWidget(status, 0)
     meta_row.addWidget(start_time, 0)
@@ -664,7 +991,7 @@ def _tool_call_line(call: _ToolCallState) -> QWidget:
     text_block.addWidget(line)
     text_block.addLayout(meta_row)
 
-    duration = QLabel(_tool_duration_text(call))
+    duration = QLabel(_tool_duration_text(call), row)
     duration.setObjectName("ToolCallDuration")
     duration.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     duration.setMinimumWidth(46)
@@ -678,7 +1005,7 @@ def _configure_wrapping_label(label: QLabel) -> None:
     label.setMinimumWidth(0)
     label.setWordWrap(True)
     label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
+    label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
 
 
 def _natural_label_width(label: QLabel) -> int:
@@ -910,11 +1237,16 @@ def _refresh_widget(widget: QWidget) -> None:
     widget.update()
 
 
+def _destroy_widget(widget: QWidget) -> None:
+    widget.hide()
+    if shiboken6.isValid(widget):
+        shiboken6.delete(widget)
+
+
 def _delete_layout_item(item: QLayoutItem) -> None:
     widget = item.widget()
     if widget is not None:
-        widget.setParent(None)
-        widget.deleteLater()
+        _destroy_widget(widget)
         return
     layout = item.layout()
     if layout is not None:

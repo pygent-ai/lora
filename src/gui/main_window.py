@@ -4,10 +4,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
-from PySide6.QtCore import QThread
-from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QMainWindow, QMessageBox, QWidget
+from PySide6.QtCore import QThread, QTimer
+from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QWidget
 
-from gui.session_model import ChatSessionStore, GuiProjectState, SessionScope, build_session_scopes
+from gui.session_model import ChatSessionStore, GuiProjectState, SessionGroupRecord, SessionScope, build_session_scopes
 from gui.theme import theme_stylesheet
 from gui.widgets.chat import ChatPane
 from gui.widgets.inspector import TraceInspector
@@ -90,11 +90,18 @@ class MainWindow(QMainWindow):
         self.sidebar.session_selected.connect(self.select_session)
         self.sidebar.session_delete_requested.connect(self.delete_session)
         self.sidebar.settings_requested.connect(self.open_settings)
-        self.sidebar.scope_selected.connect(self.select_scope)
+        self.sidebar.group_order_changed.connect(self._remember_group_order)
+        self.sidebar.group_collapsed_changed.connect(self._remember_group_collapsed)
+        self.sidebar.project_remove_requested.connect(self.remove_project)
         self.sidebar.project_select_requested.connect(self.choose_project_path)
         self.sidebar.theme_toggle_requested.connect(self.toggle_theme)
         self.sidebar.theme_selected.connect(self.set_theme)
         self.chat.message_submitted.connect(self.send_message)
+
+        self._project_state_save_timer = QTimer(self)
+        self._project_state_save_timer.setSingleShot(True)
+        self._project_state_save_timer.setInterval(400)
+        self._project_state_save_timer.timeout.connect(self.project_state.save)
 
         self._refresh_static_ui()
         self.refresh_sessions()
@@ -102,13 +109,27 @@ class MainWindow(QMainWindow):
 
     def create_chat(self) -> None:
         record = self.store.create_chat_session()
+        self.project_state.set_scope_collapsed(self._active_scope_id, False)
         self.refresh_sessions()
-        self.select_session(record.session_id)
+        self.select_session(self._active_scope_id, record.session_id)
 
-    def select_session(self, session_id: str) -> None:
+    def select_session(self, scope_id: str, session_id: str | None = None) -> None:
+        if session_id is None:
+            session_id = scope_id
+            scope_id = self._active_scope_id
+        if scope_id != self._active_scope_id:
+            self._switch_active_scope(scope_id)
         self._active_session_id = session_id
-        session = self.manager.load(session_id)
-        self.sidebar.select_session(session_id)
+        try:
+            session = self.manager.load(session_id)
+        except Exception:  # noqa: BLE001 - GUI boundary recovers from external file changes.
+            self._active_session_id = None
+            self.chat.clear()
+            self.chat.set_session_title("Select or create a chat session")
+            self.inspector.reset_context()
+            self.refresh_sessions()
+            return
+        self.sidebar.select_session(scope_id, session_id)
         self.chat.set_session_context(session_id, agent=self.config.agent_alias, model=self.config.model_name)
         self.chat.render_history(session.history)
         self.inspector.reset_context(session_id=session_id)
@@ -121,16 +142,32 @@ class MainWindow(QMainWindow):
             self.chat.set_running(False)
 
     def refresh_sessions(self) -> None:
-        records = []
-        for record in self.store.list_chat_sessions():
-            active_run = self._running_sessions.get(record.session_id)
-            if active_run is None:
-                records.append(record)
-            else:
-                records.append(replace(record, runtime_status=active_run.status))
-        self.sidebar.set_sessions(records)
-        if self._active_session_id is not None:
-            self.sidebar.select_session(self._active_session_id)
+        self.sidebar.set_session_groups(
+            self._build_session_groups(),
+            active_scope_id=self._active_scope_id,
+            active_session_id=self._active_session_id,
+        )
+
+    def _build_session_groups(self) -> list[SessionGroupRecord]:
+        groups: list[SessionGroupRecord] = []
+        collapsed_ids = set(self.project_state.collapsed_scope_ids or [])
+        for scope in self.scopes:
+            store = ChatSessionStore(SessionManager(self._config_for_scope(scope)))
+            records = []
+            for record in store.list_chat_sessions():
+                active_run = self._running_sessions.get(record.session_id)
+                if active_run is None:
+                    records.append(record)
+                else:
+                    records.append(replace(record, runtime_status=active_run.status))
+            groups.append(
+                SessionGroupRecord(
+                    scope=scope,
+                    records=records,
+                    collapsed=scope.scope_id in collapsed_ids,
+                )
+            )
+        return groups
 
     def select_scope(self, scope_id: str) -> None:
         if scope_id == self._active_scope_id:
@@ -139,17 +176,12 @@ class MainWindow(QMainWindow):
             self._show_warning("Runs in progress", "Wait for running sessions to finish before changing projects.")
             self._refresh_static_ui()
             return
-        self._active_scope_id = scope_id
-        self.current_scope = self._scope_by_id(scope_id)
-        self.config = self._config_for_scope(self.current_scope)
-        self.manager = SessionManager(self.config)
-        self.store = ChatSessionStore(self.manager)
+        self._switch_active_scope(scope_id)
         self._active_session_id = None
         self._turn_index = 1
         self.chat.clear()
         self.chat.set_session_title("Select or create a chat session")
         self.inspector.reset_context()
-        self._refresh_static_ui()
         self.refresh_sessions()
         self._select_initial_session()
 
@@ -170,12 +202,51 @@ class MainWindow(QMainWindow):
         self.scopes = build_session_scopes(self.project_state)
         self.select_scope(f"project:{resolved}")
 
+    def remove_project(self, scope_id: str, *, confirm: bool = True) -> None:
+        if not scope_id.startswith("project:"):
+            return
+        project_path = scope_id.removeprefix("project:")
+        project_scope = self._scope_by_id(scope_id)
+        if project_scope.workspace_root is None:
+            return
+        project_store = ChatSessionStore(SessionManager(self._config_for_scope(project_scope)))
+        project_session_ids = {record.session_id for record in project_store.list_chat_sessions()}
+        if project_session_ids & self._running_sessions.keys():
+            self._show_warning(
+                "Runs in progress",
+                "Wait for running sessions in this project to finish before removing it.",
+            )
+            return
+        if confirm and not self._confirm_remove_project(project_path):
+            return
+        was_active = self._active_scope_id == scope_id
+        self.project_state.forget_project(project_path)
+        self.scopes = build_session_scopes(self.project_state)
+        if was_active:
+            self._switch_active_scope(self._scope_after_project_removed())
+            self._active_session_id = None
+            self._turn_index = 1
+            self.chat.clear()
+            self.chat.set_session_title("Select or create a chat session")
+            self.inspector.reset_context()
+        self.refresh_sessions()
+        if was_active:
+            self._select_initial_session()
+
+    def _scope_after_project_removed(self) -> str:
+        if self.project_state.default_project_path:
+            return f"project:{Path(self.project_state.default_project_path).expanduser().resolve()}"
+        return "conversation"
+
     def _select_initial_session(self) -> None:
         records = self.store.list_chat_sessions()
         if records:
-            self.select_session(records[0].session_id)
+            self.select_session(self._active_scope_id, records[0].session_id)
 
-    def delete_session(self, session_id: str, *, confirm: bool = True) -> None:
+    def delete_session(self, scope_id: str, session_id: str | None = None, *, confirm: bool = True) -> None:
+        if session_id is None:
+            session_id = scope_id
+            scope_id = self._active_scope_id
         if session_id in self._running_sessions:
             self._show_warning(
                 "Session is running",
@@ -185,7 +256,8 @@ class MainWindow(QMainWindow):
         if confirm and not self._confirm_delete_session(session_id):
             return
         was_active = session_id == self._active_session_id
-        self.store.delete_chat_session(session_id)
+        store = ChatSessionStore(SessionManager(self._config_for_scope(self._scope_by_id(scope_id))))
+        store.delete_chat_session(session_id)
         if was_active:
             self._active_session_id = None
             self._turn_index = 1
@@ -269,7 +341,7 @@ class MainWindow(QMainWindow):
                 values.max_steps,
             )
         except Exception as exc:  # noqa: BLE001 - GUI boundary shows readable errors.
-            QMessageBox.critical(self, "Settings error", str(exc))
+            self._show_critical("Settings error", str(exc))
             return
         self.manager = SessionManager(self.config)
         self.store = ChatSessionStore(self.manager)
@@ -313,14 +385,28 @@ class MainWindow(QMainWindow):
             self._max_steps_override,
         )
 
+    def _switch_active_scope(self, scope_id: str) -> None:
+        self._active_scope_id = scope_id
+        self.current_scope = self._scope_by_id(scope_id)
+        self.config = self._config_for_scope(self.current_scope)
+        self.manager = SessionManager(self.config)
+        self.store = ChatSessionStore(self.manager)
+        self._refresh_static_ui()
+
+    def _remember_group_order(self, scope_ids: list[str]) -> None:
+        self.project_state.remember_scope_order(scope_ids, persist=False)
+        self.scopes = build_session_scopes(self.project_state)
+        self.sidebar.apply_group_order(scope_ids)
+        self._schedule_project_state_save()
+
+    def _remember_group_collapsed(self, scope_id: str, collapsed: bool) -> None:
+        self.project_state.set_scope_collapsed(scope_id, collapsed, persist=False)
+        self._schedule_project_state_save()
+
+    def _schedule_project_state_save(self) -> None:
+        self._project_state_save_timer.start()
+
     def _refresh_static_ui(self) -> None:
-        self.sidebar.set_scopes(
-            [
-                {"scope_id": scope.scope_id, "label": scope.label, "tooltip": scope.tooltip}
-                for scope in self.scopes
-            ],
-            active_scope_id=self._active_scope_id,
-        )
         workspace_label = "对话" if self.current_scope.workspace_root is None else _short_path(self.config.workspace_root)
         self.sidebar.set_workspace(workspace_label)
         self.sidebar.set_agent_status(self.config.agent_alias, self.config.model_name)
@@ -464,19 +550,25 @@ class MainWindow(QMainWindow):
         return bool(self._running_sessions)
 
     def _show_warning(self, title: str, message: str) -> None:
-        QMessageBox.warning(self, title, message)
+        dialog = self._build_debug_message_box("warning", title, message, buttons=("ok",), default="ok")
+        dialog.exec()
+
+    def _show_critical(self, title: str, message: str) -> None:
+        dialog = self._build_debug_message_box("critical", title, message, buttons=("ok",), default="ok")
+        dialog.exec()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override.
         if not self._has_running_sessions():
             super().closeEvent(event)
             return
-        result = QMessageBox.question(
-            self,
+        result = self._build_debug_message_box(
+            "question",
             "Runs in progress",
             "There are running chat sessions. Closing now will stop them. Keep Lora open?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
+            buttons=("yes", "no"),
+            default="yes",
         )
+        result = result.exec()
         if result == QMessageBox.Yes:
             event.ignore()
             return
@@ -494,14 +586,82 @@ class MainWindow(QMainWindow):
         self.inspector.load_trace_events_from_run_dir(run_ref.run_dir)
 
     def _confirm_delete_session(self, session_id: str) -> bool:
-        result = QMessageBox.question(
-            self,
+        dialog = self._build_debug_message_box(
+            "question",
             "Delete session",
             f"Delete session {session_id}?\n\nThis removes the saved chat and local run artifacts.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            buttons=("yes", "no"),
+            default="no",
         )
+        result = dialog.exec()
         return result == QMessageBox.Yes
+
+    def _confirm_remove_project(self, project_path: str) -> bool:
+        label = Path(project_path).name or project_path
+        dialog = self._build_debug_message_box(
+            "question",
+            "Remove project",
+            f"Remove {label} from the sidebar?\n\nProject files are kept on disk. Choose the folder again to add it back.",
+            buttons=("yes", "no"),
+            default="no",
+        )
+        result = dialog.exec()
+        return result == QMessageBox.Yes
+
+    def _build_debug_message_box(
+        self,
+        kind: Literal["warning", "critical", "question"],
+        title: str,
+        message: str,
+        *,
+        buttons: tuple[str, ...],
+        default: str,
+    ) -> QMessageBox:
+        icon_map = {
+            "warning": QMessageBox.Warning,
+            "critical": QMessageBox.Critical,
+            "question": QMessageBox.Question,
+        }
+        button_map = {
+            "ok": QMessageBox.Ok,
+            "yes": QMessageBox.Yes,
+            "no": QMessageBox.No,
+            "cancel": QMessageBox.Cancel,
+        }
+        prefix_map = {
+            "warning": "WarningDialog",
+            "critical": "CriticalDialog",
+            "question": "QuestionDialog",
+        }
+        dialog = QMessageBox(self)
+        dialog.setIcon(icon_map[kind])
+        dialog.setWindowTitle(title)
+        dialog.setText(message)
+        dialog.setObjectName(prefix_map[kind])
+        standard_buttons = QMessageBox.StandardButton.NoButton
+        for button in buttons:
+            standard_buttons |= button_map[button]
+        dialog.setStandardButtons(standard_buttons)
+        dialog.setDefaultButton(button_map[default])
+        self._apply_message_box_debug_names(dialog, prefix_map[kind], buttons)
+        return dialog
+
+    def _apply_message_box_debug_names(self, dialog: QMessageBox, prefix: str, buttons: tuple[str, ...]) -> None:
+        for label in dialog.findChildren(QLabel):
+            if label.text() == dialog.text():
+                label.setObjectName(f"{prefix}Text")
+            elif label.text() == dialog.informativeText():
+                label.setObjectName(f"{prefix}InformativeText")
+        button_map = {
+            "ok": QMessageBox.Ok,
+            "yes": QMessageBox.Yes,
+            "no": QMessageBox.No,
+            "cancel": QMessageBox.Cancel,
+        }
+        for button in buttons:
+            widget = dialog.button(button_map[button])
+            if widget is not None:
+                widget.setObjectName(f"{prefix}{button.capitalize()}Button")
 
 
 def _short_path(path: str) -> str:

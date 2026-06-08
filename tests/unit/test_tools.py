@@ -129,6 +129,49 @@ class ToolTests(unittest.TestCase):
             tool_result = next(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))
             self.assertEqual(tool_result["result"]["full_output_path"], str(output_path))
 
+    def test_tool_interceptor_spools_large_grep_result_to_run_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(EventStore(run))
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            output = "\n".join(f"path/file.py:{index}|{'x' * 500}" for index in range(170))
+
+            result = interceptor.call_tool(
+                "grep",
+                {"pattern": "DEFAULT_PYGENT_TOOL_NAMES", "output_mode": "content"},
+                ctx,
+                lambda pattern, output_mode: output,
+            )
+
+            self.assertEqual(result.status, "success")
+            self.assertIsInstance(result.result, dict)
+            payload = result.result
+            self.assertTrue(payload["truncated"])
+            self.assertEqual(payload["line_count"], 170)
+            self.assertEqual(payload["reason"], "grep output exceeded the model-visible result limit")
+            self.assertNotIn("path/file.py:169", payload["preview"])
+            output_path = Path(payload["full_output_path"])
+            self.assertTrue(output_path.exists())
+            self.assertEqual(output_path.read_text(encoding="utf-8"), output)
+
+    def test_tool_interceptor_keeps_small_grep_result_inline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(EventStore(run))
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            output = "src/lora/agent.py:32|DEFAULT_PYGENT_TOOL_NAMES = (\"bash\", \"read\")"
+
+            result = interceptor.call_tool(
+                "grep",
+                {"pattern": "DEFAULT_PYGENT_TOOL_NAMES"},
+                ctx,
+                lambda pattern: output,
+            )
+
+            self.assertEqual(result.status, "success")
+            self.assertEqual(result.result, output)
+            self.assertFalse((Path(run.run_dir) / "tool_outputs").exists())
+
     def test_tool_interceptor_does_not_spool_allowlisted_large_bash_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")

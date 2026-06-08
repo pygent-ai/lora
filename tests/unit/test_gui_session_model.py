@@ -7,7 +7,13 @@ from pathlib import Path
 from lora.config import load_run_config
 from lora.session import SessionManager
 
-from gui.session_model import ChatSessionRecord, ChatSessionStore, GuiProjectState, build_session_scopes
+from gui.session_model import (
+    ChatSessionRecord,
+    ChatSessionStore,
+    GuiProjectState,
+    SessionGroupRecord,
+    build_session_scopes,
+)
 
 
 class GuiSessionModelTests(unittest.TestCase):
@@ -34,11 +40,11 @@ class GuiSessionModelTests(unittest.TestCase):
 
             scopes = build_session_scopes(state)
 
-            self.assertEqual([scope.scope_id for scope in scopes], ["conversation", f"project:{project.resolve()}"])
-            self.assertEqual(scopes[0].label, "对话")
-            self.assertIsNone(scopes[0].workspace_root)
-            self.assertEqual(scopes[1].label, "repo")
-            self.assertEqual(scopes[1].workspace_root, str(project.resolve()))
+            self.assertEqual([scope.scope_id for scope in scopes], [f"project:{project.resolve()}", "conversation"])
+            self.assertEqual(scopes[0].label, "repo")
+            self.assertIsNone(scopes[1].workspace_root)
+            self.assertEqual(scopes[1].label, "对话")
+            self.assertEqual(scopes[0].workspace_root, str(project.resolve()))
 
     def test_chat_sessions_are_isolated_by_scope_lora_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -46,7 +52,8 @@ class GuiSessionModelTests(unittest.TestCase):
             project = Path(tmp) / "repo"
             state = GuiProjectState.load(state_path)
             state.remember_project(project)
-            conversation_scope, project_scope = build_session_scopes(state)
+            conversation_scope = next(scope for scope in build_session_scopes(state) if scope.scope_id == "conversation")
+            project_scope = next(scope for scope in build_session_scopes(state) if scope.scope_id.startswith("project:"))
 
             conversation_config = conversation_scope.to_run_config()
             project_config = project_scope.to_run_config()
@@ -95,6 +102,87 @@ class GuiSessionModelTests(unittest.TestCase):
             self.assertTrue(deleted)
             self.assertFalse(Path(record.session_dir).exists())
             self.assertFalse(mirror.exists())
+
+    def test_project_state_saves_scope_order_and_collapsed_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = str((Path(tmp) / "repo").resolve())
+            state = GuiProjectState.load(state_path)
+
+            state.remember_scope_order([f"project:{project}", "conversation"])
+            state.set_scope_collapsed("conversation", True)
+            state.set_scope_collapsed(f"project:{project}", False)
+            restored = GuiProjectState.load(state_path)
+
+            self.assertEqual(restored.scope_order, [f"project:{project}", "conversation"])
+            self.assertEqual(restored.collapsed_scope_ids, ["conversation"])
+
+    def test_build_session_scopes_applies_persisted_scope_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            first = Path(tmp) / "first"
+            second = Path(tmp) / "second"
+            state = GuiProjectState.load(state_path)
+            state.remember_project(first)
+            state.remember_project(second)
+            state.remember_scope_order([f"project:{first.resolve()}", "conversation"])
+
+            scopes = build_session_scopes(state)
+
+            self.assertEqual(
+                [scope.scope_id for scope in scopes],
+                [f"project:{first.resolve()}", "conversation", f"project:{second.resolve()}"],
+            )
+
+    def test_build_session_scopes_ignores_stale_scope_order_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = Path(tmp) / "repo"
+            state = GuiProjectState.load(state_path)
+            state.remember_project(project)
+            state.remember_scope_order(["project:E:/missing", "conversation"])
+
+            scopes = build_session_scopes(state)
+
+            self.assertEqual([scope.scope_id for scope in scopes], ["conversation", f"project:{project.resolve()}"])
+
+    def test_session_group_record_carries_scope_records_and_collapsed_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = GuiProjectState.load(Path(tmp) / "state.json")
+            scope = build_session_scopes(state)[0]
+            record = ChatSessionRecord(
+                session_id="chat-one",
+                session_dir="sessions/chat-one",
+                case_id="chat",
+                mode="chat",
+                created_at="1",
+                updated_at="2",
+                title="Chat one",
+            )
+
+            group = SessionGroupRecord(scope=scope, records=[record], collapsed=True)
+
+            self.assertEqual(group.scope.scope_id, "conversation")
+            self.assertEqual(group.records, [record])
+            self.assertTrue(group.collapsed)
+
+    def test_forget_project_removes_from_recent_scope_order_and_collapsed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            first = Path(tmp) / "first"
+            second = Path(tmp) / "second"
+            state = GuiProjectState.load(state_path)
+            state.remember_project(first)
+            state.remember_project(second)
+            state.remember_scope_order([f"project:{first.resolve()}", "conversation"])
+            state.set_scope_collapsed(f"project:{first.resolve()}", True)
+
+            state.forget_project(first)
+
+            self.assertEqual(state.recent_project_paths, [str(second.resolve())])
+            self.assertEqual(state.default_project_path, str(second.resolve()))
+            self.assertEqual(state.scope_order, ["conversation"])
+            self.assertEqual(state.collapsed_scope_ids, [])
 
 
 if __name__ == "__main__":

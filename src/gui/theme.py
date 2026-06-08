@@ -351,13 +351,57 @@ QTabBar::tab:selected {{
 QTabBar::tab:hover {{
     background: {list_hover};
 }}
-#SessionList, #TraceInspector QListWidget, #TraceInspector QTreeWidget, #ChatScroll {{
+#SessionList, #SessionTree, #TraceInspector QListWidget, #TraceInspector QTreeWidget, #ChatScroll {{
     border: 0;
     outline: none;
+    background: transparent;
 }}
-#SessionList::item {{
+#SessionList::item, #SessionTree::item {{
     padding: 0;
     margin: 0;
+    border: 0;
+}}
+#SessionTree > QWidget > QWidget {{
+    background: transparent;
+}}
+#SessionGroupHeader {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+}}
+#SessionGroupHeader[active="true"] {{
+    background: {pill_fill};
+    border-color: {c.border};
+}}
+#SessionGroupHeader:hover {{
+    background: {list_hover};
+    border-color: {c.border_strong};
+}}
+#SessionGroupArrow {{
+    color: {c.text_soft};
+    font-size: {t.meta_size + 1}px;
+    font-weight: 700;
+}}
+#SessionGroupTitle {{
+    color: {c.text_muted};
+    font-size: {t.body_size}px;
+    font-weight: 700;
+}}
+#SessionGroupCount {{
+    color: {c.text_soft};
+    font-size: {t.meta_size}px;
+    font-weight: 600;
+}}
+#SessionGroupDeleteButton {{
+    background: transparent;
+    border: 0;
+    padding: 0;
+    min-width: 22px;
+    max-width: 22px;
+}}
+#SessionGroupDeleteButton:hover {{
+    background: {list_hover};
+    border-radius: 6px;
 }}
 #SessionRow {{
     background: transparent;
@@ -477,32 +521,34 @@ QTabBar::tab:hover {{
     background: transparent;
     border: 0;
 }}
-#ChatHeadingBlock, #ChatParagraphText, #ChatQuoteBlock QLabel, #ChatListItem QLabel {{
-    color: {c.text};
-    font-size: {t.message_size}px;
+#ChatHeadingBlock, #ChatParagraphText, #ChatQuoteBlock QLabel, #ChatListItem QLabel, #ChatTableCell {{
+    color: {c.text_muted};
+    font-size: {t.body_size}px;
+    line-height: 1.48;
 }}
 #ChatHeadingBlock {{
-    color: {c.text};
-    font-size: {t.message_size + 7}px;
-    font-weight: 700;
-    padding: 2px 0 4px 0;
+    color: {c.text_muted};
+    font-size: {t.body_size}px;
+    font-weight: 600;
+    padding: 1px 0 1px 0;
 }}
 #ChatParagraphText {{
-    color: {c.text};
-    font-size: {t.message_size}px;
+    color: {c.text_muted};
+    font-size: {t.body_size}px;
 }}
 #ChatInlineCodeSpan {{
-    color: {"#1e5f9e" if palette.name == "day" else "#d7ebff"};
-    background: {"#e8f2ff" if palette.name == "day" else "#24364a"};
-    border: 1px solid {"#cfe0f5" if palette.name == "day" else "#34506c"};
-    border-radius: {r.chip}px;
+    color: {c.text_muted};
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 5px;
     font-family: "Consolas", "Courier New", monospace;
-    padding: 2px 6px;
+    padding: 1px 5px;
 }}
 #ChatQuoteBlock {{
-    background: {"rgba(233,239,248,0.82)" if palette.name == "day" else "rgba(40,49,61,0.92)"};
-    border: 1px solid {"#dce4ef" if palette.name == "day" else "#364454"};
-    border-radius: {r.card + 2}px;
+    background: transparent;
+    border: 1px solid {c.border};
+    border-left: 3px solid {c.border_strong};
+    border-radius: 9px;
 }}
 #ChatListBlock {{
     background: transparent;
@@ -512,22 +558,69 @@ QTabBar::tab:hover {{
     background: transparent;
     border: 0;
 }}
+#ChatListMarker {{
+    background: {c.text_soft};
+    border: 0;
+    border-radius: 3px;
+    min-width: 6px;
+    max-width: 6px;
+    min-height: 6px;
+    max-height: 6px;
+    margin-top: 7px;
+}}
+#ChatListMarker[ordered="true"] {{
+    background: transparent;
+    border-radius: 0;
+    color: {c.text_soft};
+    min-width: 18px;
+    max-width: 18px;
+    min-height: 14px;
+    max-height: 14px;
+    margin-top: 0;
+}}
+#ChatHorizontalRuleBlock {{
+    background: transparent;
+    border: 0;
+}}
+#ChatHorizontalRuleLine {{
+    background: {c.border_strong};
+    border: 0;
+}}
+#ChatTableBlock {{
+    background: transparent;
+    border: 1px solid {c.border};
+    border-radius: 9px;
+}}
+#ChatTableHeaderRow, #ChatTableDataRow {{
+    background: transparent;
+}}
+#ChatTableCell {{
+    background: transparent;
+    border: 0;
+    padding: 7px 9px;
+    color: {c.text_muted};
+}}
+#ChatTableCell[header="true"] {{
+    font-weight: 600;
+    background: {selected_fill};
+    color: {c.text_muted};
+}}
 #ChatCodeBlock {{
-    background: {"#1c2430" if palette.name == "day" else "#11161d"};
-    border: 1px solid {"#243244" if palette.name == "day" else "#2b3b4d"};
-    border-radius: {r.pane - 2}px;
+    background: transparent;
+    border: 1px solid {c.border};
+    border-radius: 9px;
 }}
 #ChatCodeBlockLanguage {{
-    color: {"#9fc3ea" if palette.name == "day" else "#a9cfff"};
+    color: {c.text_soft};
     font-family: "Consolas", "Courier New", monospace;
     font-size: {t.meta_size}px;
-    font-weight: 700;
+    font-weight: 600;
     padding: 0 0 2px 0;
 }}
 #ChatCodeBlockText {{
-    color: {"#eaf2ff" if palette.name == "day" else "#edf4ff"};
+    color: {c.text_muted};
     font-family: "Consolas", "Courier New", monospace;
-    font-size: {t.message_size - 1}px;
+    font-size: {t.body_size}px;
 }}
 #Composer {{
     background: {c.surface};

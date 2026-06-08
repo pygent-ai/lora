@@ -19,12 +19,14 @@ class GuiProjectState:
     state_path: Path
     default_project_path: str | None = None
     recent_project_paths: list[str] | None = None
+    scope_order: list[str] | None = None
+    collapsed_scope_ids: list[str] | None = None
 
     @classmethod
     def load(cls, state_path: str | Path | None = None) -> "GuiProjectState":
         path = Path(state_path or GUI_STATE_PATH).expanduser().resolve()
         if not path.exists():
-            return cls(state_path=path, recent_project_paths=[])
+            return cls(state_path=path, recent_project_paths=[], scope_order=[], collapsed_scope_ids=[])
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -32,7 +34,17 @@ class GuiProjectState:
         recent = [str(Path(item).expanduser().resolve()) for item in data.get("recent_project_paths") or [] if str(item).strip()]
         default = data.get("default_project_path")
         resolved_default = str(Path(default).expanduser().resolve()) if isinstance(default, str) and default.strip() else None
-        return cls(state_path=path, default_project_path=resolved_default, recent_project_paths=recent)
+        scope_order = [_normalize_scope_id(str(item)) for item in data.get("scope_order") or []]
+        collapsed = [_normalize_scope_id(str(item)) for item in data.get("collapsed_scope_ids") or []]
+        scope_order = [item for item in scope_order if item]
+        collapsed = [item for item in collapsed if item]
+        return cls(
+            state_path=path,
+            default_project_path=resolved_default,
+            recent_project_paths=recent,
+            scope_order=_unique(scope_order),
+            collapsed_scope_ids=_unique(collapsed),
+        )
 
     @property
     def state_dir(self) -> Path:
@@ -49,6 +61,46 @@ class GuiProjectState:
         self.recent_project_paths = recent[:12]
         self.save()
 
+    def remember_scope_order(self, scope_ids: list[str], *, persist: bool = True) -> None:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for scope_id in scope_ids:
+            normalized = _normalize_scope_id(scope_id)
+            if normalized and normalized not in seen:
+                ordered.append(normalized)
+                seen.add(normalized)
+        self.scope_order = ordered
+        if persist:
+            self.save()
+
+    def set_scope_collapsed(self, scope_id: str, collapsed: bool, *, persist: bool = True) -> None:
+        normalized = _normalize_scope_id(scope_id)
+        if not normalized:
+            return
+        collapsed_ids = [item for item in self.collapsed_scope_ids or [] if item != normalized]
+        if collapsed:
+            collapsed_ids.append(normalized)
+        self.collapsed_scope_ids = collapsed_ids
+        if persist:
+            self.save()
+
+    def forget_project(self, project_path: str | Path) -> None:
+        resolved = str(Path(project_path).expanduser().resolve())
+        scope_id = f"project:{resolved}"
+        recent = [
+            item
+            for item in self.recent_project_paths or []
+            if str(Path(item).expanduser().resolve()) != resolved
+        ]
+        self.recent_project_paths = recent
+        if self.default_project_path and str(Path(self.default_project_path).expanduser().resolve()) == resolved:
+            self.default_project_path = recent[0] if recent else None
+        self.scope_order = [item for item in self.scope_order or [] if _normalize_scope_id(item) != scope_id]
+        self.collapsed_scope_ids = [
+            item for item in self.collapsed_scope_ids or [] if _normalize_scope_id(item) != scope_id
+        ]
+        self.save()
+
     def save(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(
@@ -56,6 +108,8 @@ class GuiProjectState:
                 {
                     "default_project_path": self.default_project_path,
                     "recent_project_paths": self.recent_project_paths or [],
+                    "scope_order": self.scope_order or [],
+                    "collapsed_scope_ids": self.collapsed_scope_ids or [],
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -77,6 +131,25 @@ class SessionScope:
 
     def to_run_config(self) -> RunConfig:
         return RunConfig(workspace_root=self.runtime_workspace_root, lora_root=self.lora_root)
+
+
+@dataclass(frozen=True, slots=True)
+class ChatSessionRecord:
+    session_id: str
+    session_dir: str
+    case_id: str
+    mode: str
+    created_at: str
+    updated_at: str
+    title: str
+    runtime_status: str = "ready"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionGroupRecord:
+    scope: SessionScope
+    records: list[ChatSessionRecord]
+    collapsed: bool = False
 
 
 def build_session_scopes(state: GuiProjectState) -> list[SessionScope]:
@@ -103,19 +176,19 @@ def build_session_scopes(state: GuiProjectState) -> list[SessionScope]:
                 lora_root=str((project / ".lora").resolve()),
             )
         )
-    return scopes
-
-
-@dataclass(frozen=True, slots=True)
-class ChatSessionRecord:
-    session_id: str
-    session_dir: str
-    case_id: str
-    mode: str
-    created_at: str
-    updated_at: str
-    title: str
-    runtime_status: str = "ready"
+    scope_by_id = {scope.scope_id: scope for scope in scopes}
+    order_source = state.scope_order or _default_scope_order(scopes, state)
+    ordered: list[SessionScope] = []
+    for scope_id in order_source:
+        normalized = _normalize_scope_id(scope_id)
+        scope = scope_by_id.get(normalized)
+        if scope is not None:
+            ordered.append(scope)
+    ordered_ids = {scope.scope_id for scope in ordered}
+    for scope_id in _default_scope_order(scopes, state):
+        if scope_id not in ordered_ids:
+            ordered.append(scope_by_id[scope_id])
+    return ordered
 
 
 class ChatSessionStore:
@@ -150,6 +223,45 @@ class ChatSessionStore:
                 shutil.rmtree(session_dir)
                 deleted = True
         return deleted
+
+
+def _normalize_scope_id(scope_id: str) -> str:
+    value = str(scope_id).strip()
+    if not value:
+        return ""
+    if value == "conversation":
+        return value
+    if value.startswith("project:"):
+        project = value.removeprefix("project:")
+        if not project.strip():
+            return ""
+        return f"project:{Path(project).expanduser().resolve()}"
+    return ""
+
+
+def _unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _default_scope_order(scopes: list[SessionScope], state: GuiProjectState) -> list[str]:
+    scope_ids = [scope.scope_id for scope in scopes]
+    ordered: list[str] = []
+    if state.default_project_path:
+        default_id = f"project:{Path(state.default_project_path).expanduser().resolve()}"
+        if default_id in scope_ids:
+            ordered.append(default_id)
+    if "conversation" in scope_ids and "conversation" not in ordered:
+        ordered.append("conversation")
+    for scope_id in scope_ids:
+        if scope_id not in ordered:
+            ordered.append(scope_id)
+    return ordered
 
 
 def _record_from_metadata(session_dir: Path, metadata: dict[str, object]) -> ChatSessionRecord:

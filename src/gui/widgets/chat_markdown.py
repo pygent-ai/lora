@@ -9,6 +9,8 @@ __all__ = [
     "ParagraphBlockData",
     "QuoteBlockData",
     "ListBlockData",
+    "TableBlockData",
+    "HorizontalRuleBlockData",
     "CodeBlockData",
     "BlockData",
     "parse_markdown_blocks",
@@ -19,6 +21,7 @@ __all__ = [
 class InlineSpan:
     kind: str
     text: str
+    href: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +33,7 @@ class BlockData:
 class HeadingBlockData(BlockData):
     level: int
     text: str
+    spans: list[InlineSpan]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +54,17 @@ class ListBlockData(BlockData):
 
 
 @dataclass(frozen=True, slots=True)
+class TableBlockData(BlockData):
+    headers: list[str]
+    rows: list[list[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class HorizontalRuleBlockData(BlockData):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class CodeBlockData(BlockData):
     language: str | None
     code: str
@@ -57,9 +72,10 @@ class CodeBlockData(BlockData):
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
-_UNORDERED_LIST_RE = re.compile(r"^[-*+]\s+(.*)$")
-_ORDERED_LIST_RE = re.compile(r"^\d+\.\s+(.*)$")
+_UNORDERED_LIST_RE = re.compile(r"^\s{0,3}[-*+]\s+(.*)$")
+_ORDERED_LIST_RE = re.compile(r"^\s{0,3}\d+\.\s+(.*)$")
 _OPEN_FENCE_RE = re.compile(r"^```(?:[ \t]*(.*?))?[ \t]*$")
+_HORIZONTAL_RULE_RE = re.compile(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$")
 
 
 def parse_markdown_blocks(text: str) -> list[BlockData]:
@@ -70,6 +86,11 @@ def parse_markdown_blocks(text: str) -> list[BlockData]:
     while index < len(lines):
         line = lines[index]
         if not line.strip():
+            index += 1
+            continue
+
+        if _is_horizontal_rule(line):
+            blocks.append(HorizontalRuleBlockData())
             index += 1
             continue
 
@@ -97,6 +118,12 @@ def parse_markdown_blocks(text: str) -> list[BlockData]:
             index = next_index
             continue
 
+        table_block, next_index = _parse_table_block(lines, index)
+        if table_block is not None:
+            blocks.append(table_block)
+            index = next_index
+            continue
+
         paragraph_block, next_index = _parse_paragraph_block(lines, index)
         blocks.append(paragraph_block)
         index = next_index
@@ -110,7 +137,7 @@ def _parse_heading(line: str) -> HeadingBlockData | None:
         return None
     level = len(match.group(1))
     text = match.group(2).strip()
-    return HeadingBlockData(level=level, text=text)
+    return HeadingBlockData(level=level, text=text, spans=_parse_inline_spans(text))
 
 
 def _parse_fenced_code_block(lines: list[str], start_index: int) -> tuple[CodeBlockData | None, int]:
@@ -178,6 +205,28 @@ def _parse_list_item(line: str) -> tuple[bool, str] | None:
     return None
 
 
+def _parse_table_block(lines: list[str], start_index: int) -> tuple[TableBlockData | None, int]:
+    if start_index + 1 >= len(lines):
+        return None, start_index
+    header_cells = _parse_table_cells(lines[start_index])
+    if header_cells is None:
+        return None, start_index
+    if not _is_table_separator_row(lines[start_index + 1], expected_columns=len(header_cells)):
+        return None, start_index
+
+    rows: list[list[str]] = []
+    index = start_index + 2
+    while index < len(lines):
+        current_cells = _parse_table_cells(lines[index])
+        if current_cells is None:
+            break
+        if len(current_cells) != len(header_cells):
+            break
+        rows.append(current_cells)
+        index += 1
+    return TableBlockData(headers=header_cells, rows=rows), index
+
+
 def _parse_paragraph_block(lines: list[str], start_index: int) -> tuple[ParagraphBlockData, int]:
     paragraph_lines: list[str] = []
     index = start_index
@@ -196,9 +245,11 @@ def _parse_paragraph_block(lines: list[str], start_index: int) -> tuple[Paragrap
 def _starts_new_block(line: str) -> bool:
     return (
         _parse_heading(line) is not None
+        or _is_horizontal_rule(line)
         or _parse_opening_fence(line) is not None
         or line.lstrip().startswith(">")
         or _parse_list_item(line) is not None
+        or _parse_table_cells(line) is not None
     )
 
 
@@ -207,24 +258,77 @@ def _parse_inline_spans(text: str) -> list[InlineSpan]:
     buffer: list[str] = []
     index = 0
     while index < len(text):
-        char = text[index]
-        if char != "`":
-            buffer.append(char)
-            index += 1
-            continue
-        closing = text.find("`", index + 1)
-        if closing == -1:
-            buffer.append(char)
-            index += 1
-            continue
-        if buffer:
-            spans.append(InlineSpan(kind="text", text="".join(buffer)))
-            buffer.clear()
-        spans.append(InlineSpan(kind="code", text=text[index + 1 : closing]))
-        index = closing + 1
+        if text[index] == "`":
+            closing = text.find("`", index + 1)
+            if closing != -1:
+                _flush_text_span(buffer, spans)
+                spans.append(InlineSpan(kind="code", text=text[index + 1 : closing]))
+                index = closing + 1
+                continue
+        if text.startswith("**", index):
+            closing = text.find("**", index + 2)
+            if closing != -1:
+                _flush_text_span(buffer, spans)
+                spans.append(InlineSpan(kind="strong", text=text[index + 2 : closing]))
+                index = closing + 2
+                continue
+        if text[index] == "*":
+            closing = text.find("*", index + 1)
+            if closing != -1:
+                _flush_text_span(buffer, spans)
+                spans.append(InlineSpan(kind="emphasis", text=text[index + 1 : closing]))
+                index = closing + 1
+                continue
+        if text[index] == "[":
+            label_end = text.find("]", index + 1)
+            if label_end != -1 and label_end + 1 < len(text) and text[label_end + 1] == "(":
+                href_end = text.find(")", label_end + 2)
+                if href_end != -1:
+                    _flush_text_span(buffer, spans)
+                    spans.append(
+                        InlineSpan(
+                            kind="link",
+                            text=text[index + 1 : label_end],
+                            href=text[label_end + 2 : href_end],
+                        )
+                    )
+                    index = href_end + 1
+                    continue
+        buffer.append(text[index])
+        index += 1
     if buffer or not spans:
         spans.append(InlineSpan(kind="text", text="".join(buffer)))
     return spans
+
+
+def _flush_text_span(buffer: list[str], spans: list[InlineSpan]) -> None:
+    if not buffer:
+        return
+    spans.append(InlineSpan(kind="text", text="".join(buffer)))
+    buffer.clear()
+
+
+def _parse_table_cells(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if stripped.count("|") < 2:
+        return None
+    inner = stripped[1:-1] if stripped.startswith("|") and stripped.endswith("|") else stripped
+    if "|" not in inner:
+        return None
+    return [cell.strip() for cell in inner.split("|")]
+
+
+def _is_table_separator_row(line: str, *, expected_columns: int) -> bool:
+    cells = _parse_table_cells(line)
+    if cells is None or len(cells) != expected_columns:
+        return False
+    for cell in cells:
+        normalized = cell.replace(":", "").replace("-", "")
+        if normalized.strip():
+            return False
+        if "-" not in cell:
+            return False
+    return True
 
 
 def _parse_opening_fence(line: str) -> str | None:
@@ -237,3 +341,7 @@ def _parse_opening_fence(line: str) -> str | None:
 
 def _is_closing_fence(line: str) -> bool:
     return line.strip() == "```"
+
+
+def _is_horizontal_rule(line: str) -> bool:
+    return _HORIZONTAL_RULE_RE.match(line) is not None

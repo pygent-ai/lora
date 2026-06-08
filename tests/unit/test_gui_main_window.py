@@ -8,10 +8,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QWidget
 
 from gui.main_window import MainWindow
+from gui.session_model import ChatSessionStore
 from gui.workers import InspectorEvent
+from lora.session import SessionManager
 from lora.trace import EventStore
 
 
@@ -109,8 +111,9 @@ class GuiMainWindowTests(unittest.TestCase):
                 if label.objectName() == "ToolStatusTitle"
             ]
             self.assertEqual(bubble_texts, ["live prompt"])
-            self.assertEqual(_visible_chat_flow(window.chat), ["live prompt", "live answer", "Read files"])
-            self.assertEqual(status_texts, ["Read files"])
+            self.assertEqual(_visible_chat_flow(window.chat), ["live prompt", "Activity"])
+            self.assertEqual(_activity_detail_flow(window.chat), ["live answer", "Read files"])
+            self.assertEqual(status_texts, ["Activity", "Read files"])
             self.assertFalse(window.chat.input.isEnabled())
 
     def test_different_sessions_can_start_independent_runs(self) -> None:
@@ -229,7 +232,8 @@ class GuiMainWindowTests(unittest.TestCase):
             window = MainWindow(workspace_root=None, state_path=state_path)
 
             self.assertEqual(window._active_scope_id, "conversation")
-            self.assertEqual(window.sidebar.scope_tabs.tabText(0), "对话")
+            first_header = window.sidebar._group_sections[0].header
+            self.assertEqual(first_header.findChild(QLabel, "SessionGroupTitle").text(), "对话")
             self.assertIsNone(window.current_scope.workspace_root)
 
     def test_set_project_path_remembers_default_and_switches_scope(self) -> None:
@@ -245,7 +249,10 @@ class GuiMainWindowTests(unittest.TestCase):
             self.assertEqual(restored["default_project_path"], str(project.resolve()))
             self.assertEqual(window._active_scope_id, f"project:{project.resolve()}")
             self.assertEqual(window.config.workspace_root, str(project.resolve()))
-            self.assertEqual(window.sidebar.scope_tabs.tabText(1), "repo")
+            labels = []
+            for section in window.sidebar._group_sections:
+                labels.append(section.header.findChild(QLabel, "SessionGroupTitle").text())
+            self.assertIn("repo", labels)
 
     def test_main_layout_uses_tighter_three_pane_spacing_and_margins(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,6 +264,135 @@ class GuiMainWindowTests(unittest.TestCase):
             self.assertEqual(layout.spacing(), 14)
             self.assertEqual((margins.left(), margins.top(), margins.right(), margins.bottom()), (16, 16, 16, 16))
 
+    def test_debug_message_box_exposes_named_buttons_for_hit_testing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            window = MainWindow(workspace_root=tmp)
+
+            dialog = window._build_debug_message_box(
+                "warning",
+                "Runs in progress",
+                "Wait for running sessions to finish before changing projects.",
+                buttons=("ok",),
+                default="ok",
+            )
+
+            self.assertEqual(dialog.objectName(), "WarningDialog")
+            self.assertEqual(dialog.text(), "Wait for running sessions to finish before changing projects.")
+            self.assertEqual(dialog.informativeText(), "")
+            self.assertEqual(dialog.button(QMessageBox.Ok).objectName(), "WarningDialogOkButton")
+
+    def test_question_message_box_uses_named_yes_no_buttons_for_hit_testing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            window = MainWindow(workspace_root=tmp)
+
+            dialog = window._build_debug_message_box(
+                "question",
+                "Delete session",
+                "Delete session chat-123?\n\nThis removes the saved chat and local run artifacts.",
+                buttons=("yes", "no"),
+                default="no",
+            )
+
+            self.assertEqual(dialog.objectName(), "QuestionDialog")
+            self.assertEqual(dialog.button(QMessageBox.Yes).objectName(), "QuestionDialogYesButton")
+            self.assertEqual(dialog.button(QMessageBox.No).objectName(), "QuestionDialogNoButton")
+
+    def test_sidebar_initial_render_includes_conversation_and_project_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = Path(tmp) / "repo"
+            project.mkdir()
+            state = json.loads("{}")
+            state["default_project_path"] = str(project.resolve())
+            state["recent_project_paths"] = [str(project.resolve())]
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            window = MainWindow(workspace_root=None, state_path=state_path)
+
+            labels: list[str] = []
+            for section in window.sidebar._group_sections:
+                labels.append(section.header.findChild(QLabel, "SessionGroupTitle").text())
+            self.assertEqual(labels, ["repo", "对话"])
+
+    def test_select_project_session_switches_active_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = Path(tmp) / "repo"
+            project.mkdir()
+            window = MainWindow(workspace_root=None, state_path=state_path)
+            window.set_project_path(str(project))
+            project_session = window.store.create_chat_session().session_id
+            window.select_scope("conversation")
+
+            window.select_session(f"project:{project.resolve()}", project_session)
+
+            self.assertEqual(window._active_scope_id, f"project:{project.resolve()}")
+            self.assertEqual(window._active_session_id, project_session)
+            self.assertEqual(window.config.workspace_root, str(project.resolve()))
+
+    def test_select_session_in_other_scope_allowed_while_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = Path(tmp) / "repo"
+            project.mkdir()
+            window = MainWindow(workspace_root=None, state_path=state_path)
+            window.set_project_path(str(project))
+            conversation_scope = next(scope for scope in window.scopes if scope.scope_id == "conversation")
+            conversation_store = ChatSessionStore(SessionManager(window._config_for_scope(conversation_scope)))
+            conversation_session = conversation_store.create_chat_session().session_id
+            window.select_scope("conversation")
+            window._running_sessions[conversation_session] = window._new_active_run(
+                session_id=conversation_session,
+                user_input="running",
+                turn_index=1,
+                thread=None,
+                worker=None,
+            )
+            project_scope = next(scope for scope in window.scopes if scope.scope_id == f"project:{project.resolve()}")
+            project_store = ChatSessionStore(SessionManager(window._config_for_scope(project_scope)))
+            project_session = project_store.create_chat_session().session_id
+
+            window.select_session(f"project:{project.resolve()}", project_session)
+
+            self.assertEqual(window._active_scope_id, f"project:{project.resolve()}")
+            self.assertEqual(window._active_session_id, project_session)
+            self.assertIn(conversation_session, window._running_sessions)
+
+    def test_group_order_and_collapse_state_are_saved_from_sidebar_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = Path(tmp) / "repo"
+            project.mkdir()
+            window = MainWindow(workspace_root=None, state_path=state_path)
+            window.set_project_path(str(project))
+
+            window._remember_group_order([f"project:{project.resolve()}", "conversation"])
+            window._remember_group_collapsed("conversation", True)
+            window._project_state_save_timer.stop()
+            window.project_state.save()
+            restored = json.loads(state_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(restored["scope_order"], [f"project:{project.resolve()}", "conversation"])
+            self.assertEqual(restored["collapsed_scope_ids"], ["conversation"])
+
+    def test_remove_project_clears_it_from_sidebar_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            project = Path(tmp) / "repo"
+            project.mkdir()
+            window = MainWindow(workspace_root=None, state_path=state_path)
+            window.set_project_path(str(project))
+            window.remove_project(f"project:{project.resolve()}", confirm=False)
+
+            restored = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(restored["recent_project_paths"], [])
+            self.assertIsNone(restored["default_project_path"])
+            labels = []
+            for section in window.sidebar._group_sections:
+                labels.append(section.header.findChild(QLabel, "SessionGroupTitle").text())
+            self.assertEqual(labels, ["对话"])
+            self.assertEqual(window._active_scope_id, "conversation")
+
 
 def _visible_chat_flow(widget: QWidget) -> list[str]:
     texts: list[str] = []
@@ -264,6 +400,9 @@ def _visible_chat_flow(widget: QWidget) -> list[str]:
         item = widget.messages.itemAt(index)
         row = item.widget() if item is not None else None
         if row is None:
+            continue
+        if row.objectName() == "ActivityGroup":
+            texts.append("Activity")
             continue
         if (thinking := row.findChild(QLabel, "ThinkingStatusTitle")) is not None:
             texts.append(thinking.text())
@@ -284,7 +423,8 @@ def _visible_chat_flow(widget: QWidget) -> list[str]:
             if block is None:
                 continue
             if isinstance(block, QLabel) and block.objectName() == "ChatHeadingBlock":
-                block_texts.append(block.text())
+                plain_text = block.property("plain_text")
+                block_texts.append(str(plain_text) if plain_text else block.text())
             elif block.objectName() == "ChatParagraphBlock":
                 plain_text = block.property("plain_text")
                 if plain_text:
@@ -296,6 +436,40 @@ def _visible_chat_flow(widget: QWidget) -> list[str]:
         if block_texts:
             texts.append("\n\n".join(block_texts))
     return texts
+
+
+def _activity_detail_flow(widget: QWidget) -> list[str]:
+    values: list[str] = []
+    for activity in widget.findChildren(QWidget, "ActivityGroup"):
+        detail = activity.findChild(QWidget, "ActivityGroupDetail")
+        layout = detail.layout() if detail is not None else None
+        if layout is None:
+            continue
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            row = item.widget() if item is not None else None
+            if row is None:
+                continue
+            if (thinking := row.findChild(QLabel, "ThinkingStatusTitle")) is not None:
+                values.append(thinking.text())
+                continue
+            if (tool := row.findChild(QLabel, "ToolStatusTitle")) is not None:
+                values.append(tool.text())
+                continue
+            body = row.findChild(QWidget, "DocumentBlockList")
+            if body is None or body.layout() is None:
+                continue
+            block_texts: list[str] = []
+            for block_index in range(body.layout().count()):
+                block_item = body.layout().itemAt(block_index)
+                block = block_item.widget() if block_item is not None else None
+                if block is not None and block.objectName() == "ChatParagraphBlock":
+                    plain_text = block.property("plain_text")
+                    if plain_text:
+                        block_texts.append(str(plain_text))
+            if block_texts:
+                values.append("\n\n".join(block_texts))
+    return values
 
 
 if __name__ == "__main__":

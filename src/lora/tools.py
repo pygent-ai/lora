@@ -20,6 +20,7 @@ MAX_BASH_RESULT_CHARS = 20_000
 MAX_BASH_RESULT_LINES = 200
 BASH_RESULT_PREVIEW_LINES = 120
 BASH_RESULT_PREVIEW_CHARS = 12_000
+SPOOLED_TEXT_TOOL_NAMES = frozenset({"bash", "grep"})
 
 FILE_UNCHANGED_STUB = (
     "File unchanged since last read. The content from the earlier read tool_result in this conversation "
@@ -656,7 +657,7 @@ class ToolInterceptor:
         status = "success"
         if isinstance(result, dict) and result.get("status") in {"stubbed", "partial"}:
             status = result["status"]
-        result = _spool_large_bash_result(
+        result = _spool_large_tool_result(
             tool_name=name,
             args=args,
             result=result,
@@ -851,7 +852,7 @@ def _structured_tool_error_payload(result: Any) -> dict[str, Any] | None:
     return None
 
 
-def _spool_large_bash_result(
+def _spool_large_tool_result(
     *,
     tool_name: str,
     args: dict[str, Any],
@@ -860,11 +861,12 @@ def _spool_large_bash_result(
     run_dir: Path,
     bash_full_output_allowlist: list[str],
 ) -> Any:
-    if tool_name != "bash" or not isinstance(result, str):
+    if tool_name not in SPOOLED_TEXT_TOOL_NAMES or not isinstance(result, str):
         return result
-    command = args.get("command") or args.get("cmd")
-    if isinstance(command, str) and _bash_command_matches_allowlist(command, bash_full_output_allowlist):
-        return result
+    if tool_name == "bash":
+        command = args.get("command") or args.get("cmd")
+        if isinstance(command, str) and _bash_command_matches_allowlist(command, bash_full_output_allowlist):
+            return result
     lines = result.splitlines()
     if len(result) <= MAX_BASH_RESULT_CHARS and len(lines) <= MAX_BASH_RESULT_LINES:
         return result
@@ -882,14 +884,14 @@ def _spool_large_bash_result(
     return {
         "status": "truncated",
         "truncated": True,
-        "reason": "bash output exceeded the model-visible result limit",
+        "reason": f"{tool_name} output exceeded the model-visible result limit",
         "char_count": len(result),
         "line_count": len(lines),
         "preview_line_count": len(preview.splitlines()),
         "preview": preview,
         "full_output_path": str(output_path.resolve()),
         "next_step": (
-            "Full bash output was written to full_output_path. "
+            f"Full {tool_name} output was written to full_output_path. "
             "Use the read tool with file_path=full_output_path and offset/limit "
             "to inspect additional chunks only if needed."
         ),

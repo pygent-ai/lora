@@ -23,6 +23,15 @@ class GuiThemeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             theme_stylesheet("high-contrast")
 
+    def test_session_group_styles_are_defined(self) -> None:
+        css = theme_stylesheet("day")
+
+        self.assertIn("#SessionTree", css)
+        self.assertIn("#SessionGroupHeader", css)
+        self.assertIn("#SessionGroupTitle", css)
+        self.assertIn("#SessionGroupCount", css)
+        self.assertIn("#SessionGroupDeleteButton", css)
+
 
 if __name__ == "__main__":
     unittest.main()

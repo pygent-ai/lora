@@ -11,7 +11,17 @@ from PySide6.QtCore import QPointF, Qt, QEvent
 from PySide6.QtGui import QMouseEvent, QPointingDevice
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
-from gui.devtools import UiHitTestFilter, build_widget_path, devtools_enabled, describe_widget_hit, install_ui_hit_test_filter
+from gui.devtools import (
+    UiHitTestFilter,
+    build_widget_path,
+    devtools_clipboard_enabled,
+    devtools_enabled,
+    describe_widget_hit,
+    install_ui_hit_test_filter,
+)
+from gui.widgets.chat import ChatPane
+from gui.widgets.settings import SettingsDialog
+from lora.schema import RunConfig
 
 
 class GuiDevtoolsTests(unittest.TestCase):
@@ -71,16 +81,32 @@ class GuiDevtoolsTests(unittest.TestCase):
             'IconOnlyControl | QWidget tooltip="Delete session chat-123"',
         )
 
-    def test_hit_test_filter_records_path_and_copies_clipboard(self) -> None:
+    def test_hit_test_filter_records_path_without_clipboard_by_default(self) -> None:
         widget = QLabel("Clickable")
         widget.setObjectName("ClickableLabel")
         records: list[str] = []
         hit_filter = UiHitTestFilter(on_hit=records.append)
+        previous_clipboard = self.app.clipboard().text()
 
         hit_filter.record_widget_hit(widget)
 
         self.assertEqual(records, ['ClickableLabel | QLabel text="Clickable"'])
-        self.assertEqual(self.app.clipboard().text(), 'ClickableLabel | QLabel text="Clickable"')
+        self.assertEqual(self.app.clipboard().text(), previous_clipboard)
+
+    def test_hit_test_filter_copies_clipboard_when_enabled(self) -> None:
+        widget = QLabel("Clickable")
+        widget.setObjectName("ClickableLabel")
+        previous = os.environ.get("LORA_UI_DEBUG_HITTEST_CLIPBOARD")
+        try:
+            os.environ["LORA_UI_DEBUG_HITTEST_CLIPBOARD"] = "1"
+            self.assertTrue(devtools_clipboard_enabled())
+            UiHitTestFilter().record_widget_hit(widget)
+            self.assertEqual(self.app.clipboard().text(), 'ClickableLabel | QLabel text="Clickable"')
+        finally:
+            if previous is None:
+                os.environ.pop("LORA_UI_DEBUG_HITTEST_CLIPBOARD", None)
+            else:
+                os.environ["LORA_UI_DEBUG_HITTEST_CLIPBOARD"] = previous
 
     def test_hit_test_filter_prints_hit_to_stdout(self) -> None:
         widget = QLabel("Clickable")
@@ -93,16 +119,43 @@ class GuiDevtoolsTests(unittest.TestCase):
 
         self.assertEqual(output.getvalue(), '[ui-hit] ClickableLabel | QLabel text="Clickable"\n')
 
+    def test_hit_test_filter_prints_chat_layout_diagnostics_for_chat_hits(self) -> None:
+        pane = ChatPane()
+        pane.resize(420, 320)
+        pane.show()
+        self.app.processEvents()
+        pane.add_message("user", "hello")
+        pane.add_message("assistant", "hi")
+        self.app.processEvents()
+        hit_filter = UiHitTestFilter()
+        output = StringIO()
+
+        with redirect_stdout(output):
+            hit_filter.record_widget_hit(pane.scroll_body)
+
+        text = output.getvalue()
+        self.assertIn("[ui-hit]", text)
+        self.assertIn("ChatScrollBody", text)
+        self.assertIn("[ui-chat-layout] root=ChatPane hit=ChatScrollBody", text)
+        self.assertIn("scrollbar=", text)
+        self.assertIn("scroll_body=", text)
+        self.assertIn("last_row=", text)
+
     def test_event_filter_records_mouse_button_press_events(self) -> None:
         widget = QLabel("Clickable")
         widget.setObjectName("ClickableLabel")
+        widget.resize(120, 32)
+        widget.move(0, 0)
+        widget.show()
+        self.app.processEvents()
         records: list[str] = []
         hit_filter = UiHitTestFilter(on_hit=records.append)
+        global_pos = widget.mapToGlobal(widget.rect().center())
         event = QMouseEvent(
             QEvent.MouseButtonPress,
-            QPointF(1, 1),
-            QPointF(1, 1),
-            QPointF(1, 1),
+            QPointF(widget.rect().center()),
+            global_pos,
+            global_pos,
             Qt.LeftButton,
             Qt.LeftButton,
             Qt.NoModifier,
@@ -131,6 +184,26 @@ class GuiDevtoolsTests(unittest.TestCase):
 
         self.assertIsInstance(installed, UiHitTestFilter)
         self.assertIs(getattr(self.app, "_lora_ui_hit_test_filter"), installed)
+
+    def test_settings_dialog_fields_and_buttons_have_stable_hit_test_paths(self) -> None:
+        config = RunConfig(
+            workspace_root=".",
+            lora_root=".",
+            agent_alias="default",
+            model_name="gpt-test",
+        )
+        dialog = SettingsDialog(config)
+
+        self.assertEqual(build_widget_path(dialog.workspace), "SettingsDialog > SettingsWorkspaceInput")
+        self.assertEqual(build_widget_path(dialog.config_path), "SettingsDialog > SettingsConfigPathInput")
+        self.assertEqual(build_widget_path(dialog.agent_alias), "SettingsDialog > SettingsAgentAliasInput")
+        self.assertEqual(build_widget_path(dialog.model), "SettingsDialog > SettingsModelInput")
+        self.assertEqual(build_widget_path(dialog.max_steps), "SettingsDialog > SettingsMaxStepsInput")
+        self.assertEqual(build_widget_path(dialog.apply_button), "SettingsDialog > SettingsButtonBox > SettingsApplyButton")
+        self.assertEqual(
+            build_widget_path(dialog.cancel_button),
+            "SettingsDialog > SettingsButtonBox > SettingsCancelButton",
+        )
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import time
 from copy import deepcopy
 from collections.abc import AsyncIterator, Callable, Iterable
@@ -34,6 +35,41 @@ MAX_EMPTY_TOOL_FOLLOWUP_RETRIES = 5
 
 def _always_enabled(ctx: "PromptRenderContext") -> bool:
     return True
+
+
+class _LoraBashToolkits(BashToolkits):
+    """Windows-safe bash toolkit that avoids flashing transient console windows."""
+
+    def _windows_creationflags(self) -> int:
+        return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    def _popen_kwargs(self, cwd: str, output_file: Any) -> dict[str, Any]:
+        kwargs = super()._popen_kwargs(cwd, output_file)
+        if self._is_windows:
+            kwargs["creationflags"] = self._windows_creationflags()
+        return kwargs
+
+    def _background_popen_kwargs(self, cwd: str) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "cwd": cwd,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if self._is_windows:
+            kwargs["creationflags"] = self._windows_creationflags()
+        else:
+            kwargs["start_new_session"] = True
+        return kwargs
+
+    def _run_background(self, command: str, cwd: str) -> str:
+        try:
+            proc = subprocess.Popen(self._bash_args(command), **self._background_popen_kwargs(cwd))
+            return f"started background process PID={proc.pid}; output is not captured"
+        except FileNotFoundError as exc:
+            return f"error: bash executable not found: {exc}"
+        except OSError as exc:
+            return f"error: failed to start bash command: {exc}"
 
 
 @dataclass(slots=True)
@@ -953,7 +989,7 @@ class LoraAgent(BaseAgent):
         session_id = self.case_run_ref.session_id if self.case_run_ref is not None else "lora"
         toolkits = [
             FileToolkits(session_id=session_id, workspace_root=str(self.workspace_root)),
-            BashToolkits(session_id=session_id, workspace_root=str(self.workspace_root)),
+            _LoraBashToolkits(session_id=session_id, workspace_root=str(self.workspace_root)),
         ]
         available_tools = {
             tool.metadata.data["name"]: tool
@@ -1066,6 +1102,40 @@ def _system_reminder_enabled(ctx: PromptRenderContext) -> bool:
     return _system_reminder_has_content(ctx, state)
 
 
+def _cli_command_for_prompt(value: BashCliPreset | dict[str, Any]) -> str:
+    if isinstance(value, BashCliPreset):
+        return str(value.command or "")
+    return str(value.get("command") or "")
+
+
+def _cli_status_for_prompt(value: BashCliPreset | dict[str, Any]) -> str:
+    command = _cli_command_for_prompt(value).strip()
+    if command.startswith("uv run "):
+        return "Available via uv run in this workspace."
+    if isinstance(value, BashCliPreset):
+        installed = shutil.which(value.name) is not None
+    else:
+        installed = bool(value.get("installed")) if "installed" in value else shutil.which(str(value.get("name") or "")) is not None
+    return "Status: installed." if installed else "Status: not installed."
+
+
+def _render_cli_entry_lines(value: BashCliPreset | dict[str, Any], *, indent: str) -> list[str]:
+    name = value.name if isinstance(value, BashCliPreset) else str(value.get("name") or "")
+    if not name:
+        return []
+    description = value.description if isinstance(value, BashCliPreset) else str(value.get("description") or "")
+    command = _cli_command_for_prompt(value)
+    lines = [
+        f"{indent}<{name}>",
+        f"{indent}  {escape(description, quote=False)}",
+    ]
+    if command:
+        lines.append(f"{indent}  Command: {escape(command, quote=False)}")
+    lines.append(f"{indent}  {_cli_status_for_prompt(value)}")
+    lines.append(f"{indent}</{name}>")
+    return lines
+
+
 def _render_system_reminder_prompt(ctx: PromptRenderContext) -> str | None:
     state = _load_cli_context_state(ctx)
     if not _system_reminder_has_content(ctx, state):
@@ -1092,15 +1162,7 @@ def _render_system_reminder_prompt(ctx: PromptRenderContext) -> str | None:
     if include_initial_cli:
         cli_lines.append("<available-bash-cli>")
         for preset in ctx.cli_bash_presets:
-            status = "installed" if shutil.which(preset.name) else "not installed"
-            cli_lines.extend(
-                [
-                    f"  <{preset.name}>",
-                    f"    {escape(preset.description, quote=False)}",
-                    f"    Status: {status}.",
-                    f"  </{preset.name}>",
-                ]
-            )
+            cli_lines.extend(_render_cli_entry_lines(preset, indent="  "))
         cli_lines.append("</available-bash-cli>")
 
     if pending_new_cli:
@@ -1108,19 +1170,7 @@ def _render_system_reminder_prompt(ctx: PromptRenderContext) -> str | None:
             cli_lines.append("")
         cli_lines.append("<new-bash-cli>")
         for item in pending_new_cli:
-            name = str(item.get("name") or "")
-            if not name:
-                continue
-            description = escape(str(item.get("description") or ""), quote=False)
-            status = "installed" if item.get("installed") is not False else "not installed"
-            cli_lines.extend(
-                [
-                    f"  <{name}>",
-                    f"    {description}",
-                    f"    Status: {status}.",
-                    f"  </{name}>",
-                ]
-            )
+            cli_lines.extend(_render_cli_entry_lines(item, indent="  "))
         cli_lines.append("</new-bash-cli>")
 
     if cli_lines:
@@ -1508,6 +1558,7 @@ def _consume_system_reminder_state(ctx: PromptRenderContext) -> None:
         for preset in ctx.cli_bash_presets:
             known[preset.name] = {
                 "name": preset.name,
+                "command": preset.command,
                 "description": preset.description,
                 "installed": shutil.which(preset.name) is not None,
                 "detected_at": _now(),
@@ -1574,6 +1625,7 @@ def _detect_new_bash_cli(
             continue
         entry = {
             "name": preset.name,
+            "command": preset.command,
             "description": preset.description,
             "installed": True,
             "detected_at": _now(),
@@ -1802,17 +1854,7 @@ def _render_new_cli_tool_message_reminder(entries: list[dict[str, Any]]) -> str 
         "  <new-bash-cli>",
     ]
     for entry in entries:
-        name = str(entry.get("name") or "")
-        if not name:
-            continue
-        lines.extend(
-            [
-                f"    <{name}>",
-                f"      {escape(str(entry.get('description') or ''), quote=False)}",
-                "      Status: installed.",
-                f"    </{name}>",
-            ]
-        )
+        lines.extend(_render_cli_entry_lines(entry, indent="    "))
     lines.extend(["  </new-bash-cli>", "</cli-context>", "</system-reminder>"])
     return "\n".join(lines)
 

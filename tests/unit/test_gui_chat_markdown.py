@@ -8,6 +8,8 @@ from gui.widgets.chat_markdown import (
     ListBlockData,
     ParagraphBlockData,
     QuoteBlockData,
+    TableBlockData,
+    HorizontalRuleBlockData,
     parse_markdown_blocks,
 )
 
@@ -96,6 +98,61 @@ class GuiChatMarkdownTests(unittest.TestCase):
         self.assertIsInstance(blocks[0], ListBlockData)
         self.assertTrue(blocks[0].ordered)
         self.assertEqual(blocks[0].items, ["one", "two"])
+
+    def test_parse_markdown_blocks_parses_indented_unordered_lists(self) -> None:
+        blocks = parse_markdown_blocks("  - one\n  - two\n")
+
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], ListBlockData)
+        self.assertFalse(blocks[0].ordered)
+        self.assertEqual(blocks[0].items, ["one", "two"])
+
+    def test_parse_markdown_blocks_extracts_common_inline_markdown_spans(self) -> None:
+        blocks = parse_markdown_blocks("Hello **bold** *italic* [docs](https://example.com) and `code`")
+
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], ParagraphBlockData)
+        self.assertEqual(
+            [(span.kind, span.text) for span in blocks[0].spans],
+            [
+                ("text", "Hello "),
+                ("strong", "bold"),
+                ("text", " "),
+                ("emphasis", "italic"),
+                ("text", " "),
+                ("link", "docs"),
+                ("text", " and "),
+                ("code", "code"),
+            ],
+        )
+
+    def test_parse_markdown_blocks_parses_pipe_tables(self) -> None:
+        blocks = parse_markdown_blocks(
+            "| Name | Value |\n"
+            "| --- | --- |\n"
+            "| foo | 1 |\n"
+            "| bar | 2 |\n"
+        )
+
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], TableBlockData)
+        self.assertEqual(blocks[0].headers, ["Name", "Value"])
+        self.assertEqual(blocks[0].rows, [["foo", "1"], ["bar", "2"]])
+
+    def test_parse_markdown_blocks_parses_horizontal_rules(self) -> None:
+        blocks = parse_markdown_blocks("Before\n\n---\n\nAfter")
+
+        self.assertEqual(len(blocks), 3)
+        self.assertIsInstance(blocks[0], ParagraphBlockData)
+        self.assertIsInstance(blocks[1], HorizontalRuleBlockData)
+        self.assertIsInstance(blocks[2], ParagraphBlockData)
+
+    def test_parse_markdown_blocks_preserves_heading_inline_code_spans(self) -> None:
+        blocks = parse_markdown_blocks("## Update `development-guide.md`")
+
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], HeadingBlockData)
+        self.assertEqual([(span.kind, span.text) for span in blocks[0].spans], [("text", "Update "), ("code", "development-guide.md")])
 
 
 if __name__ == "__main__":

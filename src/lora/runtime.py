@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .io import plain_data
-from .schema import AgentSession, CaseDefinition, CaseRunRef, CaseRunResult, RunConfig
+from .schema import AgentSession, BashCliPreset, CaseDefinition, CaseRunRef, CaseRunResult, RunConfig
 from .session import SessionManager
 from .trace import EventStore
 
@@ -45,6 +45,13 @@ class EchoAgent:
         user_messages = [message for message in context.history if message.get("role") == "user"]
         content = user_messages[-1]["content"] if user_messages else ""
         yield {"role": "assistant", "content": f"Echo: {content}", "type": "conversation.assistant_message"}
+
+
+def _cli_status_for_initial_reminder(preset: BashCliPreset) -> str:
+    command = str(getattr(preset, "command", "") or "")
+    if command.startswith("uv run "):
+        return "Available via uv run in this workspace."
+    return "Status: installed." if shutil.which(str(getattr(preset, "name", "") or "")) else "Status: not installed."
 
 
 class AgentRuntimeAdapter:
@@ -467,12 +474,12 @@ def _initial_user_system_reminder(session: AgentSession, config: RunConfig) -> s
         "  <available-bash-cli>",
     ]
     for preset in config.cli_bash_presets:
-        status = "installed" if shutil.which(preset.name) else "not installed"
         lines.extend(
             [
                 f"    <{preset.name}>",
                 f"      {escape(preset.description, quote=False)}",
-                f"      Status: {status}.",
+                *([f"      Command: {escape(preset.command, quote=False)}"] if preset.command else []),
+                f"      {_cli_status_for_initial_reminder(preset)}",
                 f"    </{preset.name}>",
             ]
         )

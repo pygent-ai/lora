@@ -1,43 +1,300 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QAction, QFontMetrics
+from collections.abc import Callable
+
+from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QDrag, QFontMetrics
 from PySide6.QtWidgets import (
     QFrame,
     QButtonGroup,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMenu,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStyle,
-    QTabBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from gui.icons import icon
-from gui.session_model import ChatSessionRecord
+from gui.session_model import ChatSessionRecord, SessionGroupRecord
+
+_SCOPE_MIME = "application/x-lora-scope-id"
+
+
+class _GroupsContainer(QWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+
+    def sizeHint(self):
+        layout = self.layout()
+        if layout is None:
+            return super().sizeHint()
+        return layout.minimumSize()
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+
+class _SessionGroupHeader(QWidget):
+    toggle_requested = Signal()
+
+    def __init__(
+        self,
+        label: str,
+        count: int,
+        *,
+        active: bool,
+        expanded: bool,
+        scope_id: str,
+        on_remove: Callable[[str], None] | None = None,
+        draggable: bool = False,
+    ):
+        super().__init__()
+        self.setObjectName("SessionGroupHeader")
+        self.setProperty("active", active)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._scope_id = scope_id
+        self._draggable = draggable
+        self._drag_start: QPoint | None = None
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(8)
+
+        self.arrow = QLabel("▾" if expanded else "▸")
+        self.arrow.setObjectName("SessionGroupArrow")
+        self.arrow.setFixedWidth(14)
+        self.arrow.setAlignment(Qt.AlignCenter)
+        self.arrow.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        title = QLabel(label)
+        title.setObjectName("SessionGroupTitle")
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        title.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        counter = QLabel(str(count))
+        counter.setObjectName("SessionGroupCount")
+        counter.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        counter.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        layout.addWidget(self.arrow)
+        layout.addWidget(title, 1)
+        layout.addWidget(counter)
+        if on_remove is not None:
+            delete_button = QToolButton()
+            delete_button.setObjectName("SessionGroupDeleteButton")
+            delete_button.setProperty("dev_id", f"remove:{scope_id}")
+            delete_button.setIcon(icon("delete"))
+            delete_button.setToolTip("Remove project from sidebar")
+            delete_button.setAutoRaise(True)
+            delete_button.setCursor(Qt.PointingHandCursor)
+            delete_button.setFixedSize(22, 22)
+            delete_button.clicked.connect(lambda: on_remove(scope_id))
+            layout.addWidget(delete_button)
+
+    def set_expanded(self, expanded: bool) -> None:
+        self.arrow.setText("▾" if expanded else "▸")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._child_button_at(event.position().toPoint()) is None:
+            self._drag_start = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._draggable
+            and self._drag_start is not None
+            and (event.position().toPoint() - self._drag_start).manhattanLength() >= 12
+        ):
+            self._drag_start = None
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(_SCOPE_MIME, self._scope_id.encode("utf-8"))
+            drag.setMimeData(mime)
+            drag.exec(Qt.MoveAction)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if (
+            event.button() == Qt.LeftButton
+            and self._drag_start is not None
+            and (event.position().toPoint() - self._drag_start).manhattanLength() < 12
+        ):
+            self.toggle_requested.emit()
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
+
+    def _child_button_at(self, point) -> QToolButton | None:
+        child = self.childAt(point)
+        while child is not None:
+            if isinstance(child, QToolButton):
+                return child
+            child = child.parentWidget()
+        return None
+
+
+class _SessionGroupSection(QWidget):
+    collapsed_changed = Signal(str, bool)
+    session_selected = Signal(str, str)
+    session_delete_requested = Signal(str, str)
+    reorder_requested = Signal(str, str)
+
+    def __init__(
+        self,
+        group: SessionGroupRecord,
+        *,
+        active_scope_id: str,
+        on_remove: Callable[[str], None] | None,
+    ):
+        super().__init__()
+        self.scope_id = group.scope.scope_id
+        self.setAcceptDrops(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+
+        self._rows: dict[str, _SessionRow] = {}
+        self._selected_session_id: str | None = None
+        self._collapsed = group.collapsed
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.header = _SessionGroupHeader(
+            group.scope.label,
+            len(group.records),
+            active=group.scope.scope_id == active_scope_id,
+            expanded=not self._collapsed,
+            scope_id=group.scope.scope_id,
+            on_remove=on_remove,
+            draggable=True,
+        )
+        self.header.setToolTip(group.scope.tooltip)
+        self.header.toggle_requested.connect(self._toggle_collapsed)
+
+        self.sessions_body = QWidget()
+        self.sessions_body.setObjectName("SessionList")
+        self.sessions_body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self._sessions_layout = QVBoxLayout(self.sessions_body)
+        self._sessions_layout.setContentsMargins(0, 0, 0, 0)
+        self._sessions_layout.setSpacing(6)
+
+        layout.addWidget(self.header)
+        layout.addWidget(self.sessions_body)
+
+        self.set_records(group.records)
+        self.set_collapsed(self._collapsed)
+
+    def set_records(self, records: list[ChatSessionRecord]) -> None:
+        while self._sessions_layout.count():
+            item = self._sessions_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._rows.clear()
+        self._selected_session_id = None
+
+        for record in records:
+            row = _SessionRow(
+                record,
+                self._emit_delete_requested,
+                on_select=lambda session_id=record.session_id: self._on_row_selected(session_id),
+            )
+            self._sessions_layout.addWidget(row)
+            self._rows[record.session_id] = row
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = collapsed
+        self.sessions_body.setVisible(not collapsed)
+        self.header.set_expanded(not collapsed)
+
+    def session_count(self) -> int:
+        return len(self._rows)
+
+    def session_row(self, index: int) -> _SessionRow | None:
+        item = self._sessions_layout.itemAt(index)
+        widget = item.widget() if item is not None else None
+        return widget if isinstance(widget, _SessionRow) else None
+
+    def selected_session_id(self) -> str | None:
+        return self._selected_session_id
+
+    def select_session(self, session_id: str) -> None:
+        self.set_collapsed(False)
+        self._selected_session_id = session_id
+        for sid, row in self._rows.items():
+            row.set_selected(sid == session_id)
+
+    def clear_selection(self) -> None:
+        self._selected_session_id = None
+        for row in self._rows.values():
+            row.set_selected(False)
+
+    def _toggle_collapsed(self) -> None:
+        self.set_collapsed(not self._collapsed)
+        self.collapsed_changed.emit(self.scope_id, self._collapsed)
+
+    def _on_row_selected(self, session_id: str) -> None:
+        self.select_session(session_id)
+        self.session_selected.emit(self.scope_id, session_id)
+
+    def _emit_delete_requested(self, session_id: str) -> None:
+        self.session_delete_requested.emit(self.scope_id, session_id)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(_SCOPE_MIME):
+            dragged = event.mimeData().data(_SCOPE_MIME).data().decode("utf-8")
+            if dragged != self.scope_id:
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(_SCOPE_MIME):
+            dragged = event.mimeData().data(_SCOPE_MIME).data().decode("utf-8")
+            if dragged != self.scope_id:
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat(_SCOPE_MIME):
+            event.ignore()
+            return
+        dragged = event.mimeData().data(_SCOPE_MIME).data().decode("utf-8")
+        if dragged == self.scope_id:
+            event.ignore()
+            return
+        self.reorder_requested.emit(dragged, self.scope_id)
+        event.acceptProposedAction()
 
 
 class SessionSidebar(QWidget):
     new_chat_requested = Signal()
-    session_selected = Signal(str)
-    session_delete_requested = Signal(str)
+    session_selected = Signal(str, str)
+    session_delete_requested = Signal(str, str)
     settings_requested = Signal()
-    scope_selected = Signal(str)
     project_select_requested = Signal()
     theme_toggle_requested = Signal()
     theme_selected = Signal(str)
+    group_order_changed = Signal(list)
+    group_collapsed_changed = Signal(str, bool)
+    project_remove_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("SessionSidebar")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self._rows: dict[str, _SessionRow] = {}
+        self._group_sections: list[_SessionGroupSection] = []
+        self._scroll_content_timer = QTimer(self)
+        self._scroll_content_timer.setSingleShot(True)
+        self._scroll_content_timer.timeout.connect(self._apply_scroll_content)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 18)
         layout.setSpacing(10)
@@ -61,19 +318,20 @@ class SessionSidebar(QWidget):
         self.new_button.setToolTip("Create a new chat session")
         self.new_button.clicked.connect(self.new_chat_requested.emit)
 
-        recent = QLabel("Recent Sessions")
+        recent = QLabel("Sessions")
         recent.setObjectName("SectionLabel")
-        self.scope_tabs = QTabBar()
-        self.scope_tabs.setObjectName("SessionScopeTabs")
-        self.scope_tabs.setExpanding(False)
-        self.scope_tabs.currentChanged.connect(self._emit_scope_selected)
-        self._scope_ids: list[str] = []
-        self.sessions = QListWidget()
-        self.sessions.setObjectName("SessionList")
-        self.sessions.setFocusPolicy(Qt.NoFocus)
-        self.sessions.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.sessions.setSpacing(6)
-        self.sessions.itemClicked.connect(self._emit_selected)
+        self.session_tree = QScrollArea()
+        self.session_tree.setObjectName("SessionTree")
+        self.session_tree.setWidgetResizable(False)
+        self.session_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.session_tree.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.session_tree.setFrameShape(QFrame.NoFrame)
+        self.session_tree.viewport().installEventFilter(self)
+        self._groups_container = _GroupsContainer()
+        self._groups_layout = QVBoxLayout(self._groups_container)
+        self._groups_layout.setContentsMargins(0, 0, 0, 0)
+        self._groups_layout.setSpacing(8)
+        self.session_tree.setWidget(self._groups_container)
 
         self.agent = QLabel("")
         self.agent.setObjectName("SidebarInfoValue")
@@ -135,8 +393,7 @@ class SessionSidebar(QWidget):
         layout.addWidget(brand_card)
         layout.addWidget(self.new_button)
         layout.addWidget(recent)
-        layout.addWidget(self.scope_tabs)
-        layout.addWidget(self.sessions, 1)
+        layout.addWidget(self.session_tree, 1)
         layout.addWidget(info_card)
         layout.addWidget(tools_card)
 
@@ -148,74 +405,132 @@ class SessionSidebar(QWidget):
     def set_agent_status(self, alias: str, model_name: str | None) -> None:
         self.agent.setText(f"Agent  {alias}\nModel  {model_name or 'default'}")
 
-    def set_scopes(self, scopes: list[dict[str, str]], *, active_scope_id: str) -> None:
-        self.scope_tabs.blockSignals(True)
-        while self.scope_tabs.count():
-            self.scope_tabs.removeTab(0)
-        self._scope_ids = []
-        active_index = 0
-        for index, scope in enumerate(scopes):
-            scope_id = str(scope.get("scope_id") or "")
-            label = str(scope.get("label") or scope_id)
-            tooltip = str(scope.get("tooltip") or label)
-            self.scope_tabs.addTab(label)
-            self.scope_tabs.setTabToolTip(index, tooltip)
-            self._scope_ids.append(scope_id)
-            if scope_id == active_scope_id:
-                active_index = index
-        if self.scope_tabs.count():
-            self.scope_tabs.setCurrentIndex(active_index)
-        self.scope_tabs.blockSignals(False)
+    def set_session_groups(
+        self,
+        groups: list[SessionGroupRecord],
+        *,
+        active_scope_id: str,
+        active_session_id: str | None,
+    ) -> None:
+        while self._groups_layout.count():
+            item = self._groups_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._group_sections.clear()
 
-    def set_sessions(self, records: list[ChatSessionRecord]) -> None:
-        self.sessions.clear()
-        self._rows.clear()
-        for record in records:
-            item = QListWidgetItem()
-            item.setData(256, record.session_id)
-            item.setToolTip(record.session_id)
-            row = _SessionRow(record, self.session_delete_requested.emit)
-            item.setSizeHint(QSize(row.sizeHint().width(), 58))
-            self.sessions.addItem(item)
-            self.sessions.setItemWidget(item, row)
-            self._rows[record.session_id] = row
+        for group in groups:
+            section = _SessionGroupSection(
+                group,
+                active_scope_id=active_scope_id,
+                on_remove=self._emit_project_remove_requested if group.scope.workspace_root is not None else None,
+            )
+            section.collapsed_changed.connect(self._on_group_collapsed_changed)
+            section.session_selected.connect(self.session_selected.emit)
+            section.session_delete_requested.connect(self.session_delete_requested.emit)
+            section.reorder_requested.connect(self._reorder_groups)
+            self._groups_layout.addWidget(section)
+            self._group_sections.append(section)
 
-    def select_session(self, session_id: str) -> None:
-        for index in range(self.sessions.count()):
-            item = self.sessions.item(index)
-            if item.data(256) == session_id:
-                self.sessions.setCurrentItem(item)
-            row = self._rows.get(str(item.data(256)))
-            if row is not None:
-                row.set_selected(str(item.data(256)) == session_id)
+        if active_session_id is not None:
+            self.select_session(active_scope_id, active_session_id)
+        self._update_scroll_content()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_scroll_content()
+
+    def eventFilter(self, watched, event):
+        if watched is self.session_tree.viewport() and event.type() == event.Type.Resize:
+            self._update_scroll_content()
+        return super().eventFilter(watched, event)
+
+    def _update_scroll_content(self) -> None:
+        self._scroll_content_timer.start(0)
+
+    def _apply_scroll_content(self) -> None:
+        viewport_width = self.session_tree.viewport().width()
+        if viewport_width <= 0:
+            return
+        content_height = self._groups_layout.sizeHint().height()
+        target = QSize(viewport_width, max(content_height, 0))
+        if self._groups_container.size() == target:
+            return
+        self._groups_container.setFixedWidth(viewport_width)
+        self._groups_container.setFixedHeight(max(content_height, 0))
+
+    def _on_group_collapsed_changed(self, scope_id: str, collapsed: bool) -> None:
+        self._update_scroll_content()
+        self.group_collapsed_changed.emit(scope_id, collapsed)
+
+    def select_session(self, scope_id: str, session_id: str) -> None:
+        for section in self._group_sections:
+            if section.scope_id == scope_id:
+                section.select_session(session_id)
+            else:
+                section.clear_selection()
 
     def selected_session_id(self) -> str | None:
-        item = self.sessions.currentItem()
-        if item is None:
-            return None
-        return str(item.data(256))
+        for section in self._group_sections:
+            selected = section.selected_session_id()
+            if selected is not None:
+                return selected
+        return None
 
     def set_theme_name(self, theme: str) -> None:
         self.day_button.setChecked(theme == "day")
         self.night_button.setChecked(theme == "night")
 
-    def _emit_selected(self, item: QListWidgetItem) -> None:
-        session_id = str(item.data(256))
-        self.select_session(session_id)
-        self.session_selected.emit(session_id)
+    def group_order(self) -> list[str]:
+        return [section.scope_id for section in self._group_sections]
 
-    def _emit_scope_selected(self, index: int) -> None:
-        if 0 <= index < len(self._scope_ids):
-            self.scope_selected.emit(self._scope_ids[index])
+    def _reorder_groups(self, dragged_scope_id: str, before_scope_id: str) -> None:
+        order = self.group_order()
+        if dragged_scope_id not in order or before_scope_id not in order:
+            return
+        order.remove(dragged_scope_id)
+        order.insert(order.index(before_scope_id), dragged_scope_id)
+        self.apply_group_order(order)
+        self.group_order_changed.emit(order)
+
+    def apply_group_order(self, scope_ids: list[str]) -> None:
+        section_by_id = {section.scope_id: section for section in self._group_sections}
+        ordered_sections = [section_by_id[scope_id] for scope_id in scope_ids if scope_id in section_by_id]
+        if len(ordered_sections) != len(self._group_sections):
+            return
+        while self._groups_layout.count():
+            item = self._groups_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().setParent(None)
+        self._group_sections = ordered_sections
+        for section in ordered_sections:
+            self._groups_layout.addWidget(section)
+        self._update_scroll_content()
+
+    def _emit_project_remove_requested(self, scope_id: str) -> None:
+        self.project_remove_requested.emit(scope_id)
 
 
 class _SessionRow(QWidget):
-    def __init__(self, record: ChatSessionRecord, on_delete):
+    def __init__(
+        self,
+        record: ChatSessionRecord,
+        on_delete,
+        *,
+        on_select: Callable[[], None],
+    ):
         super().__init__()
         self.setObjectName("SessionRow")
         self.setProperty("dev_id", record.session_id)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setMinimumHeight(56)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._full_title = record.title
+        self._metadata_text = _session_metadata(record)
+        self._on_select = on_select
+        self._menu_button: QToolButton | None = None
+        self._title_label: QLabel | None = None
+        self._metadata_label: QLabel | None = None
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 12, 8)
         layout.setSpacing(10)
@@ -240,15 +555,14 @@ class _SessionRow(QWidget):
         label.setProperty("dev_id", record.session_id)
         label.setToolTip(record.session_id)
         label.setMinimumWidth(0)
-        label.setMaximumWidth(214)
         label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        metadata = QLabel(_session_metadata(record))
+        self._title_label = label
+        metadata = QLabel(self._metadata_text)
         metadata.setObjectName("SessionRowMeta")
         metadata.setMinimumWidth(0)
         metadata.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         metadata.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        title_metrics = QFontMetrics(label.font())
-        label.setText(title_metrics.elidedText(record.title, Qt.ElideRight, 214))
+        self._metadata_label = metadata
         meta_row = QHBoxLayout()
         meta_row.setContentsMargins(0, 0, 0, 0)
         meta_row.setSpacing(8)
@@ -269,6 +583,7 @@ class _SessionRow(QWidget):
         menu_button.setPopupMode(QToolButton.InstantPopup)
         menu_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
         menu_button.setAutoRaise(True)
+        self._menu_button = menu_button
 
         menu = QMenu(menu_button)
         menu.setObjectName("SessionRowMenu")
@@ -287,6 +602,34 @@ class _SessionRow(QWidget):
         layout.addWidget(self.rail)
         layout.addWidget(session_icon, 0, Qt.AlignTop)
         layout.addLayout(text_stack, 1)
+        self._refresh_title_elision()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_title_elision()
+
+    def _refresh_title_elision(self) -> None:
+        if self._title_label is not None:
+            available = self._title_label.width()
+            if available > 0:
+                metrics = QFontMetrics(self._title_label.font())
+                self._title_label.setText(metrics.elidedText(self._full_title, Qt.ElideRight, available))
+        if self._metadata_label is not None:
+            available = self._metadata_label.width()
+            if available > 0:
+                metrics = QFontMetrics(self._metadata_label.font())
+                self._metadata_label.setText(metrics.elidedText(self._metadata_text, Qt.ElideRight, available))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and not self._clicked_menu_button(event.position().toPoint()):
+            self._on_select()
+        super().mouseReleaseEvent(event)
+
+    def _clicked_menu_button(self, point) -> bool:
+        if self._menu_button is None:
+            return False
+        local = self._menu_button.mapFrom(self, point)
+        return self._menu_button.rect().contains(local)
 
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", selected)

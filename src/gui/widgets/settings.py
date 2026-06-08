@@ -33,12 +33,18 @@ class SettingsDialog(QDialog):
         self.setModal(True)
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        form.setObjectName("SettingsForm")
 
         self.workspace = QLineEdit(config.workspace_root)
+        self.workspace.setObjectName("SettingsWorkspaceInput")
         self.config_path = QLineEdit("")
+        self.config_path.setObjectName("SettingsConfigPathInput")
         self.agent_alias = QLineEdit(config.agent_alias)
+        self.agent_alias.setObjectName("SettingsAgentAliasInput")
         self.model = QLineEdit(config.model or config.model_name or "")
+        self.model.setObjectName("SettingsModelInput")
         self.max_steps = QSpinBox()
+        self.max_steps.setObjectName("SettingsMaxStepsInput")
         self.max_steps.setRange(-1, 100000)
         self.max_steps.setValue(config.max_steps)
 
@@ -49,14 +55,18 @@ class SettingsDialog(QDialog):
         form.addRow("Max steps", self.max_steps)
         layout.addLayout(form)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        apply_button = buttons.button(QDialogButtonBox.Ok)
-        if isinstance(apply_button, QPushButton):
-            apply_button.setText("Apply")
-            apply_button.setObjectName("PrimaryButton")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.setObjectName("SettingsButtonBox")
+        self.apply_button = self.buttons.button(QDialogButtonBox.Ok)
+        if isinstance(self.apply_button, QPushButton):
+            self.apply_button.setText("Apply")
+            self.apply_button.setObjectName("SettingsApplyButton")
+        self.cancel_button = self.buttons.button(QDialogButtonBox.Cancel)
+        if isinstance(self.cancel_button, QPushButton):
+            self.cancel_button.setObjectName("SettingsCancelButton")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
 
     def values(self) -> SettingsValues:
         return SettingsValues(
