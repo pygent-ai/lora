@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, QEvent
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication, QLayoutItem, QWidget
+import shiboken6
+from PySide6.QtCore import QObject, QEvent, QTimer
+from PySide6.QtGui import QFontMetrics, QMouseEvent
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLayoutItem, QWidget
 
 
 def devtools_enabled() -> bool:
@@ -130,7 +131,140 @@ def chat_layout_diagnostics(widget: QWidget) -> list[str]:
                 f"[ui-chat-row] index={index} spacer item_geom={_rect_text(item.geometry())} "
                 f"hint={hint.width()}x{hint.height()}"
             )
+    lines.extend(chat_bubble_diagnostics(chat))
     return lines
+
+
+def chat_bubble_diagnostics(chat: QWidget) -> list[str]:
+    maximum_bubble_width = _chat_maximum_bubble_width(chat)
+    if maximum_bubble_width <= 0:
+        return []
+
+    from gui.widgets.chat import _natural_user_bubble_width, _user_bubble_chrome_width
+    from gui.widgets.chat_rows import AssistantMessageRow
+
+    bubble_limit = int(maximum_bubble_width * 0.72)
+    chrome_width = _user_bubble_chrome_width()
+    lines = [
+        "[ui-chat-bubble] "
+        f"viewport_max={maximum_bubble_width} "
+        f"user_limit_72pct={bubble_limit} "
+        f"chrome_width={chrome_width} "
+        f"messages_margins={_margins_text(getattr(chat, 'messages', None))}",
+    ]
+
+    for index, bubble in enumerate(chat.findChildren(QFrame, "UserBubble")):
+        text_label = bubble.findChild(QLabel, "UserBubbleText")
+        if text_label is None:
+            continue
+        raw_text = str(text_label.property("raw_text") or text_label.text() or " ")
+        text_advance = QFontMetrics(text_label.font()).horizontalAdvance(raw_text)
+        natural_width = _natural_user_bubble_width(text_label)
+        bubble_width = min(natural_width, bubble_limit)
+        inner_width = max(1, bubble_width - chrome_width)
+        text_geom = text_label.geometry()
+        bubble_geom = bubble.geometry()
+        row = bubble.parentWidget()
+        row_geom = _optional_geom_text(row)
+        left_pad = text_geom.x()
+        right_pad = bubble_geom.width() - (text_geom.x() + text_geom.width())
+        top_pad = text_geom.y()
+        bottom_pad = bubble_geom.height() - (text_geom.y() + text_geom.height())
+        text_hint = text_label.sizeHint()
+        lines.append(
+            "[ui-chat-bubble] "
+            f"user[{index}] "
+            f"text_preview={_preview_text(raw_text)!r} "
+            f"text_advance={text_advance} "
+            f"natural={natural_width} "
+            f"computed_bubble={bubble_width} "
+            f"inner_width={inner_width} "
+            f"label_min_max={text_label.minimumWidth()}x{text_label.maximumWidth()} "
+            f"label_hint={text_hint.width()}x{text_hint.height()}"
+        )
+        lines.append(
+            "[ui-chat-bubble] "
+            f"user[{index}] "
+            f"row_geom={row_geom} "
+            f"bubble_geom={_geom_text(bubble)} "
+            f"bubble_fixed={bubble.width()} "
+            f"bubble_max={bubble.maximumWidth()} "
+            f"text_geom={_rect_text(text_geom)} "
+            f"inside_pad=L{left_pad} R{right_pad} T{top_pad} B{bottom_pad} "
+            f"bubble_extra_w={bubble_geom.width() - text_geom.width()} "
+            f"bubble_extra_h={bubble_geom.height() - text_geom.height()}"
+        )
+
+    for index, row in enumerate(chat.findChildren(AssistantMessageRow)):
+        layout = row._layout
+        avatar = row._avatar
+        document_blocks = row.document_blocks
+        chrome_width = (
+            layout.contentsMargins().left()
+            + layout.contentsMargins().right()
+            + layout.spacing()
+            + avatar.width()
+        )
+        available_width = max(1, maximum_bubble_width - chrome_width)
+        target_width = max(180, int(available_width * 0.82))
+        body_width = min(available_width, target_width)
+        content_height = document_blocks._content_height_for_width(document_blocks.width())
+        lines.append(
+            "[ui-chat-bubble] "
+            f"assistant[{index}] "
+            f"chrome_width={chrome_width} "
+            f"available={available_width} "
+            f"target_82pct={target_width} "
+            f"body_width={body_width} "
+            f"content_height_for_width={content_height}"
+        )
+        lines.append(
+            "[ui-chat-bubble] "
+            f"assistant[{index}] "
+            f"row_geom={_geom_text(row)} "
+            f"row_fixed_h={row.height()} "
+            f"avatar_geom={_geom_text(avatar)} "
+            f"body_geom={_geom_text(document_blocks)} "
+            f"body_fixed_w={document_blocks.width()} "
+            f"body_fixed_h={document_blocks.height()} "
+            f"row_extra_h={row.height() - max(avatar.height(), document_blocks.height())}"
+        )
+    return lines
+
+
+def emit_chat_layout_diagnostics(chat: QWidget, *, reason: str = "probe") -> None:
+    if not devtools_enabled() or not shiboken6.isValid(chat):
+        return
+    print(f"[ui-chat-layout] reason={reason}", flush=True)
+    for line in chat_layout_diagnostics(chat):
+        print(line, flush=True)
+
+
+def attach_chat_layout_probe(chat: QWidget) -> None:
+    if not devtools_enabled():
+        return
+    timer = QTimer(chat)
+    timer.setSingleShot(True)
+    timer.setInterval(0)
+    timer.timeout.connect(lambda: emit_chat_layout_diagnostics(chat, reason=getattr(timer, "_reason", "probe")))
+    chat._lora_layout_diag_timer = timer  # type: ignore[attr-defined]
+
+    def schedule(reason: str) -> None:
+        if not shiboken6.isValid(chat):
+            return
+        timer._reason = reason
+        timer.start(0)
+
+    chat._schedule_layout_diagnostics = schedule  # type: ignore[attr-defined]
+    schedule("startup")
+
+
+def schedule_chat_layout_diagnostics(chat: QWidget, *, reason: str = "layout") -> None:
+    if not devtools_enabled():
+        return
+    schedule = getattr(chat, "_schedule_layout_diagnostics", None)
+    if callable(schedule):
+        schedule(reason)
 
 
 def install_ui_hit_test_filter(application: QApplication, *, enabled: bool | None = None) -> UiHitTestFilter | None:
@@ -226,8 +360,21 @@ def _item_size_hint_text(item: QLayoutItem) -> str:
 
 
 def _margins_text(layout) -> str:
+    if layout is None:
+        return "missing"
     margins = layout.contentsMargins()
     return f"{margins.left()},{margins.top()},{margins.right()},{margins.bottom()}"
+
+
+def _chat_maximum_bubble_width(chat: QWidget) -> int:
+    maximum_bubble_width = getattr(chat, "_maximum_bubble_width", None)
+    if callable(maximum_bubble_width):
+        return int(maximum_bubble_width())
+    scroll_area = getattr(chat, "scroll_area", None)
+    if scroll_area is None:
+        return 0
+    viewport = scroll_area.viewport()
+    return max(1, viewport.width() - 64)
 
 
 def _widget_path_segment(widget: QWidget) -> str:

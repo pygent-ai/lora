@@ -13,7 +13,9 @@ from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 from gui.devtools import (
     UiHitTestFilter,
+    attach_chat_layout_probe,
     build_widget_path,
+    chat_bubble_diagnostics,
     devtools_clipboard_enabled,
     devtools_enabled,
     describe_widget_hit,
@@ -119,6 +121,51 @@ class GuiDevtoolsTests(unittest.TestCase):
 
         self.assertEqual(output.getvalue(), '[ui-hit] ClickableLabel | QLabel text="Clickable"\n')
 
+    def test_chat_bubble_diagnostics_reports_user_and_assistant_pixel_calculations(self) -> None:
+        pane = ChatPane()
+        pane.resize(420, 320)
+        pane.show()
+        self.app.processEvents()
+        pane.add_message("user", "hello")
+        pane.add_message("assistant", "hi there")
+        self.app.processEvents()
+
+        lines = chat_bubble_diagnostics(pane)
+
+        text = "\n".join(lines)
+        self.assertIn("[ui-chat-bubble]", text)
+        self.assertIn("viewport_max=", text)
+        self.assertIn("user_limit_72pct=", text)
+        self.assertIn("text_advance=", text)
+        self.assertIn("natural=", text)
+        self.assertIn("inside_pad=", text)
+        self.assertIn("assistant[0]", text)
+        self.assertIn("target_82pct=", text)
+
+    def test_attach_chat_layout_probe_prints_diagnostics_on_startup(self) -> None:
+        previous = os.environ.get("LORA_UI_DEBUG_HITTEST")
+        try:
+            os.environ["LORA_UI_DEBUG_HITTEST"] = "1"
+            pane = ChatPane()
+            pane.resize(420, 320)
+            pane.show()
+            self.app.processEvents()
+            pane.add_message("user", "hello")
+            pane.add_message("assistant", "hi")
+            output = StringIO()
+            with redirect_stdout(output):
+                attach_chat_layout_probe(pane)
+                self.app.processEvents()
+            text = output.getvalue()
+            self.assertIn("[ui-chat-layout] reason=startup", text)
+            self.assertIn("[ui-chat-bubble]", text)
+            self.assertIn("text_advance=", text)
+        finally:
+            if previous is None:
+                os.environ.pop("LORA_UI_DEBUG_HITTEST", None)
+            else:
+                os.environ["LORA_UI_DEBUG_HITTEST"] = previous
+
     def test_hit_test_filter_prints_chat_layout_diagnostics_for_chat_hits(self) -> None:
         pane = ChatPane()
         pane.resize(420, 320)
@@ -140,6 +187,8 @@ class GuiDevtoolsTests(unittest.TestCase):
         self.assertIn("scrollbar=", text)
         self.assertIn("scroll_body=", text)
         self.assertIn("last_row=", text)
+        self.assertIn("[ui-chat-bubble]", text)
+        self.assertIn("text_advance=", text)
 
     def test_event_filter_records_mouse_button_press_events(self) -> None:
         widget = QLabel("Clickable")

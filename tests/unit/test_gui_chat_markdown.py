@@ -38,7 +38,7 @@ class GuiChatMarkdownTests(unittest.TestCase):
         self.assertEqual(blocks[2].text, "Quote line")
 
         self.assertIsInstance(blocks[3], ListBlockData)
-        self.assertEqual(blocks[3].items, ["one", "two"])
+        self.assertEqual([item.plain_text for item in blocks[3].items], ["one", "two"])
 
         self.assertIsInstance(blocks[4], CodeBlockData)
         self.assertEqual(blocks[4].language, "python")
@@ -97,7 +97,7 @@ class GuiChatMarkdownTests(unittest.TestCase):
         self.assertEqual(len(blocks), 1)
         self.assertIsInstance(blocks[0], ListBlockData)
         self.assertTrue(blocks[0].ordered)
-        self.assertEqual(blocks[0].items, ["one", "two"])
+        self.assertEqual([item.plain_text for item in blocks[0].items], ["one", "two"])
 
     def test_parse_markdown_blocks_parses_indented_unordered_lists(self) -> None:
         blocks = parse_markdown_blocks("  - one\n  - two\n")
@@ -105,7 +105,7 @@ class GuiChatMarkdownTests(unittest.TestCase):
         self.assertEqual(len(blocks), 1)
         self.assertIsInstance(blocks[0], ListBlockData)
         self.assertFalse(blocks[0].ordered)
-        self.assertEqual(blocks[0].items, ["one", "two"])
+        self.assertEqual([item.plain_text for item in blocks[0].items], ["one", "two"])
 
     def test_parse_markdown_blocks_extracts_common_inline_markdown_spans(self) -> None:
         blocks = parse_markdown_blocks("Hello **bold** *italic* [docs](https://example.com) and `code`")
@@ -147,12 +147,31 @@ class GuiChatMarkdownTests(unittest.TestCase):
         self.assertIsInstance(blocks[1], HorizontalRuleBlockData)
         self.assertIsInstance(blocks[2], ParagraphBlockData)
 
+    def test_parse_markdown_blocks_parses_inline_markdown_in_list_items(self) -> None:
+        blocks = parse_markdown_blocks("1. **阅读和理解代码**\n2. 继续执行\n")
+
+        self.assertEqual(len(blocks), 1)
+        self.assertIsInstance(blocks[0], ListBlockData)
+        self.assertEqual(blocks[0].items[0].plain_text, "**阅读和理解代码**")
+        self.assertEqual([(span.kind, span.text) for span in blocks[0].items[0].spans], [("strong", "阅读和理解代码")])
+        self.assertEqual(blocks[0].items[1].plain_text, "继续执行")
+
     def test_parse_markdown_blocks_preserves_heading_inline_code_spans(self) -> None:
         blocks = parse_markdown_blocks("## Update `development-guide.md`")
 
         self.assertEqual(len(blocks), 1)
         self.assertIsInstance(blocks[0], HeadingBlockData)
         self.assertEqual([(span.kind, span.text) for span in blocks[0].spans], [("text", "Update "), ("code", "development-guide.md")])
+
+    def test_parse_markdown_blocks_accepts_indented_atx_headings(self) -> None:
+        blocks = parse_markdown_blocks(" ## Lora 项目概览\n\n正文")
+
+        self.assertEqual(len(blocks), 2)
+        self.assertIsInstance(blocks[0], HeadingBlockData)
+        self.assertEqual(blocks[0].level, 2)
+        self.assertEqual(blocks[0].text, "Lora 项目概览")
+        self.assertIsInstance(blocks[1], ParagraphBlockData)
+        self.assertEqual(blocks[1].plain_text, "正文")
 
 
 if __name__ == "__main__":

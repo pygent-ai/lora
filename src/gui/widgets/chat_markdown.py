@@ -8,6 +8,7 @@ __all__ = [
     "HeadingBlockData",
     "ParagraphBlockData",
     "QuoteBlockData",
+    "ListItemData",
     "ListBlockData",
     "TableBlockData",
     "HorizontalRuleBlockData",
@@ -48,9 +49,15 @@ class QuoteBlockData(BlockData):
 
 
 @dataclass(frozen=True, slots=True)
+class ListItemData:
+    plain_text: str
+    spans: list[InlineSpan]
+
+
+@dataclass(frozen=True, slots=True)
 class ListBlockData(BlockData):
     ordered: bool
-    items: list[str]
+    items: list[ListItemData]
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +78,7 @@ class CodeBlockData(BlockData):
     closed: bool
 
 
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
 _UNORDERED_LIST_RE = re.compile(r"^\s{0,3}[-*+]\s+(.*)$")
 _ORDERED_LIST_RE = re.compile(r"^\s{0,3}\d+\.\s+(.*)$")
 _OPEN_FENCE_RE = re.compile(r"^```(?:[ \t]*(.*?))?[ \t]*$")
@@ -181,7 +188,7 @@ def _parse_list_block(lines: list[str], start_index: int) -> tuple[ListBlockData
         return None, start_index
 
     ordered, item_text = first_item
-    items = [item_text]
+    items = [_list_item_data(item_text)]
     index = start_index + 1
     while index < len(lines):
         current = lines[index]
@@ -190,9 +197,14 @@ def _parse_list_block(lines: list[str], start_index: int) -> tuple[ListBlockData
         next_item = _parse_list_item(current)
         if next_item is None or next_item[0] != ordered:
             break
-        items.append(next_item[1])
+        items.append(_list_item_data(next_item[1]))
         index += 1
     return ListBlockData(ordered=ordered, items=items), index
+
+
+def _list_item_data(text: str) -> ListItemData:
+    plain_text = text.strip()
+    return ListItemData(plain_text=plain_text, spans=_parse_inline_spans(plain_text))
 
 
 def _parse_list_item(line: str) -> tuple[bool, str] | None:

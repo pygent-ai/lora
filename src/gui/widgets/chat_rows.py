@@ -5,7 +5,7 @@ from html import escape
 
 import shiboken6
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QWheelEvent
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QTextCharFormat, QTextCursor, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -25,6 +25,7 @@ from gui.widgets.chat_markdown import (
     HorizontalRuleBlockData,
     InlineSpan,
     ListBlockData,
+    ListItemData,
     ParagraphBlockData,
     QuoteBlockData,
     TableBlockData,
@@ -49,15 +50,30 @@ class UserMessageRow(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
-        bubble = QLabel(text or " ")
+        bubble = QFrame()
         bubble.setObjectName("UserBubble")
-        bubble.setWordWrap(True)
-        bubble.setTextFormat(Qt.PlainText)
-        bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        bubble.setProperty("format", "text")
-        bubble.setProperty("raw_text", text)
+        bubble.setFrameShape(QFrame.NoFrame)
         bubble.setMinimumWidth(0)
         bubble.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
+
+        bubble_layout = QHBoxLayout(bubble)
+        bubble_layout.setContentsMargins(0, 0, 0, 0)
+        bubble_layout.setSpacing(0)
+
+        text_label = QLabel(text or " ")
+        text_label.setObjectName("UserBubbleText")
+        text_label.setWordWrap(True)
+        text_label.setTextFormat(Qt.PlainText)
+        text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        text_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        text_label.setProperty("format", "text")
+        text_label.setProperty("raw_text", text)
+        text_label.setMinimumWidth(0)
+        text_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        bubble_layout.addWidget(text_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+
+        self._bubble = bubble
+        self._bubble_text = text_label
 
         layout.addStretch(1)
         layout.addWidget(bubble, 0, Qt.AlignRight)
@@ -70,6 +86,7 @@ class AssistantMessageRow(QFrame):
         self.setObjectName("AssistantMessageGroup")
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self._nested_in_activity = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -79,13 +96,47 @@ class AssistantMessageRow(QFrame):
         self._avatar = _message_avatar("assistant")
         self.document_blocks = DocumentBlockList()
         layout.addWidget(self._avatar, 0, Qt.AlignTop)
-        layout.addWidget(self.document_blocks, 1, Qt.AlignLeft | Qt.AlignTop)
+        layout.addWidget(self.document_blocks, 0, Qt.AlignLeft | Qt.AlignTop)
         layout.addStretch(1)
 
     def render_blocks(self, blocks: list[BlockData], *, preserve_height: bool = False) -> None:
+        if self._nested_in_activity:
+            preserve_height = False
         self.document_blocks.render_blocks(blocks, preserve_height=preserve_height)
+        if self._nested_in_activity:
+            self._sync_nested_layout()
+
+    def set_nested_in_activity(self, nested: bool) -> None:
+        if self._nested_in_activity == nested:
+            return
+        self._nested_in_activity = nested
+        self.setProperty("nestedInActivity", nested)
+        if nested:
+            self._avatar.hide()
+            self._layout.setContentsMargins(0, 0, 2, 0)
+            while self._layout.count() > 2:
+                item = self._layout.takeAt(self._layout.count() - 1)
+                if item is not None:
+                    del item
+            self.document_blocks.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+            self.document_blocks._preserve_height = False
+            self.document_blocks._minimum_render_height = 0
+            self._sync_nested_layout()
+            return
+        self._avatar.show()
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        if self._layout.count() == 2:
+            self._layout.addStretch(1)
+        self.document_blocks.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self.setMaximumHeight(16777215)
+        self.setMinimumHeight(0)
 
     def set_viewport_width(self, viewport_width: int) -> None:
+        if self._nested_in_activity:
+            self._sync_nested_layout(viewport_width)
+            return
         chrome_width = (
             self._layout.contentsMargins().left()
             + self._layout.contentsMargins().right()
@@ -99,12 +150,33 @@ class AssistantMessageRow(QFrame):
         self._sync_document_height()
         QTimer.singleShot(0, self._sync_document_height)
 
+    def _sync_nested_layout(self, viewport_width: int | None = None) -> None:
+        if not shiboken6.isValid(self) or not shiboken6.isValid(self.document_blocks):
+            return
+        self.document_blocks._preserve_height = False
+        self.document_blocks._minimum_render_height = 0
+        margins = self._layout.contentsMargins().left() + self._layout.contentsMargins().right()
+        max_width = max(1, (viewport_width if viewport_width is not None else 16777215) - margins)
+        body_width = min(max_width, max(180, int(max_width * 0.82)))
+        self.document_blocks.setMaximumWidth(max_width)
+        self.document_blocks.setFixedWidth(body_width)
+        self.document_blocks.sync_height_for_width(body_width)
+        content_height = max(1, self.document_blocks._content_height_for_width(body_width))
+        self.document_blocks.setFixedHeight(content_height)
+        self.setFixedHeight(content_height)
+        self.updateGeometry()
+
     def _sync_document_height(self) -> None:
         if not shiboken6.isValid(self) or not shiboken6.isValid(self.document_blocks):
             return
         self.document_blocks.sync_height_for_width(self.document_blocks.width())
-        row_height = max(self._avatar.height(), self.document_blocks.height())
-        self.setFixedHeight(row_height)
+        if self._nested_in_activity:
+            content_height = max(1, self.document_blocks._content_height_for_width(self.document_blocks.width()))
+            self.document_blocks.setFixedHeight(content_height)
+            self.setFixedHeight(content_height)
+        else:
+            row_height = max(self._avatar.height(), self.document_blocks.height())
+            self.setFixedHeight(row_height)
         self.updateGeometry()
 
 
@@ -145,9 +217,15 @@ class DocumentBlockList(QFrame):
         layout.setSpacing(7)
         self._layout = layout
         self._minimum_render_height = 0
+        self._preserve_height = False
+        self._last_sync_width = 0
 
     def render_blocks(self, blocks: list[BlockData], *, preserve_height: bool = False) -> None:
-        self._minimum_render_height = max(self._minimum_render_height, self.height()) if preserve_height else 0
+        self._preserve_height = preserve_height
+        if preserve_height:
+            self._minimum_render_height = max(self._minimum_render_height, self.height())
+        else:
+            self._minimum_render_height = 0
         _clear_layout(self._layout)
         for block in blocks:
             self._layout.addWidget(_build_block_widget(block))
@@ -158,13 +236,25 @@ class DocumentBlockList(QFrame):
             self.parentWidget().updateGeometry()
 
     def sync_height_for_width(self, width: int) -> None:
-        self._layout.activate()
         effective_width = max(1, width)
+        if effective_width != self._last_sync_width:
+            self._minimum_render_height = 0
+        self._last_sync_width = effective_width
+
+        self._layout.activate()
+        self._sync_inline_paragraph_heights(effective_width)
         height = self._content_height_for_width(effective_width)
-        effective_height = max(1, height, self._minimum_render_height)
-        self._minimum_render_height = max(self._minimum_render_height, effective_height)
+        if self._preserve_height:
+            effective_height = max(1, height, self._minimum_render_height)
+            self._minimum_render_height = max(self._minimum_render_height, effective_height)
+        else:
+            effective_height = max(1, height)
         self.setFixedHeight(effective_height)
         self.updateGeometry()
+
+    def _sync_inline_paragraph_heights(self, width: int) -> None:
+        for view in self.findChildren(_InlineParagraphView):
+            view.sync_height(width)
 
     def _content_height_for_width(self, width: int) -> int:
         margins = self._layout.contentsMargins()
@@ -282,6 +372,7 @@ def _heading_block(block: HeadingBlockData) -> QWidget:
         label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         label.setProperty("level", block.level)
         label.setProperty("plain_text", block.text)
+        label.setFont(_heading_font(label.font(), block.level))
         label.setMinimumWidth(0)
         label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         return label
@@ -292,6 +383,7 @@ def _heading_block(block: HeadingBlockData) -> QWidget:
     label.setTextInteractionFlags(Qt.TextSelectableByMouse)
     label.setProperty("level", block.level)
     label.setProperty("plain_text", "".join(span.text for span in block.spans))
+    label.setFont(_heading_font(label.font(), block.level))
     label.setMinimumWidth(0)
     label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
     return label
@@ -319,7 +411,7 @@ def _paragraph_block(block: ParagraphBlockData) -> QWidget:
     container.setObjectName("ChatParagraphBlock")
     container.setProperty("plain_text", block.plain_text)
     container.setMinimumWidth(0)
-    container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+    container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
 
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -332,11 +424,11 @@ def _paragraph_block(block: ParagraphBlockData) -> QWidget:
         label.setTextFormat(Qt.PlainText)
         label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         label.setMinimumWidth(0)
-        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        layout.addWidget(label)
+        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        layout.addWidget(label, 0, Qt.AlignTop)
         return container
 
-    layout.addWidget(_formatted_paragraph_view(block))
+    layout.addWidget(_formatted_paragraph_view(block), 0, Qt.AlignTop)
     return container
 
 
@@ -370,7 +462,7 @@ def _list_block(block: ListBlockData) -> QWidget:
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(3)
 
-    for index, item_text in enumerate(block.items, start=1):
+    for index, item in enumerate(block.items, start=1):
         row = QWidget()
         row.setObjectName("ChatListItem")
         row_layout = QHBoxLayout(row)
@@ -384,11 +476,7 @@ def _list_block(block: ListBlockData) -> QWidget:
         bullet.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         bullet.setTextInteractionFlags(Qt.NoTextInteraction)
 
-        text = QLabel(item_text)
-        text.setObjectName("ChatListItemText")
-        text.setWordWrap(True)
-        text.setTextFormat(Qt.PlainText)
-        text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        text = _list_item_text_widget(item)
         text.setMinimumWidth(0)
 
         row_layout.addWidget(bullet, 0, Qt.AlignTop)
@@ -468,6 +556,25 @@ def _formatted_paragraph_view(block: ParagraphBlockData) -> QTextEdit:
     return _formatted_text_view(block.spans, plain_text=block.plain_text, object_name="ChatParagraphText")
 
 
+def _list_item_text_widget(item: ListItemData) -> QWidget:
+    display_text = _inline_display_text(item.spans, fallback=item.plain_text)
+    if all(span.kind == "text" for span in item.spans):
+        label = QLabel(display_text)
+        label.setObjectName("ChatListItemText")
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.PlainText)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setProperty("plain_text", display_text)
+        return label
+    return _formatted_text_view(item.spans, plain_text=display_text, object_name="ChatListItemText")
+
+
+def _inline_display_text(spans: list[InlineSpan], *, fallback: str) -> str:
+    if all(span.kind == "text" for span in spans):
+        return fallback
+    return "".join(span.text for span in spans)
+
+
 def _formatted_text_view(spans: list[InlineSpan], *, plain_text: str, object_name: str) -> QTextEdit:
     view = _InlineParagraphView()
     view.setObjectName(object_name)
@@ -539,6 +646,15 @@ def _inline_link_char_format(widget: QWidget) -> QTextCharFormat:
     return text_format
 
 
+def _heading_font(base_font: QFont, level: int) -> QFont:
+    font = QFont(base_font)
+    base_size = font.pixelSize() or 13
+    size_offsets = {1: 5, 2: 3, 3: 2, 4: 1, 5: 0, 6: 0}
+    font.setPixelSize(base_size + size_offsets.get(level, 0))
+    font.setWeight(QFont.Weight.Bold if level <= 2 else QFont.Weight.DemiBold)
+    return font
+
+
 def _code_block_font(base_font: QFont, *, bold: bool = False) -> QFont:
     font = QFont(base_font)
     font.setFamilies(["Consolas", "DejaVu Sans Mono", "Liberation Mono", "Courier New"])
@@ -548,6 +664,38 @@ def _code_block_font(base_font: QFont, *, bold: bool = False) -> QFont:
     if bold:
         font.setBold(True)
     return font
+
+
+def _natural_document_width(document_blocks: DocumentBlockList, max_width: int) -> int:
+    layout = document_blocks.layout()
+    if layout is None or layout.count() == 0:
+        return max_width
+    natural = 0
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        widget = item.widget() if item is not None else None
+        if widget is not None:
+            natural = max(natural, _block_natural_width(widget, max_width))
+    if natural <= 0:
+        return max_width
+    return max(1, min(max_width, natural))
+
+
+def _block_natural_width(block: QWidget, max_width: int) -> int:
+    if block.objectName() in {"ChatCodeBlock", "ChatTableBlock", "ChatListBlock", "ChatQuoteBlock"}:
+        return max_width
+    plain_text = block.property("plain_text")
+    if isinstance(plain_text, str) and plain_text.strip():
+        text_widget = block if isinstance(block, (QLabel, QTextEdit)) else None
+        if text_widget is None:
+            text_widget = block.findChild(QTextEdit) or block.findChild(QLabel)
+        if text_widget is not None:
+            metrics = QFontMetrics(text_widget.font())
+            return metrics.horizontalAdvance(plain_text.replace("\n", " "))
+    if isinstance(block, QLabel):
+        metrics = QFontMetrics(block.font())
+        return metrics.horizontalAdvance(block.text())
+    return block.sizeHint().width()
 
 
 def _message_avatar(role: str) -> QLabel:
@@ -596,8 +744,9 @@ class _InlineParagraphView(QTextEdit):
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt override.
         event.ignore()
 
-    def sync_height(self) -> None:
-        self.document().setTextWidth(max(0, self.viewport().width()))
+    def sync_height(self, width: int | None = None) -> None:
+        text_width = max(0, width if width is not None else self.viewport().width())
+        self.document().setTextWidth(text_width)
         height = self.document().documentLayout().documentSize().height()
         vertical_margins = self.contentsMargins().top() + self.contentsMargins().bottom() + (self.frameWidth() * 2)
         self.setFixedHeight(int(math.ceil(height + vertical_margins + 2)))

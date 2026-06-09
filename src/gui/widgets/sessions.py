@@ -21,6 +21,11 @@ from PySide6.QtWidgets import (
 
 from gui.icons import icon
 from gui.session_model import ChatSessionRecord, SessionGroupRecord
+from gui.theme import ThemeTypography, text_relative_spacing
+
+_TYPO = ThemeTypography()
+_GROUP_PAD = text_relative_spacing(_TYPO.body_size)
+_META_PAD = text_relative_spacing(_TYPO.meta_size)
 
 _SCOPE_MIME = "application/x-lora-scope-id"
 
@@ -63,8 +68,8 @@ class _SessionGroupHeader(QWidget):
         self._draggable = draggable
         self._drag_start: QPoint | None = None
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(8)
+        layout.setContentsMargins(_GROUP_PAD, _GROUP_PAD, _GROUP_PAD, _GROUP_PAD)
+        layout.setSpacing(_GROUP_PAD)
 
         self.arrow = QLabel("▾" if expanded else "▸")
         self.arrow.setObjectName("SessionGroupArrow")
@@ -94,7 +99,7 @@ class _SessionGroupHeader(QWidget):
             delete_button.setToolTip("Remove project from sidebar")
             delete_button.setAutoRaise(True)
             delete_button.setCursor(Qt.PointingHandCursor)
-            delete_button.setFixedSize(22, 22)
+            delete_button.setFixedSize(_TYPO.body_size + _GROUP_PAD, _TYPO.body_size + _GROUP_PAD)
             delete_button.clicked.connect(lambda: on_remove(scope_id))
             layout.addWidget(delete_button)
 
@@ -164,7 +169,7 @@ class _SessionGroupSection(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(_GROUP_PAD)
 
         self.header = _SessionGroupHeader(
             group.scope.label,
@@ -183,7 +188,7 @@ class _SessionGroupSection(QWidget):
         self.sessions_body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self._sessions_layout = QVBoxLayout(self.sessions_body)
         self._sessions_layout.setContentsMargins(0, 0, 0, 0)
-        self._sessions_layout.setSpacing(6)
+        self._sessions_layout.setSpacing(_GROUP_PAD)
 
         layout.addWidget(self.header)
         layout.addWidget(self.sessions_body)
@@ -330,7 +335,7 @@ class SessionSidebar(QWidget):
         self._groups_container = _GroupsContainer()
         self._groups_layout = QVBoxLayout(self._groups_container)
         self._groups_layout.setContentsMargins(0, 0, 0, 0)
-        self._groups_layout.setSpacing(8)
+        self._groups_layout.setSpacing(_GROUP_PAD)
         self.session_tree.setWidget(self._groups_container)
 
         self.agent = QLabel("")
@@ -523,7 +528,6 @@ class _SessionRow(QWidget):
         self.setObjectName("SessionRow")
         self.setProperty("dev_id", record.session_id)
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setMinimumHeight(56)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._full_title = record.title
         self._metadata_text = _session_metadata(record)
@@ -532,8 +536,8 @@ class _SessionRow(QWidget):
         self._title_label: QLabel | None = None
         self._metadata_label: QLabel | None = None
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 8, 12, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(_GROUP_PAD, _GROUP_PAD, _GROUP_PAD, _GROUP_PAD)
+        layout.setSpacing(_GROUP_PAD)
 
         self.rail = QLabel("")
         self.rail.setObjectName("SessionRowRail")
@@ -543,13 +547,13 @@ class _SessionRow(QWidget):
 
         session_icon = QLabel("")
         session_icon.setObjectName("SessionRowIcon")
-        session_icon.setFixedSize(18, 18)
+        session_icon.setFixedSize(_TYPO.body_size + _GROUP_PAD, _TYPO.body_size + _GROUP_PAD)
         session_icon.setAlignment(Qt.AlignCenter)
         session_icon.setPixmap((icon("trace") or self.style().standardIcon(QStyle.SP_FileDialogDetailedView)).pixmap(14, 14))
 
         text_stack = QVBoxLayout()
         text_stack.setContentsMargins(0, 0, 0, 0)
-        text_stack.setSpacing(5)
+        text_stack.setSpacing(_META_PAD)
         label = QLabel(record.title)
         label.setObjectName("SessionRowTitle")
         label.setProperty("dev_id", record.session_id)
@@ -565,7 +569,7 @@ class _SessionRow(QWidget):
         self._metadata_label = metadata
         meta_row = QHBoxLayout()
         meta_row.setContentsMargins(0, 0, 0, 0)
-        meta_row.setSpacing(8)
+        meta_row.setSpacing(_GROUP_PAD)
         text_stack.addWidget(label)
         meta_row.addWidget(metadata, 1)
 

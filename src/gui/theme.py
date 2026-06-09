@@ -139,6 +139,10 @@ PALETTES: dict[str, ThemePalette] = {
 }
 
 
+def text_relative_spacing(font_size: int, ratio: float = 0.5) -> int:
+    return max(1, round(font_size * ratio))
+
+
 def available_themes() -> tuple[str, str]:
     return THEMES
 
@@ -179,6 +183,9 @@ def _stylesheet(palette: ThemePalette) -> str:
     s = palette.spacing
     r = palette.radius
     state = palette.state_colors
+    group_pad = text_relative_spacing(t.body_size)
+    meta_pad = text_relative_spacing(t.meta_size)
+    group_action_size = t.body_size + group_pad
     if palette.name == "day":
         app_bg = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #fbf8f3, stop:0.38 #f5f4f2, stop:0.72 #eef3f9, stop:1 #eaf4ee)"
         accent_fill = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f7aff, stop:1 #4ea8ff)"
@@ -366,16 +373,14 @@ QTabBar::tab:hover {{
 }}
 #SessionGroupHeader {{
     background: transparent;
-    border: 1px solid transparent;
+    border: 0;
     border-radius: 8px;
 }}
 #SessionGroupHeader[active="true"] {{
-    background: {pill_fill};
-    border-color: {c.border};
+    background: transparent;
 }}
 #SessionGroupHeader:hover {{
     background: {list_hover};
-    border-color: {c.border_strong};
 }}
 #SessionGroupArrow {{
     color: {c.text_soft};
@@ -396,8 +401,8 @@ QTabBar::tab:hover {{
     background: transparent;
     border: 0;
     padding: 0;
-    min-width: 22px;
-    max-width: 22px;
+    min-width: {group_action_size}px;
+    max-width: {group_action_size}px;
 }}
 #SessionGroupDeleteButton:hover {{
     background: {list_hover};
@@ -405,16 +410,14 @@ QTabBar::tab:hover {{
 }}
 #SessionRow {{
     background: transparent;
-    border: 1px solid {c.border};
+    border: 0;
     border-radius: 9px;
 }}
 #SessionRow[selected="true"] {{
     background: {selected_fill};
-    border-color: rgba(20,126,251,0.22);
 }}
 #SessionRow:hover {{
     background: {list_hover};
-    border-color: {c.border_strong};
 }}
 #SessionRowRail {{
     background: transparent;
@@ -426,7 +429,7 @@ QTabBar::tab:hover {{
 #SessionRowIcon {{
     background: {c.surface_alt};
     border: 1px solid {c.border};
-    border-radius: 5px;
+    border-radius: {max(3, meta_pad)}px;
 }}
 #SessionRowTitle {{
     font-size: {t.body_size}px;
@@ -507,33 +510,60 @@ QTabBar::tab:hover {{
     background: transparent;
 }}
 #UserBubble {{
-    font-size: {t.message_size}px;
-    line-height: 1.55;
-}}
-#UserBubble {{
     background: {pill_fill};
     color: {c.text};
     border: 1px solid {c.border};
     border-radius: 18px;
-    padding: 3px 5px;
+    font-size: {t.body_size}px;
+    line-height: 1.48;
+    padding: 10px 16px 10px 12px;
+    text-align: left;
+}}
+#UserBubbleText {{
+    color: {c.text};
+    font-size: {t.body_size}px;
+    line-height: 1.48;
+    background: transparent;
+    border: 0;
+    padding: 0;
 }}
 #DocumentBlockList {{
     background: transparent;
     border: 0;
 }}
-#ChatHeadingBlock, #ChatParagraphText, #ChatQuoteBlock QLabel, #ChatListItem QLabel, #ChatTableCell {{
-    color: {c.text_muted};
+#ChatParagraphText, #ChatListItemText, #ChatQuoteBlock QLabel, #ChatListItem QLabel, #ChatTableCell {{
+    color: {c.text};
     font-size: {t.body_size}px;
     line-height: 1.48;
 }}
 #ChatHeadingBlock {{
-    color: {c.text_muted};
+    color: {c.text};
+    line-height: 1.35;
+    padding: 0;
+    margin: 0;
+}}
+#ChatHeadingBlock[level="1"] {{
+    font-size: {t.body_size + 5}px;
+    font-weight: 700;
+}}
+#ChatHeadingBlock[level="2"] {{
+    font-size: {t.body_size + 3}px;
+    font-weight: 700;
+}}
+#ChatHeadingBlock[level="3"] {{
+    font-size: {t.body_size + 2}px;
+    font-weight: 600;
+}}
+#ChatHeadingBlock[level="4"] {{
+    font-size: {t.body_size + 1}px;
+    font-weight: 600;
+}}
+#ChatHeadingBlock[level="5"], #ChatHeadingBlock[level="6"] {{
     font-size: {t.body_size}px;
     font-weight: 600;
-    padding: 1px 0 1px 0;
 }}
 #ChatParagraphText {{
-    color: {c.text_muted};
+    color: {c.text};
     font-size: {t.body_size}px;
 }}
 #ChatInlineCodeSpan {{
@@ -598,12 +628,12 @@ QTabBar::tab:hover {{
     background: transparent;
     border: 0;
     padding: 7px 9px;
-    color: {c.text_muted};
+    color: {c.text};
 }}
 #ChatTableCell[header="true"] {{
     font-weight: 600;
     background: {selected_fill};
-    color: {c.text_muted};
+    color: {c.text};
 }}
 #ChatCodeBlock {{
     background: transparent;
@@ -622,16 +652,23 @@ QTabBar::tab:hover {{
     font-family: "Consolas", "Courier New", monospace;
     font-size: {t.body_size}px;
 }}
+#ComposerDock {{
+    background: transparent;
+    border: 0;
+}}
 #Composer {{
-    background: {c.surface};
-    border: 1px solid {c.border};
-    border-radius: {r.pane - 2}px;
+    background: {c.glass_strong};
+    border: 1px solid {c.border_strong};
+    border-radius: {r.card + 2}px;
 }}
 #MessageInput {{
     background: transparent;
     border: 0;
     border-radius: 0;
     padding: 0;
+    color: {c.text};
+    font-size: {t.body_size}px;
+    line-height: 1.48;
     selection-background-color: {c.selection};
 }}
 #MessageInput:focus {{
@@ -708,6 +745,28 @@ QTabBar::tab:hover {{
 }}
 #ToolStatusToggle[status="success"] {{
     color: {state.success};
+}}
+#ActivityGroupToggle {{
+    background: transparent;
+    border: 0;
+    color: {c.text_muted};
+    font-size: {t.meta_size + 2}px;
+    font-weight: 600;
+    padding: 0;
+    min-width: 0;
+}}
+#ActivityGroup, #ActivityGroupSummary, #ActivityGroupDetail, #ToolCompactPanel, #ToolCompactDetailRow {{
+    background: transparent;
+    border: 0;
+}}
+#ToolCompactPanel {{
+    padding: 0;
+}}
+#ToolCompactDetailRow QLabel#ToolCallLine {{
+    color: {c.text_muted};
+    font-size: {t.meta_size + 1}px;
+    font-weight: 500;
+    padding: 0;
 }}
 #ToolExpandedPanel {{
     background: transparent;

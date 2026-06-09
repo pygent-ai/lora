@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QSizePo
 from gui.theme import register_ui_fonts, theme_stylesheet
 from gui.workers import InspectorEvent
 from gui.widgets.chat import ChatPane
+from gui.widgets.chat_rows import AssistantMessageRow
 
 
 class GuiChatWidgetTests(unittest.TestCase):
@@ -37,7 +38,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         bubble_texts = [
             label.text()
             for label in pane.findChildren(QLabel)
-            if label.objectName() in {"UserBubble", "AssistantBubble"}
+            if label.objectName() in {"UserBubbleText", "AssistantBubble"}
         ]
         self.assertEqual(bubble_texts, ["new user"])
 
@@ -56,7 +57,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
 
         status_texts = [label.text() for label in pane.findChildren(QLabel) if label.objectName() == "ToolStatusTitle"]
-        self.assertEqual(status_texts, ["read"])
+        self.assertEqual(status_texts, ["Executed 1 tool"])
 
     def test_render_history_reads_persisted_top_level_tool_calls(self) -> None:
         pane = ChatPane()
@@ -82,7 +83,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
 
         status_texts = [label.text() for label in pane.findChildren(QLabel, "ToolStatusTitle")]
-        self.assertEqual(status_texts, ["Read persisted file"])
+        self.assertEqual(status_texts, ["Executed 1 tool"])
         toggle = pane.findChild(QPushButton, "ToolStatusToggle")
         self.assertIsNotNone(toggle)
         assert toggle is not None
@@ -137,25 +138,25 @@ class GuiChatWidgetTests(unittest.TestCase):
         QTest.qWait(40)
         self.app.processEvents()
 
-        expected = ["thinking", "Read files", "first reply", "Run tests", "second reply"]
-        runtime_expected = ["Activity", "second reply"]
+        expected = ["thinking", "Executed 1 tool", "first reply", "Executed 1 tool", "second reply"]
+        runtime_expected = ["second reply"]
         self.assertEqual(_visible_chat_flow(history_pane), expected)
         self.assertEqual(_visible_chat_flow(runtime_pane), runtime_expected)
         self.assertEqual(
             _visible_chat_rows(history_pane),
             [
                 ("assistant", "thinking"),
-                ("tool", "Read files"),
+                ("tool", "Executed 1 tool"),
                 ("assistant", "first reply"),
-                ("tool", "Run tests"),
+                ("tool", "Executed 1 tool"),
                 ("assistant", "second reply"),
             ],
         )
         self.assertEqual(
             _visible_chat_rows(runtime_pane),
-            [("tool", "Activity"), ("assistant", "second reply")],
+            [("assistant", "second reply")],
         )
-        self.assertEqual(_activity_detail_flow(runtime_pane), ["thinking", "Read files", "first reply", "Run tests"])
+        self.assertEqual(_activity_detail_flow(runtime_pane), ["thinking", "Executed 1 tool", "first reply", "Executed 1 tool"])
         self.assertEqual(len(history_pane.findChildren(QWidget, "ToolStatusGroup")), 2)
         self.assertEqual(len(runtime_pane.findChildren(QWidget, "ToolStatusGroup")), 2)
 
@@ -190,6 +191,11 @@ class GuiChatWidgetTests(unittest.TestCase):
             )
         )
 
+        activity_toggle = pane.findChild(QPushButton, "ActivityGroupToggle")
+        self.assertIsNotNone(activity_toggle)
+        assert activity_toggle is not None
+        activity_toggle.click()
+
         toggle = pane.findChild(QPushButton, "ToolStatusToggle")
         self.assertIsNotNone(toggle)
         assert toggle is not None
@@ -197,10 +203,6 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         lines = [label.text() for label in pane.findChildren(QLabel, "ToolCallLine")]
         self.assertEqual(lines, ["Read files", "Run tests"])
-        self.assertEqual([label.property("status") for label in pane.findChildren(QLabel, "ToolCallStatus")], ["success", "running"])
-        self.assertEqual(len(pane.findChildren(QWidget, "ToolTimelineDot")), 2)
-        self.assertRegex(pane.findChildren(QLabel, "ToolCallStartTime")[0].text(), r"^\d{2}:\d{2}:\d{2}$")
-        self.assertEqual(pane.findChildren(QLabel, "ToolCallDuration")[1].text(), "Running")
 
     def test_add_runtime_event_inserts_status_row(self) -> None:
         pane = ChatPane()
@@ -210,9 +212,9 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
 
         status_texts = [label.text() for label in pane.findChildren(QLabel) if label.objectName() == "ToolStatusTitle"]
-        self.assertEqual(status_texts, ["Activity", "Run tests"])
-        self.assertEqual(_visible_chat_flow(pane), ["Activity"])
-        self.assertEqual(_activity_detail_flow(pane), ["Run tests"])
+        self.assertEqual(status_texts, ["Run tests", "Executed 1 tool"])
+        self.assertEqual(_visible_chat_flow(pane), ["Run tests"])
+        self.assertEqual(_activity_detail_flow(pane), ["Executed 1 tool"])
         self.assertEqual(pane.findChildren(QLabel, "ToolStatusDetail"), [])
 
     def test_tool_result_without_known_call_does_not_display_internal_id(self) -> None:
@@ -231,6 +233,11 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
         pane.add_runtime_event(InspectorEvent(kind="tool", title="Tool result: call_1 success", detail="done", tone="ok"))
 
+        activity_toggle = pane.findChild(QPushButton, "ActivityGroupToggle")
+        self.assertIsNotNone(activity_toggle)
+        assert activity_toggle is not None
+        activity_toggle.click()
+
         toggle = pane.findChild(QPushButton, "ToolStatusToggle")
         self.assertIsNotNone(toggle)
         assert toggle is not None
@@ -239,8 +246,8 @@ class GuiChatWidgetTests(unittest.TestCase):
         toggle.click()
 
         detail_texts = [label.text() for label in pane.findChildren(QLabel) if label.objectName() == "ToolCallLine"]
-        self.assertEqual(detail_texts, ["Run diagnostics"])
-        self.assertEqual(len(pane.findChildren(QWidget, "ToolExpandedCard")), 1)
+        self.assertEqual(detail_texts, ["Bash pytest"])
+        self.assertEqual(len(pane.findChildren(QWidget, "ToolCompactPanel")), 1)
 
     def test_consecutive_tool_calls_collapse_into_one_expandable_summary(self) -> None:
         pane = ChatPane()
@@ -297,7 +304,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
 
         summaries = [label.text() for label in pane.findChildren(QLabel, "ToolStatusTitle")]
-        self.assertEqual(summaries, ["Check failing command"])
+        self.assertEqual(summaries, ["Executed 3 tools"])
         self.assertEqual(pane.findChildren(QLabel, "ToolStatusDetail"), [])
 
         toggle = pane.findChild(QPushButton, "ToolStatusToggle")
@@ -306,15 +313,10 @@ class GuiChatWidgetTests(unittest.TestCase):
         toggle.click()
 
         lines = [label.text() for label in pane.findChildren(QLabel, "ToolCallLine")]
-        self.assertEqual(lines, ["Read project files", "Run unit tests", "Check failing command"])
+        self.assertEqual(lines, ["Read README.md", "Bash pytest", "Bash exit 1"])
         self.assertFalse(any("..." in line for line in lines))
-        self.assertFalse(any("x" in line for line in lines))
-        self.assertEqual(
-            [label.property("status") for label in pane.findChildren(QLabel, "ToolCallStatus")],
-            ["success", "success", "error"],
-        )
+        self.assertFalse(any(len(line) > 80 for line in lines))
         self.assertEqual(len(pane.findChildren(QWidget, "ToolTimelineDot")), 3)
-        self.assertEqual(pane.findChildren(QLabel, "ToolCallDuration")[-1].text(), "--")
 
     def test_tool_call_without_result_is_marked_running_when_expanded(self) -> None:
         pane = ChatPane()
@@ -344,9 +346,37 @@ class GuiChatWidgetTests(unittest.TestCase):
         assert toggle is not None
         toggle.click()
 
-        self.assertEqual([label.property("status") for label in pane.findChildren(QLabel, "ToolCallStatus")], ["running"])
-        self.assertEqual([label.text() for label in pane.findChildren(QLabel, "ToolCallLine")], ["Install dependencies"])
+        self.assertEqual([label.text() for label in pane.findChildren(QLabel, "ToolCallLine")], ["Bash uv sync"])
         self.assertEqual([label.text() for label in pane.findChildren(QLabel, "ToolCallDuration")], ["Running"])
+
+    def test_glob_tool_line_includes_pattern_target(self) -> None:
+        pane = ChatPane()
+        pane.render_history(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "payload": {
+                        "tool_calls": [
+                            {
+                                "id": "call_glob",
+                                "function": {
+                                    "name": "glob",
+                                    "arguments": '{"pattern": "src/**/*.py"}',
+                                },
+                            }
+                        ]
+                    },
+                }
+            ]
+        )
+
+        toggle = pane.findChild(QPushButton, "ToolStatusToggle")
+        self.assertIsNotNone(toggle)
+        assert toggle is not None
+        toggle.click()
+
+        self.assertEqual([label.text() for label in pane.findChildren(QLabel, "ToolCallLine")], ["Glob src/**/*.py"])
 
     def test_streaming_assistant_reply_stays_after_tool_calls_in_arrival_order(self) -> None:
         pane = ChatPane()
@@ -363,9 +393,9 @@ class GuiChatWidgetTests(unittest.TestCase):
         pane.append_assistant_delta("done")
 
         visible_flow = _visible_chat_flow(pane)
-        self.assertEqual(visible_flow, ["Activity", "done"])
+        self.assertEqual(visible_flow, ["done"])
 
-        self.assertEqual(_activity_detail_flow(pane), ["Thinking", "Run diagnostics"])
+        self.assertEqual(_activity_detail_flow(pane), ["Thinking", "Executed 1 tool"])
 
     def test_streaming_markdown_before_tool_call_moves_into_activity(self) -> None:
         pane = ChatPane()
@@ -400,10 +430,10 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         self.assertEqual(
             _visible_chat_rows(pane),
-            [("tool", "Activity"), ("assistant", "More")],
+            [("assistant", "More")],
         )
         self.assertNotEqual(pane.findChildren(QWidget, "AssistantMessageGroup")[-1], original_row)
-        self.assertEqual(_activity_detail_flow(pane), ["first", "Read files"])
+        self.assertEqual(_activity_detail_flow(pane), ["first", "Executed 1 tool"])
 
     def test_tool_call_freezes_existing_stream_text_inside_activity(self) -> None:
         pane = ChatPane()
@@ -427,9 +457,9 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         self.assertEqual(
             _visible_chat_rows(pane),
-            [("tool", "Activity"), ("assistant", "final")],
+            [("assistant", "final")],
         )
-        self.assertEqual(_activity_detail_flow(pane), ["thinking", "Read files"])
+        self.assertEqual(_activity_detail_flow(pane), ["thinking", "Executed 1 tool"])
         self.assertNotEqual(pane.findChildren(QWidget, "AssistantMessageGroup")[-1], original_row)
 
     def test_streaming_assistant_reply_without_tools_replaces_thinking_status(self) -> None:
@@ -443,7 +473,7 @@ class GuiChatWidgetTests(unittest.TestCase):
             for index in range(pane.messages.count())
             if (widget := pane.messages.itemAt(index).widget()) is not None
             for label in widget.findChildren(QLabel)
-            if label.objectName() == "ToolStatusTitle"
+            if label.objectName() == "ToolStatusTitle" and label.isVisible()
         ]
         self.assertEqual(ordered_labels, [])
         self.assertEqual(_visible_chat_flow(pane), ["hello"])
@@ -502,9 +532,66 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
 
         status_texts = [label.text() for label in pane.findChildren(QLabel, "ToolStatusTitle")]
-        self.assertEqual(status_texts, ["Activity", '{"description": "Run'])
-        self.assertEqual(_visible_chat_flow(pane), ["Activity"])
-        self.assertEqual(_activity_detail_flow(pane), ['{"description": "Run'])
+        self.assertEqual(status_texts, ['{"description": "Run', "Executed 1 tool"])
+        self.assertEqual(_visible_chat_flow(pane), ['{"description": "Run'])
+        self.assertEqual(_activity_detail_flow(pane), ["Executed 1 tool"])
+
+    def test_activity_title_becomes_processed_when_turn_finishes(self) -> None:
+        pane = ChatPane()
+
+        pane.start_assistant_message()
+        pane.add_runtime_event(
+            InspectorEvent(
+                kind="tool",
+                title="Tool call: bash",
+                detail='{"description": "Run tests", "command": "pytest"}',
+                tone="accent",
+                metadata={"tool_call_id": "call_test"},
+            )
+        )
+        pane.add_runtime_event(
+            InspectorEvent(
+                kind="tool",
+                title="Tool result: call_test success",
+                detail="ok",
+                tone="ok",
+                metadata={"tool_call_id": "call_test"},
+            )
+        )
+        pane.finish_assistant_message("done")
+
+        activity = pane.findChild(QWidget, "ActivityGroup")
+        self.assertIsNotNone(activity)
+        assert activity is not None
+        self.assertRegex(_activity_group_title(activity), r"^Processed for \d")
+
+    def test_activity_without_description_shows_acting_until_processed(self) -> None:
+        pane = ChatPane()
+
+        pane.start_assistant_message()
+        pane.add_runtime_event(
+            InspectorEvent(
+                kind="tool",
+                title="Tool call: bash",
+                detail='{"command": "pytest"}',
+                tone="accent",
+                metadata={"tool_call_id": "call_test"},
+            )
+        )
+
+        activity_titles = [
+            label.text()
+            for label in pane.findChildren(QLabel, "ToolStatusTitle")
+            if label.parentWidget() is not None
+            and label.parentWidget().objectName() == "ActivityGroupSummary"
+        ]
+        self.assertEqual(activity_titles, ["Acting"])
+
+        pane.finish_assistant_message("done")
+        activity = pane.findChild(QWidget, "ActivityGroup")
+        self.assertIsNotNone(activity)
+        assert activity is not None
+        self.assertRegex(_activity_group_title(activity), r"^Processed for \d")
 
     def test_tool_call_after_streaming_reply_stays_in_same_activity_group(self) -> None:
         pane = ChatPane()
@@ -529,14 +616,14 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
 
         visible_flow = _visible_chat_flow(pane)
-        self.assertEqual(visible_flow, ["Activity"])
+        self.assertEqual(visible_flow, ["Run tests"])
         self.assertEqual(
             _visible_chat_rows(pane),
             [
-                ("tool", "Activity"),
+                ("tool", "Run tests"),
             ],
         )
-        self.assertEqual(_activity_detail_flow(pane), ["Thinking", "Read files", "first reply", "Run tests"])
+        self.assertEqual(_activity_detail_flow(pane), ["Thinking", "Executed 1 tool", "first reply", "Executed 1 tool"])
         self.assertEqual(len(pane.findChildren(QWidget, "ToolStatusGroup")), 2)
 
     def test_clicked_activity_keeps_later_streaming_tool_work_in_same_activity_group(self) -> None:
@@ -575,10 +662,10 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         self.assertEqual(
             _visible_chat_rows(pane),
-            [("tool", "Activity"), ("assistant", "final answer")],
+            [("assistant", "final answer")],
         )
         self.assertEqual(len(pane.findChildren(QWidget, "ActivityGroup")), 1)
-        self.assertEqual(_activity_detail_flow(pane), ["Thinking", "Read files", "first reply", "Run tests"])
+        self.assertEqual(_activity_detail_flow(pane), ["Executed 1 tool", "first reply", "Executed 1 tool"])
 
     def test_finish_assistant_message_breaks_tool_group_before_later_runtime_call(self) -> None:
         pane = ChatPane()
@@ -605,12 +692,42 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(
             _visible_chat_rows(pane),
             [
-                ("tool", "Activity"),
                 ("assistant", "first reply"),
-                ("tool", "Activity"),
+                ("tool", "Run tests"),
             ],
         )
         self.assertEqual(len(pane.findChildren(QWidget, "ToolStatusGroup")), 2)
+
+    def test_assistant_turn_shows_single_avatar_for_thinking_tools_and_reply(self) -> None:
+        pane = ChatPane()
+        pane.show()
+        self.app.processEvents()
+
+        pane.render_history(
+            [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "thinking"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_read",
+                            "function": {"name": "read", "arguments": '{"description": "Read files"}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "content": '{"status": "success", "result": "ok"}', "tool_call_id": "call_read"},
+                {"role": "assistant", "content": "final answer"},
+            ]
+        )
+
+        activity = pane.findChild(QWidget, "ActivityGroup")
+        self.assertIsNotNone(activity)
+        assert activity is not None
+        avatars = activity.findChildren(QLabel, "AssistantAvatar", Qt.FindDirectChildrenOnly)
+        self.assertEqual(len(avatars), 1)
+        self.assertIs(avatars[0], activity.findChild(QLabel, "AssistantAvatar"))
 
     def test_user_and_assistant_messages_keep_opposite_sides_and_avatars(self) -> None:
         pane = ChatPane()
@@ -620,9 +737,59 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         self.assertEqual([label.text() for label in pane.findChildren(QLabel, "UserAvatar")], ["U"])
         self.assertEqual([label.text() for label in pane.findChildren(QLabel, "AssistantAvatar")], ["L"])
-        self.assertEqual(len(pane.findChildren(QLabel, "UserBubble")), 1)
+        self.assertEqual(len(pane.findChildren(QLabel, "UserBubbleText")), 1)
         self.assertEqual(pane.findChildren(QLabel, "AssistantBubble"), [])
         self.assertEqual(_assistant_row_texts(pane), ["hi"])
+
+    def test_user_bubble_recovers_after_viewport_grows(self) -> None:
+        pane = ChatPane()
+        pane.resize(320, 400)
+        pane.show()
+        self.app.processEvents()
+        text = "看一下这个项目的文档和代码有什么不一致的地方"
+        pane.add_message("user", text)
+        _process_layout_events(self.app)
+
+        pane.resize(1200, 800)
+        _process_layout_events(self.app)
+
+        user_bubble = pane.findChild(QFrame, "UserBubble")
+        user_bubble_text = pane.findChild(QLabel, "UserBubbleText")
+        self.assertIsNotNone(user_bubble)
+        self.assertIsNotNone(user_bubble_text)
+        assert user_bubble is not None
+        assert user_bubble_text is not None
+
+        text_advance = QFontMetrics(user_bubble_text.font()).horizontalAdvance(text)
+        text_geom = user_bubble_text.geometry()
+
+        self.assertLessEqual(text_geom.x(), 2)
+        self.assertLessEqual(abs(text_geom.width() - text_advance), 2)
+        self.assertLessEqual(abs(user_bubble.width() - (text_advance + 30)), 2)
+
+    def test_short_user_message_stays_single_line_after_viewport_grows(self) -> None:
+        pane = ChatPane()
+        pane.resize(900, 700)
+        pane.show()
+        self.app.processEvents()
+        text = "好的"
+        pane.add_message("user", text)
+        _process_layout_events(self.app)
+
+        pane.resize(1400, 900)
+        _process_layout_events(self.app)
+
+        user_bubble_text = pane.findChild(QLabel, "UserBubbleText")
+        self.assertIsNotNone(user_bubble_text)
+        assert user_bubble_text is not None
+
+        metrics = QFontMetrics(user_bubble_text.font())
+        text_advance = metrics.horizontalAdvance(text)
+        line_count = user_bubble_text.height() / metrics.lineSpacing()
+
+        self.assertFalse(user_bubble_text.wordWrap())
+        self.assertGreaterEqual(user_bubble_text.width(), text_advance - 1)
+        self.assertLess(line_count, 1.5)
 
     def test_history_messages_keep_user_surface_compact_and_assistant_text_bounded(self) -> None:
         pane = ChatPane()
@@ -641,13 +808,16 @@ class GuiChatWidgetTests(unittest.TestCase):
         viewport_max_width = pane.scroll_area.viewport().width() - 64
         user_max_width = int(viewport_max_width * 0.75)
         assistant_max_width = int(viewport_max_width * 0.82)
-        user_bubble = pane.findChild(QLabel, "UserBubble")
+        user_bubble = pane.findChild(QFrame, "UserBubble")
+        user_bubble_text = pane.findChild(QLabel, "UserBubbleText")
         assistant_body = _first_assistant_body(pane)
         self.assertIsNotNone(user_bubble)
+        self.assertIsNotNone(user_bubble_text)
         self.assertIsNotNone(assistant_body)
         assert user_bubble is not None
+        assert user_bubble_text is not None
         assert assistant_body is not None
-        user_text_width = QFontMetrics(user_bubble.font()).horizontalAdvance(user_bubble.text())
+        user_text_width = QFontMetrics(user_bubble_text.font()).horizontalAdvance(user_bubble_text.text())
 
         self.assertLess(user_bubble.width(), user_max_width)
         self.assertGreaterEqual(user_bubble.width(), user_text_width)
@@ -728,7 +898,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(pane.scroll_area.horizontalScrollBar().maximum(), 0)
         viewport_width = pane.scroll_area.viewport().width()
         for label in pane.findChildren(QLabel):
-            if label.objectName() in {"UserBubble", "UserAvatar", "AssistantAvatar"}:
+            if label.objectName() in {"UserBubbleText", "UserAvatar", "AssistantAvatar"}:
                 left = label.mapTo(pane.scroll_area.viewport(), label.rect().topLeft()).x()
                 right = left + label.width()
                 self.assertGreaterEqual(left, 0)
@@ -803,6 +973,9 @@ class GuiChatWidgetTests(unittest.TestCase):
         pane.resize(420, 260)
         pane.show()
         self.app.processEvents()
+        pane.scroll_area.viewport().resize(420, 220)
+        pane._sync_transcript_width_after_layout()
+        pane._update_bubble_widths()
 
         pane.start_assistant_message()
         chunks = [
@@ -830,6 +1003,43 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertGreaterEqual(body.height(), expected_height)
         for previous, current in zip(heights, heights[1:]):
             self.assertGreaterEqual(current + 4, previous)
+
+    def test_markdown_paragraph_spacing_stays_tight_after_window_widens(self) -> None:
+        pane = ChatPane()
+        pane.resize(505, 700)
+        pane.show()
+        self.app.processEvents()
+
+        content = (
+            "First paragraph.\n\n"
+            "Second paragraph with enough words to wrap on a narrow chat column but stay shorter once the pane is wide.\n\n"
+            "Third paragraph."
+        )
+        pane.add_message("assistant", content)
+        _process_layout_events(self.app)
+
+        body = _first_assistant_body(pane)
+        self.assertIsNotNone(body)
+        assert body is not None
+        narrow_blocks = pane.findChildren(QWidget, "ChatParagraphBlock")
+        narrow_gaps = [
+            narrow_blocks[index + 1].geometry().top() - narrow_blocks[index].geometry().bottom()
+            for index in range(len(narrow_blocks) - 1)
+        ]
+
+        pane.resize(1600, 900)
+        _process_layout_events(self.app)
+
+        wide_blocks = pane.findChildren(QWidget, "ChatParagraphBlock")
+        wide_gaps = [
+            wide_blocks[index + 1].geometry().top() - wide_blocks[index].geometry().bottom()
+            for index in range(len(wide_blocks) - 1)
+        ]
+        expected_height = body._content_height_for_width(body.width())
+
+        self.assertEqual(narrow_gaps, [8, 8])
+        self.assertEqual(wide_gaps, [8, 8])
+        self.assertEqual(body.height(), expected_height)
 
     def test_chat_transcript_keeps_only_a_small_bottom_gap_above_composer(self) -> None:
         pane = ChatPane()
@@ -891,10 +1101,12 @@ class GuiChatWidgetTests(unittest.TestCase):
         assert card_layout is not None
 
         self.assertEqual(card_layout.contentsMargins().bottom(), 0)
-        self.assertIs(pane.composer.parentWidget(), pane.main_card)
-        self.assertGreaterEqual(card_layout.indexOf(pane.composer), 0)
-        self.assertLess(pane.scroll_shell.geometry().bottom(), pane.composer.geometry().top())
-        self.assertEqual(pane.composer.geometry().bottom(), pane.main_card.rect().bottom())
+        self.assertIs(pane.composer.parentWidget(), pane.composer_dock)
+        self.assertIs(pane.composer_dock.parentWidget(), pane.main_card)
+        self.assertGreaterEqual(card_layout.indexOf(pane.composer_dock), 0)
+        composer_top = pane.composer.mapTo(pane.main_card, pane.composer.rect().topLeft()).y()
+        self.assertLess(pane.scroll_shell.geometry().bottom(), composer_top)
+        self.assertEqual(pane.composer_dock.geometry().bottom(), pane.main_card.rect().bottom())
 
     def test_chat_header_stays_fixed_while_transcript_scrolls(self) -> None:
         pane = ChatPane()
@@ -945,7 +1157,7 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         self.assertEqual(
             _visible_chat_rows(pane),
-            [("user", "first question"), ("tool", "Activity"), ("assistant", "final answer")],
+            [("user", "first question"), ("assistant", "final answer")],
         )
         self.assertEqual(len(pane.findChildren(QWidget, "ToolStatusGroup")), 1)
         self.assertEqual(len(pane.findChildren(QWidget, "AssistantMessageGroup")), 2)
@@ -992,7 +1204,7 @@ class GuiChatWidgetTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(_activity_detail_flow(pane), ["thinking", "Read files", "first reply", "Run tests"])
+        self.assertEqual(_activity_detail_flow(pane), ["thinking", "Executed 1 tool", "first reply", "Executed 1 tool"])
         self.assertEqual(len(pane.findChildren(QWidget, "ToolStatusGroup")), 2)
 
     def test_history_assistant_message_replays_as_componentized_row(self) -> None:
@@ -1088,6 +1300,29 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(heading.property("plain_text"), "Update development-guide.md")
         self.assertIn("development-guide.md", heading.text())
 
+    def test_heading_uses_larger_font_than_paragraph(self) -> None:
+        pane = ChatPane()
+        pane.add_message("assistant", "## Lora 项目概览\n\n正文段落")
+
+        heading = pane.findChild(QLabel, "ChatHeadingBlock")
+        paragraph = pane.findChild(QLabel, "ChatParagraphText")
+        self.assertIsNotNone(heading)
+        self.assertIsNotNone(paragraph)
+        assert heading is not None
+        assert paragraph is not None
+        self.assertEqual(heading.text(), "Lora 项目概览")
+        self.assertGreater(heading.font().pixelSize(), paragraph.font().pixelSize())
+
+    def test_indented_heading_renders_without_leading_space(self) -> None:
+        pane = ChatPane()
+        pane.add_message("assistant", " ## Lora 项目概览")
+
+        heading = pane.findChild(QLabel, "ChatHeadingBlock")
+        self.assertIsNotNone(heading)
+        assert heading is not None
+        self.assertEqual(heading.text(), "Lora 项目概览")
+        self.assertFalse(heading.text().startswith(" "))
+
     def test_long_formatted_heading_has_no_internal_scroll_range(self) -> None:
         pane = ChatPane()
         pane.resize(360, 420)
@@ -1110,10 +1345,21 @@ class GuiChatWidgetTests(unittest.TestCase):
         pane.add_message("assistant", "- one\n- two")
 
         markers = [label.text() for label in pane.findChildren(QLabel, "ChatListMarker")]
-        item_texts = [label.text() for label in pane.findChildren(QLabel, "ChatListItemText")]
+        item_texts = [_list_item_plain_text(widget) for widget in pane.findChildren(QWidget, "ChatListItemText")]
         self.assertEqual(markers, ["", ""])
         self.assertEqual(item_texts, ["one", "two"])
         self.assertNotIn("- one", _visible_chat_flow(pane))
+
+    def test_ordered_list_renders_bold_inline_markdown(self) -> None:
+        pane = ChatPane()
+
+        pane.add_message("assistant", "1. **阅读和理解代码**\n2. 继续执行")
+
+        item = pane.findChild(QTextEdit, "ChatListItemText")
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertIn("font-weight", item.toHtml().lower())
+        self.assertEqual(_visible_chat_flow(pane), ["阅读和理解代码\n继续执行"])
 
     def test_code_block_text_uses_fixed_pitch_font(self) -> None:
         pane = ChatPane()
@@ -1219,9 +1465,9 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         self.assertEqual(
             _visible_chat_rows(pane),
-            [("user", "hello"), ("assistant", "hi"), ("tool", "Activity")],
+            [("user", "hello"), ("assistant", "hi"), ("tool", "Read files")],
         )
-        self.assertEqual(_activity_detail_flow(pane), ["Read files"])
+        self.assertEqual(_activity_detail_flow(pane), ["Executed 1 tool"])
 
     def test_running_state_keeps_send_button_width_and_updates_status_chip(self) -> None:
         pane = ChatPane()
@@ -1288,8 +1534,8 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertEqual(card.property("status"), "running")
         self.assertEqual(summary.property("status"), "running")
         tool_titles = [label.text() for label in pane.findChildren(QLabel, "ToolStatusTitle")]
-        self.assertIn("Activity", tool_titles)
-        self.assertIn("Run diagnostics", tool_titles)
+        self.assertIn("Executed 1 tool", tool_titles)
+        self.assertEqual(len(tool_titles), 2)
         self.assertEqual(card.property("blink"), True)
 
         pane.add_runtime_event(
@@ -1326,7 +1572,8 @@ class GuiChatWidgetTests(unittest.TestCase):
         assert composer is not None
         self.assertIs(header_shell.parentWidget(), card)
         self.assertIs(scroll_shell.parentWidget(), card)
-        self.assertIs(composer.parentWidget(), card)
+        self.assertIs(composer.parentWidget(), pane.composer_dock)
+        self.assertIs(pane.composer_dock.parentWidget(), card)
 
     def test_floating_composer_sits_below_scroll_content_area(self) -> None:
         pane = ChatPane()
@@ -1342,7 +1589,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         assert composer is not None
 
         scroll_bottom = scroll_shell.geometry().bottom()
-        composer_top = composer.geometry().top()
+        composer_top = composer.mapTo(pane.main_card, composer.rect().topLeft()).y()
         self.assertGreaterEqual(composer_top, scroll_bottom)
 
     def test_send_button_sits_inside_composer_lower_right_corner(self) -> None:
@@ -1357,14 +1604,15 @@ class GuiChatWidgetTests(unittest.TestCase):
         assert composer is not None
 
         self.assertIs(send_button.parentWidget(), composer)
-        self.assertGreaterEqual(send_button.geometry().right(), composer.width() - 180)
-        self.assertGreaterEqual(send_button.geometry().bottom(), composer.height() - 96)
+        self.assertGreaterEqual(send_button.geometry().right(), composer.width() - 130)
+        self.assertGreaterEqual(send_button.geometry().bottom(), composer.height() - 56)
 
     def test_message_input_does_not_draw_a_second_nested_box(self) -> None:
         stylesheet = theme_stylesheet("day")
 
+        self.assertIn("#ComposerDock {", stylesheet)
         self.assertIn("#Composer {", stylesheet)
-        self.assertIn("background: #ffffff;", stylesheet)
+        self.assertIn("background: rgba(255,255,255,0.84);", stylesheet)
         self.assertIn("#MessageInput {", stylesheet)
         self.assertIn("border: 0;", stylesheet)
 
@@ -1374,6 +1622,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertIn("#UserBubble {", stylesheet)
         self.assertIn("background: rgba(255,255,255,0.72);", stylesheet)
         self.assertIn("#ChatHeadingBlock {", stylesheet)
+        self.assertIn('#ChatHeadingBlock[level="2"] {', stylesheet)
         self.assertIn("#ChatParagraphText {", stylesheet)
         self.assertIn("#ChatCodeBlock {", stylesheet)
 
@@ -1424,7 +1673,10 @@ class GuiChatWidgetTests(unittest.TestCase):
         assert tool_card is not None
 
         bubble_left = assistant_body.mapTo(pane.scroll_area.viewport(), assistant_body.rect().topLeft()).x()
-        tool_left = tool_card.mapTo(pane.scroll_area.viewport(), tool_card.rect().topLeft()).x()
+        title = tool_card.findChild(QLabel, "ToolStatusTitle")
+        self.assertIsNotNone(title)
+        assert title is not None
+        tool_left = title.mapTo(pane.scroll_area.viewport(), title.rect().topLeft()).x()
         self.assertEqual(tool_left, bubble_left)
 
     def test_tool_status_toggle_uses_trailing_chevron(self) -> None:
@@ -1452,14 +1704,22 @@ class GuiChatWidgetTests(unittest.TestCase):
 
     def test_expanded_tool_card_shows_status_and_start_time_on_second_line(self) -> None:
         pane = ChatPane()
-        pane.add_runtime_event(
-            InspectorEvent(
-                kind="tool",
-                title="Tool call: bash",
-                detail='{"description": "Run diagnostics", "command": "pytest"}',
-                tone="accent",
-                metadata={"tool_call_id": "call_test"},
-            )
+        pane.render_history(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_test",
+                            "function": {
+                                "name": "bash",
+                                "arguments": '{"description": "Run diagnostics", "command": "pytest"}',
+                            },
+                        }
+                    ],
+                }
+            ]
         )
         toggle = pane.findChild(QPushButton, "ToolStatusToggle")
         self.assertIsNotNone(toggle)
@@ -1503,7 +1763,7 @@ class GuiChatWidgetTests(unittest.TestCase):
 
         self.assertEqual(pane.messages.spacing(), 0)
         self.assertEqual(assistant_group.layout().spacing(), 2)
-        self.assertEqual(tool_group.layout().contentsMargins().left(), 38)
+        self.assertEqual(tool_group.layout().contentsMargins().left(), 0)
         self.assertEqual(tool_summary.layout().contentsMargins().top(), 1)
         self.assertEqual(tool_summary.layout().contentsMargins().bottom(), 1)
 
@@ -1581,7 +1841,8 @@ class GuiChatWidgetTests(unittest.TestCase):
         assert composer is not None
 
         expected_bottom = pane.rect().bottom()
-        self.assertEqual(composer.geometry().bottom(), expected_bottom)
+        self.assertEqual(pane.composer_dock.geometry().bottom(), expected_bottom)
+        self.assertLess(composer.geometry().width(), pane.main_card.width())
 
     def test_chat_scrolls_to_bottom_after_layout_updates_for_long_transcripts(self) -> None:
         pane = ChatPane()
@@ -1616,16 +1877,19 @@ class GuiChatWidgetTests(unittest.TestCase):
                 metadata={"tool_call_id": "call_test"},
             )
         )
+        activity_toggle = pane.findChild(QPushButton, "ActivityGroupToggle")
+        self.assertIsNotNone(activity_toggle)
+        assert activity_toggle is not None
+        activity_toggle.click()
+
         toggle = pane.findChild(QPushButton, "ToolStatusToggle")
         self.assertIsNotNone(toggle)
         assert toggle is not None
         toggle.click()
         self.app.processEvents()
 
-        original_panel = pane.findChild(QWidget, "ToolExpandedPanel")
-        original_card = pane.findChild(QWidget, "ToolExpandedCard")
+        original_panel = pane.findChild(QWidget, "ToolCompactPanel")
         self.assertIsNotNone(original_panel)
-        self.assertIsNotNone(original_card)
 
         pane.add_runtime_event(
             InspectorEvent(
@@ -1638,8 +1902,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         )
         self.app.processEvents()
 
-        self.assertIs(pane.findChild(QWidget, "ToolExpandedPanel"), original_panel)
-        self.assertIs(pane.findChild(QWidget, "ToolExpandedCard"), original_card)
+        self.assertIs(pane.findChild(QWidget, "ToolCompactPanel"), original_panel)
 
     def test_reexpanded_tool_detail_rows_are_updated_in_place(self) -> None:
         pane = ChatPane()
@@ -1655,20 +1918,25 @@ class GuiChatWidgetTests(unittest.TestCase):
                 metadata={"tool_call_id": "call_test"},
             )
         )
+        activity_toggle = pane.findChild(QPushButton, "ActivityGroupToggle")
+        self.assertIsNotNone(activity_toggle)
+        assert activity_toggle is not None
+        activity_toggle.click()
+
         toggle = pane.findChild(QPushButton, "ToolStatusToggle")
         self.assertIsNotNone(toggle)
         assert toggle is not None
         toggle.click()
         self.app.processEvents()
 
-        original_rows = pane.findChildren(QWidget, "ToolDetailRow")
+        original_rows = pane.findChildren(QWidget, "ToolCompactDetailRow")
         self.assertEqual(len(original_rows), 1)
 
         toggle.click()
         toggle.click()
         self.app.processEvents()
 
-        refreshed_rows = pane.findChildren(QWidget, "ToolDetailRow")
+        refreshed_rows = pane.findChildren(QWidget, "ToolCompactDetailRow")
         self.assertEqual(len(refreshed_rows), 1)
         self.assertIs(refreshed_rows[0], original_rows[0])
         for row in refreshed_rows:
@@ -1823,7 +2091,7 @@ def _activity_detail_flow(pane: ChatPane) -> list[str]:
             item = layout.itemAt(index)
             child = item.widget() if item is not None else None
             row = _message_widget_row(child) if child is not None else None
-            if row is not None and row[1] != "Activity":
+            if row is not None:
                 values.append(row[1])
     return values
 
@@ -1848,14 +2116,38 @@ def _message_widget_texts(widget: QWidget) -> list[str]:
     return [row[1]] if row is not None else []
 
 
+def _activity_footer_text(widget: QWidget) -> str:
+    footer = widget.findChild(QWidget, "ActivityGroupFooter")
+    layout = footer.layout() if footer is not None else None
+    if layout is None:
+        return ""
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        child = item.widget() if item is not None else None
+        if isinstance(child, AssistantMessageRow):
+            texts = _assistant_row_texts(child)
+            if texts:
+                return texts[0]
+    return ""
+
+
+def _activity_group_title(widget: QWidget) -> str:
+    summary = widget.findChild(QWidget, "ActivityGroupSummary")
+    title = summary.findChild(QLabel, "ToolStatusTitle") if summary is not None else None
+    return title.text() if title is not None else "Acting"
+
+
 def _message_widget_row(widget: QWidget) -> tuple[str, str] | None:
     if widget.objectName() == "ActivityGroup":
-        return ("tool", "Activity")
+        footer_text = _activity_footer_text(widget)
+        if footer_text:
+            return ("assistant", footer_text)
+        return ("tool", _activity_group_title(widget))
     if (thinking := widget.findChild(QLabel, "ThinkingStatusTitle")) is not None:
         return ("thinking", thinking.text())
     if (tool := widget.findChild(QLabel, "ToolStatusTitle")) is not None:
         return ("tool", tool.text())
-    if (bubble := widget.findChild(QLabel, "UserBubble")) is not None:
+    if (bubble := widget.findChild(QLabel, "UserBubbleText")) is not None:
         return ("user", bubble.text())
     if (bubble := widget.findChild(QLabel, "AssistantBubble")) is not None:
         return ("assistant", bubble.text())
@@ -1895,9 +2187,9 @@ def _assistant_block_text(block: QWidget) -> str:
     if block.objectName() == "ChatListBlock":
         items: list[str] = []
         for row in block.findChildren(QWidget, "ChatListItem"):
-            labels = row.findChildren(QLabel)
-            if len(labels) >= 2:
-                items.append(labels[1].text())
+            text_widget = row.findChild(QWidget, "ChatListItemText")
+            if text_widget is not None:
+                items.append(_list_item_plain_text(text_widget))
         return "\n".join(items)
     if block.objectName() == "ChatCodeBlock":
         label = block.findChild(QLabel, "ChatCodeBlockText")
@@ -1905,6 +2197,17 @@ def _assistant_block_text(block: QWidget) -> str:
     if block.objectName() == "ChatTableBlock":
         values = [label.text() for label in block.findChildren(QLabel, "ChatTableCell")]
         return "\n".join(values)
+    return ""
+
+
+def _list_item_plain_text(widget: QWidget) -> str:
+    plain_text = widget.property("plain_text")
+    if plain_text:
+        return str(plain_text)
+    if isinstance(widget, QLabel):
+        return widget.text()
+    if isinstance(widget, QTextEdit):
+        return widget.toPlainText()
     return ""
 
 

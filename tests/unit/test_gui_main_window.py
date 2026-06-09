@@ -103,7 +103,7 @@ class GuiMainWindowTests(unittest.TestCase):
             window.select_session(session_id)
 
             bubble_texts = [
-                label.text() for label in window.chat.findChildren(QLabel) if label.objectName() == "UserBubble"
+                label.text() for label in window.chat.findChildren(QLabel) if label.objectName() == "UserBubbleText"
             ]
             status_texts = [
                 label.text()
@@ -111,9 +111,9 @@ class GuiMainWindowTests(unittest.TestCase):
                 if label.objectName() == "ToolStatusTitle"
             ]
             self.assertEqual(bubble_texts, ["live prompt"])
-            self.assertEqual(_visible_chat_flow(window.chat), ["live prompt", "Activity"])
-            self.assertEqual(_activity_detail_flow(window.chat), ["live answer", "Read files"])
-            self.assertEqual(status_texts, ["Activity", "Read files"])
+            self.assertEqual(_visible_chat_flow(window.chat), ["live prompt", "Read files"])
+            self.assertEqual(_activity_detail_flow(window.chat), ["live answer", "Executed 1 tool"])
+            self.assertEqual(status_texts, ["Read files", "Executed 1 tool"])
             self.assertFalse(window.chat.input.isEnabled())
 
     def test_different_sessions_can_start_independent_runs(self) -> None:
@@ -164,7 +164,7 @@ class GuiMainWindowTests(unittest.TestCase):
             user_bubbles = [
                 label.text()
                 for label in window.chat.findChildren(type(window.chat.header))
-                if label.objectName() == "UserBubble"
+                if label.objectName() == "UserBubbleText"
             ]
             self.assertNotIn("second message", user_bubbles)
 
@@ -402,12 +402,14 @@ def _visible_chat_flow(widget: QWidget) -> list[str]:
         if row is None:
             continue
         if row.objectName() == "ActivityGroup":
-            texts.append("Activity")
+            summary = row.findChild(QWidget, "ActivityGroupSummary")
+            title = summary.findChild(QLabel, "ToolStatusTitle") if summary is not None else None
+            texts.append(title.text() if title is not None else "Acting")
             continue
         if (thinking := row.findChild(QLabel, "ThinkingStatusTitle")) is not None:
             texts.append(thinking.text())
             continue
-        if (user := row.findChild(QLabel, "UserBubble")) is not None:
+        if (user := row.findChild(QLabel, "UserBubbleText")) is not None:
             texts.append(user.text())
             continue
         if (tool := row.findChild(QLabel, "ToolStatusTitle")) is not None:

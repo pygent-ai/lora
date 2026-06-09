@@ -4,7 +4,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from gui.devtools import install_ui_hit_test_filter
+from gui.devtools import attach_chat_layout_probe, install_ui_hit_test_filter
 from gui.main_window import MainWindow
 from gui.theme import register_ui_fonts, theme_stylesheet
 
@@ -30,6 +30,7 @@ def run_app(
         model=model,
         max_steps=max_steps,
     )
+    attach_chat_layout_probe(window.chat)
     window.resize(1320, 820)
     if smoke:
         window.deleteLater()
