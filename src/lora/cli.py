@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .analysis import FailureAnalyzer
+from .credentials_cli import register_credentials_parser
 from .case import CaseManager
 from .config import load_run_config
 from .evaluation import Evaluator
@@ -130,6 +131,8 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--session", dest="session_id", default=None, help="Resume an existing session.")
     chat.add_argument("--new", action="store_true", help="Start a new chat session even when config has a session_id.")
     chat.set_defaults(handler=_chat)
+
+    register_credentials_parser(sub)
     return parser
 
 

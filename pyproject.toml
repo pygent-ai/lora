@@ -13,10 +13,14 @@ dependencies = [
 dev = [
     "pytest>=9.0.3",
 ]
+credentials = [
+    "keyring>=25.0.0",
+]
 
 [project.scripts]
 lora = "lora.cli:main"
 lora-gui = "gui.__main__:main"
+lora-resources = "gui.resources_app:main"
 
 [build-system]
 requires = ["hatchling"]

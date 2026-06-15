@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.theme import UI_FONT_FAMILIES
 from gui.widgets.chat_markdown import (
     BlockData,
     CodeBlockData,
@@ -100,11 +101,10 @@ class AssistantMessageRow(QFrame):
         layout.addStretch(1)
 
     def render_blocks(self, blocks: list[BlockData], *, preserve_height: bool = False) -> None:
-        if self._nested_in_activity:
-            preserve_height = False
         self.document_blocks.render_blocks(blocks, preserve_height=preserve_height)
         if self._nested_in_activity:
-            self._sync_nested_layout()
+            self._sync_nested_layout(self.document_blocks.width())
+        QTimer.singleShot(0, self._sync_document_height)
 
     def set_nested_in_activity(self, nested: bool) -> None:
         if self._nested_in_activity == nested:
@@ -153,15 +153,15 @@ class AssistantMessageRow(QFrame):
     def _sync_nested_layout(self, viewport_width: int | None = None) -> None:
         if not shiboken6.isValid(self) or not shiboken6.isValid(self.document_blocks):
             return
-        self.document_blocks._preserve_height = False
-        self.document_blocks._minimum_render_height = 0
+        if not self.document_blocks._preserve_height:
+            self.document_blocks._minimum_render_height = 0
         margins = self._layout.contentsMargins().left() + self._layout.contentsMargins().right()
         max_width = max(1, (viewport_width if viewport_width is not None else 16777215) - margins)
         body_width = min(max_width, max(180, int(max_width * 0.82)))
         self.document_blocks.setMaximumWidth(max_width)
         self.document_blocks.setFixedWidth(body_width)
         self.document_blocks.sync_height_for_width(body_width)
-        content_height = max(1, self.document_blocks._content_height_for_width(body_width))
+        content_height = max(1, self.document_blocks.height())
         self.document_blocks.setFixedHeight(content_height)
         self.setFixedHeight(content_height)
         self.updateGeometry()
@@ -237,7 +237,7 @@ class DocumentBlockList(QFrame):
 
     def sync_height_for_width(self, width: int) -> None:
         effective_width = max(1, width)
-        if effective_width != self._last_sync_width:
+        if effective_width != self._last_sync_width and not self._preserve_height:
             self._minimum_render_height = 0
         self._last_sync_width = effective_width
 
@@ -622,8 +622,8 @@ def _inline_char_format(widget: QWidget, span: InlineSpan) -> QTextCharFormat:
 def _inline_code_char_format(widget: QWidget) -> QTextCharFormat:
     is_dark = widget.palette().window().color().lightness() < 128
     code_format = QTextCharFormat()
-    code_format.setFontFamilies(["Consolas", "Courier New", "monospace"])
-    code_format.setFontFixedPitch(True)
+    code_format.setFontFamilies(list(UI_FONT_FAMILIES))
+    code_format.setFontFixedPitch(False)
     code_format.setBackground(QColor("#252b35" if is_dark else "#f8f9fb"))
     code_format.setForeground(QColor("#b2bac7" if is_dark else "#66707f"))
     return code_format
@@ -657,9 +657,8 @@ def _heading_font(base_font: QFont, level: int) -> QFont:
 
 def _code_block_font(base_font: QFont, *, bold: bool = False) -> QFont:
     font = QFont(base_font)
-    font.setFamilies(["Consolas", "DejaVu Sans Mono", "Liberation Mono", "Courier New"])
-    font.setFixedPitch(True)
-    font.setStyleHint(QFont.StyleHint.TypeWriter)
+    font.setFamilies(list(UI_FONT_FAMILIES))
+    font.setFixedPitch(False)
     font.setKerning(False)
     if bold:
         font.setBold(True)

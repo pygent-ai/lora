@@ -2,586 +2,214 @@
 
 ## 1. 目标
 
-本方案用于补全 Lora Agent 的提示词整体拼接架构，重点解决四个问题：
+本设计描述当前 Lora Agent 真实发送给模型的提示词链路。重构后的核心目标是：
 
-1. 提示词明确拆分为静态提示词和动态提示词。
-2. 静态提示词在每个 session 内只生成一次，再次调用直接返回已生成结果。
-3. 动态提示词只能在模型请求发送前拼接，并且需要请求前注入判定机制。
-4. 提示词按模块设计，静态和动态提示词都可以按模块组合、裁剪和审计。
+1. 把 session 级稳定内容和每次请求都要重新渲染的 system 内容拆开。
+2. 明确哪些内容进入 system prompt、哪些内容进入 user/tool message。
+3. 保证所有实际发送给模型的 system prompt 都落盘到 `session.json`、`prompt.rendered` 事件和 rendered prompt 文件。
+4. 删除已经不再发送给模型的旧动态模块，避免“渲染了但没发送”的双轨逻辑。
 
-当前代码已经有 `PromptModule`、`PromptRegistry`、`PromptComposer` 和 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` 的最小实现。本方案在现有方向上继续扩展，不要求一次性重写 agent runtime。
+## 2. 模型可见通道
 
-## 2. 设计依据
+一次模型请求由三类模型可见内容组成：
 
-参考 `prompt-injection-map.md` 和现有上下文管理设计，采用以下原则：
+| 通道 | 来源 | 说明 |
+| --- | --- | --- |
+| system prompt static prefix | `phase="static"` prompt modules | session 内可缓存，写入 `context/prompts/static_prompt.txt` |
+| system prompt request prefix | `phase="request_system"` prompt modules | 每次请求重新渲染，和 static prefix 一起作为真实 system prompt 发送 |
+| conversation messages | runtime history | user message、assistant message、tool message，其中 user/tool message 可能追加 `<system-reminder>` |
 
-- 使用边界标记把可缓存的静态前缀和请求相关动态内容分开。
-- 模块由 registry 管理，不维护一个巨大的 system prompt 字符串。
-- 动态内容通过 render 函数在运行时计算。
-- 最终 prompt 渲染结果必须记录模块列表、hash、输入摘要和注入原因。
-- 静态 prompt 的稳定性优先于“自动刷新”，session 内默认不因为配置变化而重算。
+静态前缀和请求级 system 前缀直接拼成同一个 system prompt 字符串，中间只保留普通空行分隔：
 
-## 3. 核心概念
+```text
+{static prompt}
 
-### 3.1 静态提示词
-
-静态提示词指在一个 session 生命周期内应保持稳定的提示词前缀。它可以包含：
-
-- agent 身份与职责。
-- 基础工具使用规则。
-- 安全边界和提示词注入防护规则。
-- 代码任务通用行为约束。
-- session 创建时已经确定的 agent profile、模型族能力说明、输出风格等。
-
-静态提示词的约束：
-
-- 每个 session 只能生成一次。
-- 再次调用必须从 session 缓存返回同一份文本和元数据。
-- 只有显式新建 session、fork 后生成新 session、或显式管理命令请求重建时，才允许产生新的静态提示词。
-- 不能依赖当前时间、最新用户输入、当前 turn、实时文件状态、工具结果等请求级数据。
-
-### 3.2 动态提示词
-
-动态提示词指依赖当前请求、当前 turn、上下文投影或运行时状态的提示词片段。它可以包含：
-
-- 当前工作目录、当前 turn id、当前时间。
-- 最近对话投影和压缩摘要。
-- 文件读取/写入状态。
-- 可用工具列表或按需工具说明。
-- 最近工具结果提醒。
-- token budget、模型请求参数、当前任务阶段。
-- hook、MCP、外部运行时状态等可能在 session 中途变化的信息。
-
-动态提示词的约束：
-
-- 只能在模型请求即将发送前拼接。
-- 不能提前写入 session 的静态 prompt 缓存。
-- 每次注入都必须经过 `PromptInjectionPolicy` 判定。
-- 注入结果需要和本次模型请求绑定记录，不能被误认为 session 固定状态。
-
-### 3.3 模块
-
-提示词模块是提示词拼接的最小注册单元。静态模块和动态模块使用同一套元数据结构，但生命周期不同。
-
-```python
-@dataclass
-class PromptModule:
-    id: str
-    phase: Literal["static", "dynamic"]
-    type: Literal["system", "project", "runtime", "tool", "memory", "policy"]
-    order: int
-    cache_scope: Literal["session", "request", "turn", "none"]
-    required: bool
-    depends_on: list[str]
-    render: Callable[[PromptRenderContext], str | None]
-    enabled: Callable[[PromptRenderContext], bool]
+{request system prompt}
 ```
 
-建议增加的派生元数据：
+发送给底层模型的是完整 `ModelRequestPrompt.text`。不要在真实 prompt 文本中插入额外 marker；审计边界通过 `prompt.rendered` 元数据里的 `static_module_ids` 和 `request_system_module_ids` 表达。
+
+## 3. PromptModule
+
+`PromptModule.phase` 只使用两个值：
 
 ```python
-class RenderedPromptModule:
-    id: str
-    phase: Literal["static", "dynamic"]
-    type: str
-    order: int
-    version_hash: str
-    input_hash: str
-    content_hash: str
-    rendered_at: str
-    skipped_reason: str | None
+Literal["static", "request_system"]
 ```
 
-字段说明：
+字段含义：
 
-- `id`：稳定模块 id，例如 `system.identity`、`runtime.env_info`。
-- `phase`：决定模块属于静态生成链路还是动态注入链路。
-- `cache_scope`：静态模块使用 `session`，动态模块通常使用 `request` 或 `turn`。
-- `required`：必选模块渲染为空时应报错；可选模块为空时跳过。
-- `depends_on`：模块依赖关系，用于排序和校验。
-- `version_hash`：模块模板或 render 逻辑版本 hash。
-- `input_hash`：本次渲染输入 hash，用于审计动态变化。
-- `content_hash`：渲染后文本 hash。
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 稳定模块 id，例如 `system.identity`、`tool.available` |
+| `phase` | `static` 进入 session 缓存；`request_system` 每次请求渲染并拼到 system prompt |
+| `type` | 模块归属：`system`、`policy`、`tool` 等 |
+| `cache_scope` | `static` 模块使用 `session`；`request_system` 模块通常使用 `request` 或 `turn` |
+| `order` | 拼接顺序 |
+| `required` | 必选模块渲染为空时应报错 |
+| `render` | 根据 `PromptRenderContext` 渲染文本 |
 
-## 4. 总体架构
+## 4. 当前默认模块
+
+### Static Modules
+
+| 模块 id | 内容 |
+| --- | --- |
+| `system.identity` | Agent 身份、职责和语言策略 |
+| `system.tool_policy` | 工具调用策略和工具结果信任边界 |
+| `system.injection_guard` | 非可信内容与 prompt injection 防护 |
+| `system.path_policy` | workspace、project/user Lora root 和工具路径规则 |
+| `system.coding_rules` | 编码工作规则 |
+| `system.output_style` | 输出风格 |
+
+### Request System Modules
+
+| 模块 id | 内容 |
+| --- | --- |
+| `tool.available` | 当前实际可用工具名和用途摘要 |
+| `system.tool_result_reminders` | 工具结果处理规则 |
+| `system.token_budget` | 当前上下文预算或 max steps 说明 |
+
+### 已移除模块
+
+以下模块不再注册，也不再渲染进 system prompt：
+
+| 旧模块 id | 移除原因 |
+| --- | --- |
+| `runtime.system_reminder` | 改为追加到初始 user message 或新工具结果后的 tool message |
+| `runtime.skill_reminder` | 同上，和 CLI context 共用一个 `<system-reminder>` 包装 |
+| `runtime.env_info` | 不再作为默认模型提示词发送 |
+| `project.file_status` | 不再作为默认模型提示词发送 |
+| `memory.recent_projection` | 不再作为默认模型提示词发送 |
+| `runtime.tool_result_reminders` | 重命名为 `system.tool_result_reminders` |
+| `runtime.token_budget` | 重命名为 `system.token_budget` |
+
+## 5. System Prompt 拼接链路
 
 ```mermaid
 flowchart TB
-  Runtime["Agent Runtime"] --> RequestHook["BeforeModelRequest Hook"]
-  RequestHook --> SessionCache["StaticPromptSessionCache"]
-  RequestHook --> Policy["PromptInjectionPolicy"]
-
-  Registry["PromptRegistry"] --> StaticModules["Static Modules"]
-  Registry --> DynamicModules["Dynamic Modules"]
-
-  StaticModules --> StaticAssembler["StaticPromptAssembler"]
-  StaticAssembler --> SessionCache
-
-  Policy --> DynamicAssembler["DynamicPromptAssembler"]
-  DynamicModules --> DynamicAssembler
-
-  SessionCache --> RequestBuilder["ModelRequestPromptBuilder"]
-  DynamicAssembler --> RequestBuilder
-  RequestBuilder --> FinalPrompt["Final System Prompt"]
-  FinalPrompt --> LLM["Model Request"]
-
-  RequestBuilder --> EventStore["EventStore: prompt.rendered"]
+  Runtime["LoraAgent.stream / run_case"] --> Builder["AgentContextManager.build_model_request_prompt"]
+  Builder --> Cache["StaticPromptSessionCache.get_or_create"]
+  Builder --> Registry["PromptRegistry.resolve phase=request_system"]
+  Cache --> StaticText["Static prompt text"]
+  Registry --> Composer["PromptComposer.compose_request_system"]
+  StaticText --> Join["join static + request system text"]
+  Composer --> Join
+  Join --> ModelPrompt["ModelRequestPrompt.text"]
+  ModelPrompt --> Session["RuntimeContext.session.system_prompt"]
+  ModelPrompt --> Store["prompt.rendered + rendered_prompts"]
+  ModelPrompt --> LLM["BaseContext(system_prompt=ModelRequestPrompt.text)"]
 ```
 
-核心组件：
+请求入口只认 `build_model_request_prompt(...)`：
 
-- `PromptRegistry`：注册和解析模块。
-- `StaticPromptAssembler`：只负责静态模块组合。
-- `StaticPromptSessionCache`：负责 session 级静态 prompt 的生成、读取和并发保护。
-- `PromptInjectionPolicy`：模型请求前判定动态模块是否注入。
-- `DynamicPromptAssembler`：只负责动态模块组合。
-- `ModelRequestPromptBuilder`：在请求发送前拼接最终 system prompt。
+1. 获取或创建 session static prompt。
+2. 解析并渲染 `phase="request_system"` 模块。
+3. 直接拼出完整 system prompt，不插入额外边界 marker。
+4. 把完整文本写入 `runtime_context.system_prompt` 和 `runtime_context.session.system_prompt`。
+5. 记录 `prompt.rendered` 事件，并由 `EventStore` 写入 rendered prompt 文件。
+6. `LoraAgent.stream()` 把完整 `ModelRequestPrompt.text` 传给底层模型。
 
-## 5. 静态提示词生成链路
+## 6. `<system-reminder>` 消息链路
 
-### 5.1 触发时机
+`<system-reminder>` 不属于 system prompt module。它是追加到 conversation message 的运行时提醒，分两种位置：
 
-静态提示词可以懒生成，不要求创建 session 时立即生成。推荐触发点：
+| 场景 | 注入位置 | 内容 |
+| --- | --- | --- |
+| session 初始可用 CLI / skill 列表 | 当前 user message 后面 | `<cli-context>`、`<skills-context>` |
+| 工具执行后发现新的 CLI / skill | 当前 tool message 后面 | 只包含新发现条目 |
 
-1. 第一次进入模型请求前。
-2. 其他代码显式调用 `ensure_static_prompt(session_id)`。
+CLI context 和 skill context 始终共用一个外层标签：
 
-只要 session 内已经有缓存，再次调用必须直接返回缓存。
+```xml
+<system-reminder>
+  <cli-context>
+    ...
+  </cli-context>
+  <skills-context>
+    ...
+  </skills-context>
+</system-reminder>
+```
 
-### 5.2 缓存位置
+初始提醒由 `AgentRuntimeAdapter.run_turn()` 和 `run_case()` 在写入 user message 前后统一处理。新发现提醒由工具结果路径在写入 tool message 时追加。两者不再通过 `runtime.system_reminder` 或 `runtime.skill_reminder` 这类 prompt module 实现。
+
+## 7. 落盘与审计
+
+### Static Prompt Cache
 
 ```text
-.lora/
-  sessions/
-    {session_id}/
-      context/
-        prompts/
-          static_prompt.txt
-          static_prompt.json
-      state/
-        prompt_cache.json
-        prompt_cache.lock
+.lora/sessions/{session_id}/context/prompts/static_prompt.txt
+.lora/sessions/{session_id}/context/prompts/static_prompt.json
 ```
 
-`static_prompt.json` 示例：
+这里只保存 `phase="static"` 的文本和元数据，不包含 request system modules，也不包含 `<system-reminder>`。
 
-```json
-{
-  "session_id": "chat-chat-20260528-...",
-  "created_at": "2026-05-28T08:00:00Z",
-  "prompt_hash": "sha256:...",
-  "module_ids": [
-    "system.identity",
-    "system.tool_policy",
-    "system.coding_rules"
-  ],
-  "modules": [
-    {
-      "id": "system.identity",
-      "phase": "static",
-      "version_hash": "sha256:...",
-      "input_hash": "sha256:...",
-      "content_hash": "sha256:..."
-    }
-  ],
-  "registry_version": "sha256:...",
-  "cache_status": "ready"
-}
-```
+### Rendered Prompt
 
-### 5.3 生成流程
-
-```mermaid
-sequenceDiagram
-  participant Caller
-  participant Cache as StaticPromptSessionCache
-  participant Registry as PromptRegistry
-  participant Assembler as StaticPromptAssembler
-  participant Store as Session Files
-
-  Caller->>Cache: get_or_create(session_id)
-  Cache->>Store: read static_prompt.json
-  alt cache exists
-    Store-->>Cache: metadata + text
-    Cache-->>Caller: cached static prompt
-  else cache missing
-    Cache->>Cache: acquire prompt_cache.lock
-    Cache->>Store: read again after lock
-    alt cache created by another caller
-      Store-->>Cache: metadata + text
-      Cache-->>Caller: cached static prompt
-    else still missing
-      Cache->>Registry: resolve phase=static
-      Registry-->>Cache: static modules
-      Cache->>Assembler: render static modules
-      Assembler-->>Cache: text + module metadata
-      Cache->>Store: atomic write static_prompt.txt/json
-      Cache-->>Caller: new static prompt
-    end
-  end
-```
-
-### 5.4 并发与原子性
-
-静态 prompt 需要防止同一个 session 内并发生成两份不同结果：
-
-- 使用 `prompt_cache.lock` 做文件锁。
-- 拿锁后必须二次检查缓存是否已经存在。
-- 写入时先写临时文件，再 atomic rename。
-- 如果生成失败，不能留下 `cache_status=ready` 的元数据。
-- 如果存在 text 但 metadata 损坏，应返回错误并要求显式修复，不能静默重算。
-
-### 5.5 Fork 行为
-
-`SessionManager.fork()` 当前会复制 `context` 和 `state`。静态提示词缓存应随 fork 复制，但新 session 需要更新 metadata：
-
-- `source_session_id` 记录原 session。
-- `session_id` 更新为 fork 后的新 session。
-- `prompt_hash` 和文本保持不变。
-- 如果未来需要 fork 后重建静态 prompt，应通过显式 `rebuild_static_prompt` 管理命令处理。
-
-## 6. 动态提示词注入链路
-
-### 6.1 触发点
-
-动态提示词只能由模型请求前钩子触发：
+每次模型请求的完整 system prompt 会写入：
 
 ```text
-AgentRuntimeAdapter / LoraAgent
-  -> prepare messages
-  -> BeforeModelRequest
-      -> get static prompt cache
-      -> decide dynamic injection
-      -> render dynamic modules if needed
-      -> build final system prompt
-  -> llm.stream_forward(...)
+{run_dir}/rendered_prompts/{turn_id}.txt
+{run_dir}/rendered_prompts/{turn_id}.json
+.lora/sessions/{session_id}/context/rendered_prompts/{case_run_id}/{turn_id}.txt
+.lora/sessions/{session_id}/context/rendered_prompts/{case_run_id}/{turn_id}.json
 ```
 
-不能在以下位置拼接动态提示词：
-
-- session 创建时。
-- 用户消息写入时。
-- 工具结果写入后立即修改 system prompt。
-- 运行结束 checkpoint 时。
-- 任何非模型请求的后台整理任务中，除非该后台任务本身要发送模型请求。
-
-### 6.2 注入判定
-
-新增 `PromptInjectionPolicy`，在每次模型请求前返回决策结果。
-
-```python
-@dataclass
-class PromptInjectionDecision:
-    inject_dynamic: bool
-    module_ids: list[str]
-    reason: str
-    skipped_module_ids: list[str]
-    request_stage: Literal["before_model_request"]
-    decision_hash: str
-```
-
-判定输入：
-
-```python
-@dataclass
-class PromptRequestContext:
-    session_id: str
-    case_run_id: str | None
-    turn_id: str | None
-    request_id: str
-    request_stage: Literal["before_model_request", "other"]
-    history_message_count: int
-    latest_user_input_hash: str | None
-    tool_names: list[str]
-    file_state_hash: str | None
-    projection_hash: str | None
-    runtime_state_hash: str | None
-    request_type: Literal["agent_turn", "case_run", "summary", "evaluation"]
-```
-
-基础规则：
-
-| 规则 | 结果 |
-| --- | --- |
-| `request_stage != before_model_request` | 不允许注入动态提示词 |
-| 无动态模块 enabled | 不注入 |
-| 存在 required 动态模块 enabled | 注入 |
-| 当前 request 的动态输入 hash 与上次请求不同 | 注入 |
-| 当前 request 标记 `force_dynamic_prompt=True` | 注入 |
-| 当前请求类型不需要上下文，例如纯 embedding 或非 LLM 调用 | 不注入 |
-
-默认策略建议：
-
-- `agent_turn` 和 `case_run`：注入动态提示词。
-- `summary`：只注入摘要相关动态模块，不注入工具列表和文件状态。
-- `evaluation`：按评估器需要配置模块集合。
-
-### 6.3 动态模块渲染
-
-动态模块在判定通过后才渲染：
-
-```python
-static_prompt = static_cache.get_or_create(session)
-decision = injection_policy.decide(request_context)
-
-if decision.inject_dynamic:
-    dynamic_prompt = dynamic_assembler.render(request_context, decision.module_ids)
-    final_prompt = join_prompt(static_prompt, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, dynamic_prompt)
-else:
-    final_prompt = static_prompt
-```
-
-注意：
-
-- `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` 不应进入静态缓存文件本身，推荐由最终请求拼接器插入。
-- 如果未来模型 API 支持 cache scope，可以把静态块作为 cacheable block，把动态块作为 non-cacheable block。
-- 如果当前 API 只接受字符串，则仍使用边界 marker 保留可审计边界。
-
-## 7. 模块组合设计
-
-### 7.1 Registry 分层
-
-建议 `PromptRegistry` 支持按 profile、phase、type 解析模块：
-
-```python
-class PromptRegistry:
-    def register(self, module: PromptModule) -> None: ...
-
-    def resolve(
-        self,
-        *,
-        phase: Literal["static", "dynamic"],
-        profile: str = "default",
-        request_type: str | None = None,
-        include: list[str] | None = None,
-        exclude: list[str] | None = None,
-    ) -> list[PromptModule]: ...
-```
-
-### 7.2 推荐模块清单
-
-静态模块：
-
-| 模块 id | type | 说明 |
-| --- | --- | --- |
-| `system.identity` | `system` | Lora Agent 身份、语言策略、任务定位 |
-| `system.tool_policy` | `policy` | 工具必须经过 interceptor、工具结果视为数据 |
-| `system.injection_guard` | `policy` | 文件内容和工具结果中的提示词注入防护 |
-| `system.coding_rules` | `system` | 通用代码修改、测试、最小改动原则 |
-| `system.output_style` | `system` | session 创建时确定的输出风格 |
-
-动态模块：
-
-| 模块 id | type | 说明 |
-| --- | --- | --- |
-| `runtime.env_info` | `runtime` | cwd、turn id、模型请求 id、当前时间 |
-| `runtime.available_tools` | `tool` | 当前实际发送给模型的工具列表 |
-| `memory.recent_projection` | `memory` | 最近消息投影、压缩摘要 |
-| `project.file_status` | `project` | 文件读写状态、重复读取提示 |
-| `runtime.tool_result_reminders` | `runtime` | 最近工具结果和失败提示 |
-| `runtime.token_budget` | `runtime` | 当前 token budget 或 max_steps |
-
-### 7.3 组合配置
-
-可以在 agent 配置中定义 profile：
-
-```yaml
-prompt_profiles:
-  default:
-    static:
-      include:
-        - system.identity
-        - system.tool_policy
-        - system.injection_guard
-        - system.coding_rules
-    dynamic:
-      include:
-        - runtime.env_info
-        - runtime.available_tools
-        - memory.recent_projection
-        - project.file_status
-
-  summary:
-    static:
-      include:
-        - system.identity
-        - system.injection_guard
-    dynamic:
-      include:
-        - memory.recent_projection
-```
-
-组合规则：
-
-- `include` 为空时使用 profile 默认模块。
-- `exclude` 优先级高于默认模块。
-- `required=True` 的模块被 exclude 时需要显式允许，否则报错。
-- 模块按 `order` 排序，order 相同则按 `id` 排序，保证可复现。
-
-## 8. 请求前拼接边界
-
-建议把当前 `AgentContextManager.compose_prompt()` 拆成三个层次：
-
-```text
-AgentContextManager
-  ensure_static_prompt(...)
-  build_dynamic_prompt(...)
-  build_model_request_prompt(...)
-```
-
-职责边界：
-
-- `ensure_static_prompt`：只读/写 session 静态缓存。
-- `build_dynamic_prompt`：只在 request hook 内调用。
-- `build_model_request_prompt`：请求前唯一入口，负责调用 policy、拼接最终结果和写事件。
-
-推荐调用位置：
-
-```python
-class LoraAgent:
-    async def stream(...):
-        request_prompt = self.context_manager.build_model_request_prompt(
-            runtime_context=context,
-            turn_id=self.turn_id,
-            tool_names=list(self._tools),
-            request_type="agent_turn",
-        )
-
-        pygent_context = BaseContext(system_prompt=request_prompt.text)
-        ...
-        async for chunk in self.llm.stream_forward(pygent_context, tools=self.tools_param()):
-            ...
-```
-
-这样可以保证动态提示词不会在更早阶段污染 session prompt。
-
-## 9. 事件与审计
-
-新增或扩展事件：
-
-| 事件类型 | 触发时机 | 说明 |
-| --- | --- | --- |
-| `prompt.static_created` | 静态 prompt 首次生成 | 记录 session 级静态 prompt 元数据 |
-| `prompt.static_reused` | 静态 prompt 缓存命中 | 可选事件，调试用 |
-| `prompt.dynamic_decision` | 模型请求前 | 记录是否注入、原因、模块列表 |
-| `prompt.rendered` | 最终 prompt 生成 | 记录最终 prompt 路径、hash、模块明细 |
-
-`prompt.rendered` payload 建议扩展：
+`prompt.rendered` payload 包含：
 
 ```json
 {
   "prompt_hash": "sha256:...",
   "static_prompt_hash": "sha256:...",
-  "dynamic_prompt_hash": "sha256:...",
-  "module_ids": ["system.identity", "runtime.env_info"],
+  "request_system_prompt_hash": "sha256:...",
+  "dynamic_prompt_hash": null,
+  "module_ids": [
+    "system.identity",
+    "tool.available",
+    "system.tool_result_reminders",
+    "system.token_budget"
+  ],
   "static_module_ids": ["system.identity"],
-  "dynamic_module_ids": ["runtime.env_info"],
-  "injection_decision": {
-    "inject_dynamic": true,
-    "reason": "required_dynamic_modules",
-    "decision_hash": "sha256:..."
-  },
+  "request_system_module_ids": [
+    "tool.available",
+    "system.tool_result_reminders",
+    "system.token_budget"
+  ],
+  "dynamic_module_ids": [],
   "prompt_text_path": ".../rendered_prompts/turn-0001.txt"
 }
 ```
 
-## 10. API 草案
+`dynamic_module_ids` 只作为旧字段占位，当前应为空；新逻辑应使用 `request_system_module_ids` 判断请求级 system prompt 的模块组成。
 
-```python
-class StaticPromptSessionCache:
-    def get_or_create(
-        self,
-        *,
-        session: AgentSession,
-        registry: PromptRegistry,
-        render_context: PromptRenderContext,
-    ) -> StaticPromptResult: ...
+### Session Snapshot
 
+`session.json.system_prompt` 保存最新一次真实发送给模型的完整 system prompt。它包含 static prefix 和 request system prefix，但不包含额外边界 marker。
 
-class PromptInjectionPolicy:
-    def decide(
-        self,
-        *,
-        request_context: PromptRequestContext,
-        dynamic_modules: list[PromptModule],
-    ) -> PromptInjectionDecision: ...
+## 8. 测试要求
 
+单元测试应覆盖：
 
-class ModelRequestPromptBuilder:
-    def build(
-        self,
-        *,
-        session: AgentSession,
-        runtime_context: RuntimeContext,
-        request_context: PromptRequestContext,
-        tool_names: list[str],
-    ) -> ModelRequestPrompt: ...
-```
+- static prompt 只包含 `phase="static"` 模块。
+- `build_model_request_prompt()` 返回的文本包含 static modules 和 request system modules，但不包含额外边界 marker。
+- `runtime_context.session.system_prompt` 等于真实发送给模型的完整 prompt。
+- `prompt.rendered` 包含 `request_system_module_ids`，且 `dynamic_module_ids` 为空。
+- 初始 skill/CLI reminder 追加到首个 user message，不进入 rendered system prompt。
+- 新发现 skill/CLI reminder 追加到对应 tool message，不进入 rendered system prompt。
+- 已移除模块不会出现在 registry、rendered prompt 或 session prompt 中。
 
-返回对象：
+场景测试应覆盖：
 
-```python
-@dataclass
-class ModelRequestPrompt:
-    text: str
-    static_text: str
-    dynamic_text: str | None
-    prompt_hash: str
-    static_prompt_hash: str
-    dynamic_prompt_hash: str | None
-    modules: list[RenderedPromptModule]
-    injection_decision: PromptInjectionDecision
-```
+- `lora chat --message` 首轮生成 static prompt，同时 rendered prompt 包含 request system modules。
+- 续接同一个 session 时 static prompt 命中缓存，但 request system modules 重新渲染。
+- case run 的第一条 user message 能收到初始 skill reminder。
+- trace 和 session 落盘文件能读取到 `request_system_module_ids` 和完整 prompt 文本。
 
-## 11. 与现有实现的演进路径
+## 9. 关键决策
 
-第一阶段：不改变外部行为，只补缓存和结构。
-
-- 保留 `PromptModule`、`PromptRegistry`。
-- 增加 `phase` 字段，或者先由 `cache_scope == "global"` 映射为 static。
-- 新增 `StaticPromptSessionCache`，把当前 global 模块结果写入 session 缓存。
-- `PromptComposer.compose()` 拆成 `compose_static()` 和 `compose_dynamic()`。
-
-第二阶段：加入请求前注入判定。
-
-- 在 `LoraAgent.stream()` 中，把 `compose_prompt()` 替换成 `build_model_request_prompt()`。
-- 新增 `PromptInjectionPolicy`。
-- `prompt.rendered` 记录静态/动态模块拆分和注入原因。
-
-第三阶段：模块组合配置化。
-
-- 在 `RunConfig` 或 agent 配置中增加 `prompt_profile`。
-- `PromptRegistry.resolve()` 支持 profile include/exclude。
-- 增加 summary/evaluation 等专用 profile。
-
-第四阶段：适配模型 API prompt cache。
-
-- 如果底层模型客户端支持分 block 和 cache control，则将静态 prompt 作为 cacheable block。
-- 动态 prompt 作为 non-cacheable block。
-- 字符串模式继续使用 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` 作为审计边界。
-
-## 12. 测试建议
-
-单元测试：
-
-- 同一 session 两次调用 `ensure_static_prompt()`，返回文本、hash、created_at 完全一致。
-- 删除动态输入后，静态 prompt 不变化。
-- 动态模块只能在 `before_model_request` 阶段注入，其他阶段返回拒绝决策。
-- 动态输入 hash 变化时，`PromptInjectionPolicy` 返回注入。
-- profile include/exclude 能正确组合模块并保持顺序稳定。
-- required 模块渲染为空时报错。
-
-场景测试：
-
-- `lora chat --message` 首轮生成静态 prompt，并在 `prompt.rendered` 中记录静态和动态模块。
-- 续接同一个 session 后，静态 prompt 命中缓存，动态 prompt 重新计算。
-- 文件读取状态变化后，只影响动态模块 `project.file_status`。
-- fork session 后静态 prompt 文本保持一致，但 metadata session id 更新。
-
-## 13. 关键决策
-
-- 静态 prompt 缓存以 session 为边界，不以项目或全局为边界。
-- 静态 prompt 默认不自动失效，保证“每个 session 只生成一次”的语义。
-- 动态 prompt 由请求前 hook 唯一拼接，避免早期写入污染缓存。
-- 模块 registry 是唯一组合入口，静态和动态只是模块 phase 的不同。
-- 最终 prompt 必须可审计：能知道每个请求使用了哪些模块、哪些被缓存、哪些是动态注入。
+- 不再维护“渲染了但没有发送”的动态 prompt 轨道。
+- 模型 system prompt 只有两段：session static prefix 和 request system prefix。
+- CLI / skill reminder 属于 conversation message 附加内容，不属于 prompt registry 模块。
+- `system.tool_result_reminders`、`system.token_budget` 使用 `system.*` 命名，避免和已移除的 runtime reminder 混淆。
+- 所有实际发送给模型的 system 内容必须同时进入 model request、`session.json`、`prompt.rendered` 和 rendered prompt 文件。

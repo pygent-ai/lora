@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 from gui.devtools import attach_chat_layout_probe, install_ui_hit_test_filter
 from gui.main_window import MainWindow
-from gui.theme import register_ui_fonts, theme_stylesheet
+from gui.theme import apply_ui_font, register_ui_fonts, theme_stylesheet
 
 
 def run_app(
@@ -21,6 +21,7 @@ def run_app(
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("Lora")
     register_ui_fonts()
+    apply_ui_font(app)
     app.setStyleSheet(theme_stylesheet("day"))
     install_ui_hit_test_filter(app)
     window = MainWindow(

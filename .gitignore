@@ -11,6 +11,11 @@ wheels/
 
 # Local secrets and editor state
 .env
+.env.local
+.env.*
+!.env.example
+lora.local.yaml
+**/credentials.env
 .idea/
 
 # Local Lora runtime state

@@ -248,6 +248,9 @@ class GuiDevtoolsTests(unittest.TestCase):
         self.assertEqual(build_widget_path(dialog.agent_alias), "SettingsDialog > SettingsAgentAliasInput")
         self.assertEqual(build_widget_path(dialog.model), "SettingsDialog > SettingsModelInput")
         self.assertEqual(build_widget_path(dialog.max_steps), "SettingsDialog > SettingsMaxStepsInput")
+        self.assertEqual(build_widget_path(dialog.api_key_env_label), "SettingsDialog > SettingsApiKeyEnvLabel")
+        self.assertEqual(build_widget_path(dialog.api_key_status), "SettingsDialog > SettingsApiKeyStatusLabel")
+        self.assertEqual(build_widget_path(dialog.api_key), "SettingsDialog > SettingsApiKeyInput")
         self.assertEqual(build_widget_path(dialog.apply_button), "SettingsDialog > SettingsButtonBox > SettingsApplyButton")
         self.assertEqual(
             build_widget_path(dialog.cancel_button),

@@ -82,7 +82,8 @@ agents:
 
 - `alias`：agent 别名，用于在 chat、case run 或后续 agent 管理命令中选择配置。
 - `model_request.api_key_env`：读取 API key 的环境变量名，推荐优先使用，避免把密钥写入仓库。
-- `model_request.api_key`：本地明文 API key，仅适合个人未提交的本地配置；写入 run 产物时必须脱敏。
+- `model_request.api_key`：已废弃的明文 API key 字段，仅保留兼容；请改用 `~/.lora/credentials.env` 或 `lora credentials set`。
+- 完整凭证管理说明见 [api-key-management.md](api-key-management.md)。
 - `model_request.model_name`：模型名称，例如 `deepseek-v4-flash`。
 
 解析优先级：

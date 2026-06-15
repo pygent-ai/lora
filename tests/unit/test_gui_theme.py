@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from gui.theme import available_themes, theme_stylesheet
+from gui.theme import _candidate_ui_font_paths, available_themes, theme_stylesheet
 
 
 class GuiThemeTests(unittest.TestCase):
@@ -31,6 +31,26 @@ class GuiThemeTests(unittest.TestCase):
         self.assertIn("#SessionGroupTitle", css)
         self.assertIn("#SessionGroupCount", css)
         self.assertIn("#SessionGroupDeleteButton", css)
+
+    def test_resources_styles_are_defined(self) -> None:
+        css = theme_stylesheet("day")
+
+        self.assertIn("#ResourcesWindow", css)
+        self.assertIn("#ResourceGalleryPane", css)
+        self.assertIn("#ResourceCard", css)
+        self.assertIn("#ResourceSpecPane", css)
+
+    def test_theme_uses_microsoft_yahei_as_primary_ui_font(self) -> None:
+        css = theme_stylesheet("day")
+
+        self.assertIn('font-family: "Microsoft YaHei UI"', css)
+        self.assertNotIn('font-family: "STLiti"', css)
+
+    def test_registers_system_microsoft_yahei_font_candidates(self) -> None:
+        font_files = [path.name for path in _candidate_ui_font_paths()]
+
+        self.assertIn("msyh.ttc", font_files)
+        self.assertIn("msyhbd.ttc", font_files)
 
 
 if __name__ == "__main__":

@@ -58,20 +58,18 @@ flowchart TB
 ```mermaid
 flowchart LR
   Registry["Prompt Registry"] --> Static["静态模块<br/>identity / safety / coding rules"]
-  Registry --> Dynamic["动态模块<br/>cwd / branch / time / file status"]
-  Registry --> Tool["工具模块<br/>Read / Write / Edit / Grep"]
-  Registry --> User["用户任务模块"]
+  Registry --> RequestSystem["请求级系统模块<br/>available tools / tool reminders / token budget"]
+  Messages["Conversation Messages"] --> UserReminder["用户/工具消息提醒<br/>system-reminder"]
 
-  Static --> Boundary["动态边界<br/>SYSTEM_PROMPT_DYNAMIC_BOUNDARY"]
-  Boundary --> Dynamic
-  Dynamic --> Final["最终系统提示词"]
-  Tool --> Final
-  User --> Final
+  Static --> Join["直接拼接<br/>空行分隔"]
+  Join --> RequestSystem
+  RequestSystem --> Final["最终系统提示词"]
+  UserReminder --> ModelMessages["模型消息列表"]
 ```
 
 提示词不应该维护成一个巨大的字符串，而应该拆成多个模块。每个模块有自己的 `id`、类型、顺序、缓存范围和渲染函数。
 
-静态模块适合长期缓存，比如身份设定、基础安全规则、代码风格规则。动态模块每轮重新计算，比如当前分支、当前时间、文件状态、最近工具结果。这里可以参考 `prompt-injection-map.md` 里的做法，用一个动态边界把可缓存内容和会话相关内容分开。
+静态模块适合长期缓存，比如身份设定、基础安全规则、路径规则和代码风格规则。请求级系统模块每次请求重新计算，比如当前可用工具、工具结果处理提醒和上下文预算，并直接追加到静态前缀后面，不插入额外 marker。CLI/skill 的 `<system-reminder>` 不进入 prompt registry，而是追加到 user message 或 tool message。
 
 ## 工具调用记录
 

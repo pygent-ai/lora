@@ -4,7 +4,7 @@
 
 Build a context management system for coding agents that records conversation history, tool calls, tool results, project file changes, file read/write activity, and timestamps. The recorded state should support Git-like version operations: commit, checkout, branch, merge, reset, and diff.
 
-The system also provides prompt modularization, dynamic prompt assembly, file status display, and duplicate file-read detection. When a read tool attempts to read unchanged content that has already been read, the system returns a fixed prompt instead of the full file content.
+The system also provides prompt modularization, request-system prompt assembly, file status tracking, and duplicate file-read detection. When a read tool attempts to read unchanged content that has already been read, the system returns a fixed prompt instead of the full file content.
 
 ## 2. Design References From `prompt-injection-map.md`
 
@@ -12,8 +12,8 @@ The reference file shows several useful patterns:
 
 - Prompt modules are split by ownership: global system prompts, compact prompts, memory prompts, and one prompt file per tool.
 - Tool prompt files export stable names and descriptions, for example `FILE_READ_TOOL_NAME = 'Read'`, `DESCRIPTION`, and prompt renderer functions.
-- Dynamic prompt content is generated at runtime by functions rather than stored as one static string.
-- A system prompt boundary such as `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` separates static cacheable prompt sections from session-specific prompt sections.
+- Request-scoped prompt content is generated at runtime by functions rather than stored as one static string.
+- Request-scoped system prompt sections are appended directly after static cacheable sections; the actual prompt text must not include a synthetic boundary marker.
 - The read tool has an unchanged-file stub: if the same file content is already available in the conversation, the tool can return a fixed message instead of re-reading full content.
 - Deferred tool loading can expose only tool names first, then load full schemas when needed.
 
@@ -104,12 +104,11 @@ Stores prompt modules as versioned units. A prompt module has:
 Builds the final prompt for each model call:
 
 1. Load static system modules.
-2. Insert dynamic boundary marker.
-3. Load project/session/runtime modules.
-4. Add user message.
-5. Add available tool prompts or tool schemas.
-6. Add tool-result reminders and file-state reminders.
-7. Emit a rendered prompt record.
+2. Load request-scoped system modules and append them directly.
+3. Add user message.
+4. Add available tool prompts or tool schemas.
+5. Add tool-result reminders where they belong.
+6. Emit a rendered prompt record.
 
 ### Tool Call Interceptor
 
@@ -339,17 +338,16 @@ Composition:
 async function composePrompt(ctx: PromptRenderContext) {
   const modules = await registry.resolve(ctx)
   const staticParts = modules.filter(m => m.cacheScope === 'global')
-  const dynamicParts = modules.filter(m => m.cacheScope !== 'global')
+  const requestSystemParts = modules.filter(m => m.phase === 'request_system')
 
   return [
     ...(await renderAll(staticParts, ctx)),
-    '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
-    ...(await renderAll(dynamicParts, ctx)),
+    ...(await renderAll(requestSystemParts, ctx)),
   ].filter(Boolean).join('\n\n')
 }
 ```
 
-## 7. Dynamic Prompt Assembly
+## 7. Request System Prompt Assembly
 
 Each model call should build:
 
@@ -359,29 +357,25 @@ System Prompt
   - coding rules
   - safety rules
   - output style
-  - dynamic boundary
-  - current branch
-  - current cwd
-  - current date/time
-  - project file status
-  - relevant memory
+  - available tools
+  - tool result handling reminders
+  - context budget reminders
 
 User Prompt
   - latest user message
   - attached files or selected context
+  - initial <system-reminder> when CLI/skill context must be shown
 
 Tool Prompt
-  - currently available tools
-  - deferred tool names
-  - selected full tool schemas
-  - tool-specific usage policy
+  - tool result content
+  - follow-up <system-reminder> when new CLI/skill resources are detected
 ```
 
 Rendered prompt output should be recorded as `prompt.rendered` with:
 
 - module ids and versions
 - final prompt hash
-- dynamic inputs
+- request-system module ids
 - associated turn id
 
 ## 8. File Status Display

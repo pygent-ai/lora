@@ -16,6 +16,7 @@ from gui.widgets.settings import SettingsDialog
 from gui.workers import ChatTurnWorker, InspectorEvent
 from lora.config import load_run_config
 from lora.schema import RunConfig
+from lora.secrets import set_user_credential
 from lora.session import SessionManager
 
 
@@ -333,6 +334,8 @@ class MainWindow(QMainWindow):
             return
         values = dialog.values()
         try:
+            if values.api_key:
+                set_user_credential(self.config.user_lora_root, values.api_key_env, values.api_key)
             self.config = self._load_config(
                 values.workspace_root or None,
                 values.config_path or None,

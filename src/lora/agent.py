@@ -22,13 +22,12 @@ from pygent.module.tool import BaseTool, ToolManager
 from pygent.toolkits import BashToolkits, FileToolkits
 
 from .diffing import DiffTool
-from .io import load_env_file, plain_data
+from .io import plain_data
 from .runtime import RuntimeContext
 from .schema import BashCliPreset, CaseRunRef, ResolvedAgentConfig, RunConfig
 from .tools import FileStateTracker, ToolContext, ToolInterceptor
 from .trace import EventStore
 
-SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
 DEFAULT_PYGENT_TOOL_NAMES = ("bash", "read", "write", "edit", "glob", "grep")
 MAX_EMPTY_TOOL_FOLLOWUP_RETRIES = 5
 
@@ -75,7 +74,7 @@ class _LoraBashToolkits(BashToolkits):
 @dataclass(slots=True)
 class PromptModule:
     id: str
-    phase: Literal["static", "dynamic"]
+    phase: Literal["static", "request_system"]
     type: Literal["system", "project", "runtime", "tool", "memory", "policy"]
     cache_scope: Literal["session", "request", "turn", "none"]
     order: int
@@ -101,7 +100,7 @@ class PromptModule:
 @dataclass(slots=True)
 class RenderedPromptModule:
     id: str
-    phase: Literal["static", "dynamic"]
+    phase: Literal["static", "request_system"]
     type: str
     order: int
     cache_scope: str
@@ -206,10 +205,10 @@ class PromptInjectionDecision:
 class ModelRequestPrompt:
     text: str
     static_text: str
-    dynamic_text: str | None
+    request_system_text: str | None
     prompt_hash: str
     static_prompt_hash: str
-    dynamic_prompt_hash: str | None
+    request_system_prompt_hash: str | None
     modules: list[dict[str, Any]]
     injection_decision: PromptInjectionDecision
 
@@ -268,43 +267,8 @@ class PromptRegistry:
                 render=_render_system_output_style_prompt,
             ),
             PromptModule(
-                id="runtime.system_reminder",
-                phase="dynamic",
-                type="runtime",
-                cache_scope="request",
-                order=95,
-                render=_render_system_reminder_prompt,
-                enabled=_system_reminder_enabled,
-            ),
-            PromptModule(
-                id="runtime.skill_reminder",
-                phase="dynamic",
-                type="runtime",
-                cache_scope="request",
-                order=96,
-                render=_render_skill_reminder_prompt,
-                enabled=_skill_reminder_enabled,
-            ),
-            PromptModule(
-                id="runtime.env_info",
-                phase="dynamic",
-                type="runtime",
-                cache_scope="turn",
-                order=100,
-                render=_render_runtime_env_info_prompt,
-                required=True,
-            ),
-            PromptModule(
-                id="project.file_status",
-                phase="dynamic",
-                type="project",
-                cache_scope="request",
-                order=110,
-                render=_render_file_status,
-            ),
-            PromptModule(
                 id="tool.available",
-                phase="dynamic",
+                phase="request_system",
                 type="tool",
                 cache_scope="turn",
                 order=120,
@@ -312,24 +276,16 @@ class PromptRegistry:
                 required=True,
             ),
             PromptModule(
-                id="memory.recent_projection",
-                phase="dynamic",
-                type="memory",
-                cache_scope="turn",
-                order=130,
-                render=_render_projection,
-            ),
-            PromptModule(
-                id="runtime.tool_result_reminders",
-                phase="dynamic",
+                id="system.tool_result_reminders",
+                phase="request_system",
                 type="runtime",
                 cache_scope="request",
                 order=140,
                 render=_render_tool_result_reminders_prompt,
             ),
             PromptModule(
-                id="runtime.token_budget",
-                phase="dynamic",
+                id="system.token_budget",
+                phase="request_system",
                 type="runtime",
                 cache_scope="request",
                 order=150,
@@ -359,7 +315,7 @@ class PromptRegistry:
     def resolve(
         self,
         *,
-        phase: Literal["static", "dynamic"] | None = None,
+        phase: Literal["static", "request_system"] | None = None,
         include: list[str] | None = None,
         exclude: list[str] | None = None,
         render_context: PromptRenderContext | None = None,
@@ -384,35 +340,35 @@ class PromptComposer:
     def __init__(self, registry: PromptRegistry | None = None) -> None:
         self.registry = registry or PromptRegistry()
 
-    def resolve_dynamic_modules(
+    def resolve_request_system_modules(
         self,
         ctx: PromptRenderContext,
         *,
         include: list[str] | None = None,
         exclude: list[str] | None = None,
     ) -> list[PromptModule]:
-        return self.registry.resolve(phase="dynamic", include=include, exclude=exclude, render_context=ctx)
+        return self.registry.resolve(phase="request_system", include=include, exclude=exclude, render_context=ctx)
 
     def compose_static(self, ctx: PromptRenderContext) -> tuple[str, list[dict[str, Any]]]:
         modules = self.registry.resolve(phase="static", render_context=ctx)
         return self._compose_modules(ctx, modules)
 
-    def compose_dynamic(
+    def compose_request_system(
         self,
         ctx: PromptRenderContext,
         *,
         module_ids: list[str] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
-        modules = self.registry.resolve(phase="dynamic", include=module_ids, render_context=ctx)
+        modules = self.registry.resolve(phase="request_system", include=module_ids, render_context=ctx)
         return self._compose_modules(ctx, modules)
 
     def compose(self, ctx: PromptRenderContext) -> tuple[str, list[dict[str, Any]]]:
         static_text, static_modules = self.compose_static(ctx)
-        dynamic_text, dynamic_modules = self.compose_dynamic(ctx)
+        request_system_text, request_system_modules = self.compose_request_system(ctx)
         parts = [static_text] if static_text else []
-        if dynamic_text:
-            parts.extend([SYSTEM_PROMPT_DYNAMIC_BOUNDARY, dynamic_text])
-        return "\n\n".join(parts), [*static_modules, *dynamic_modules]
+        if request_system_text:
+            parts.append(request_system_text)
+        return "\n\n".join(parts), [*static_modules, *request_system_modules]
 
     def _compose_modules(
         self,
@@ -632,6 +588,25 @@ class AgentContextManager:
         )
         return self.static_prompt_cache.get_or_create(render_ctx)
 
+    def render_initial_user_reminder(self, *, runtime_context: RuntimeContext, turn_id: str | None) -> str | None:
+        render_ctx = PromptRenderContext(
+            session_id=runtime_context.session_id,
+            workspace_root=self.workspace_root,
+            session_dir=self.session_dir,
+            skills_dir=self.skills_dir,
+            turn_id=turn_id,
+            projection={},
+            tool_names=[],
+            request_id=None,
+            request_type="agent_turn",
+            cli_bash_presets=self.cli_bash_presets,
+            user_lora_root=self.user_lora_root,
+            project_lora_root=self.project_lora_root,
+            user_skills_dir=self.user_skills_dir,
+            project_skills_dir=self.project_skills_dir,
+        )
+        return _render_initial_user_system_reminder(render_ctx)
+
     def build_model_request_prompt(
         self,
         *,
@@ -677,7 +652,7 @@ class AgentContextManager:
             project_skills_dir=self.project_skills_dir,
         )
         static_prompt = self.static_prompt_cache.get_or_create(render_ctx)
-        dynamic_modules = self.prompt_composer.resolve_dynamic_modules(render_ctx)
+        request_system_modules = self.prompt_composer.resolve_request_system_modules(render_ctx)
         request_context = PromptRequestContext(
             session_id=runtime_context.session_id,
             case_run_id=self.store.case_run_ref.case_run_id if self.store is not None else None,
@@ -695,34 +670,34 @@ class AgentContextManager:
         )
         decision = self.injection_policy.decide(
             request_context=request_context,
-            dynamic_modules=dynamic_modules,
+            dynamic_modules=request_system_modules,
         )
 
-        dynamic_text: str | None = None
-        dynamic_prompt_hash: str | None = None
-        dynamic_rendered_modules: list[dict[str, Any]] = []
+        request_system_text: str | None = None
+        request_system_prompt_hash: str | None = None
+        request_system_rendered_modules: list[dict[str, Any]] = []
         if decision.inject_dynamic:
-            dynamic_text, dynamic_rendered_modules = self.prompt_composer.compose_dynamic(
+            request_system_text, request_system_rendered_modules = self.prompt_composer.compose_request_system(
                 render_ctx,
                 module_ids=decision.module_ids,
             )
-            dynamic_prompt_hash = _hash_text(dynamic_text) if dynamic_text else None
+            request_system_prompt_hash = _hash_text(request_system_text) if request_system_text else None
 
         prompt_parts = [static_prompt.text]
-        if dynamic_text:
-            prompt_parts.extend([SYSTEM_PROMPT_DYNAMIC_BOUNDARY, dynamic_text])
+        if request_system_text:
+            prompt_parts.append(request_system_text)
         prompt = "\n\n".join(part for part in prompt_parts if part)
         prompt_hash = _hash_text(prompt)
-        modules = [*static_prompt.modules, *dynamic_rendered_modules]
-        runtime_context.system_prompt = static_prompt.text
-        runtime_context.session.system_prompt = static_prompt.text
+        modules = [*static_prompt.modules, *request_system_rendered_modules]
+        runtime_context.system_prompt = prompt
+        runtime_context.session.system_prompt = prompt
         model_prompt = ModelRequestPrompt(
             text=prompt,
             static_text=static_prompt.text,
-            dynamic_text=dynamic_text,
+            request_system_text=request_system_text,
             prompt_hash=prompt_hash,
             static_prompt_hash=static_prompt.prompt_hash,
-            dynamic_prompt_hash=dynamic_prompt_hash,
+            request_system_prompt_hash=request_system_prompt_hash,
             modules=modules,
             injection_decision=decision,
         )
@@ -734,21 +709,19 @@ class AgentContextManager:
                     "prompt": prompt,
                     "module_ids": [module["id"] for module in modules],
                     "static_module_ids": [module["id"] for module in static_prompt.modules],
-                    "dynamic_module_ids": [module["id"] for module in dynamic_rendered_modules],
+                    "dynamic_module_ids": [],
+                    "request_system_module_ids": [module["id"] for module in request_system_rendered_modules],
                     "modules": modules,
                     "prompt_hash": prompt_hash,
                     "static_prompt_hash": static_prompt.prompt_hash,
-                    "dynamic_prompt_hash": dynamic_prompt_hash,
+                    "dynamic_prompt_hash": None,
+                    "request_system_prompt_hash": request_system_prompt_hash,
                     "static_prompt_created": static_prompt.created,
                     "injection_decision": decision.to_dict(),
                     "dynamic_inputs": dynamic_inputs,
                 },
                 turn_id=turn_id,
             )
-            if any(module["id"] == "runtime.system_reminder" for module in dynamic_rendered_modules):
-                _consume_system_reminder_state(render_ctx)
-            if any(module["id"] == "runtime.skill_reminder" for module in dynamic_rendered_modules):
-                _consume_skill_reminder_state(render_ctx)
         return model_prompt
 
     def file_status(self) -> list[dict[str, Any]]:
@@ -781,7 +754,6 @@ class LoraAgent(BaseAgent):
         )
         self.prompt_registry = prompt_registry
         self.workspace_root = Path(config.workspace_root)
-        load_env_file(self.workspace_root / ".env")
         self.api_key = self.resolved_agent.api_key
         self.model_name = self.resolved_agent.model_name
         self.base_url = self.resolved_agent.base_url or "https://api.deepseek.com"
@@ -824,6 +796,11 @@ class LoraAgent(BaseAgent):
     def tools_param(self) -> list[dict[str, Any]]:
         funcs = self.tool_manager.get_openai_functions()
         return [{"type": "function", "function": _strict_openai_function(function)} for function in funcs]
+
+    def render_initial_user_reminder(self, context: RuntimeContext) -> str | None:
+        if self.context_manager is None:
+            return None
+        return self.context_manager.render_initial_user_reminder(runtime_context=context, turn_id=self.turn_id)
 
     async def stream(self, context: RuntimeContext, max_steps: int = -1) -> AsyncIterator[dict[str, Any]]:
         if self.context_manager is None or self.case_run_ref is None:
@@ -871,7 +848,7 @@ class LoraAgent(BaseAgent):
                 turn_id=self.turn_id,
                 tool_names=list(self._tools),
             )
-            _set_pygent_system_prompt(pygent_context, model_prompt.static_text)
+            _set_pygent_system_prompt(pygent_context, model_prompt.text)
             assistant_parts: list[str] = []
             history_len_before_request = _pygent_history_len(pygent_context)
             async for chunk in self.llm.stream_forward(pygent_context, tools=self.tools_param()):
@@ -951,17 +928,13 @@ class LoraAgent(BaseAgent):
                         new_skill_entries = []
                     payload = result.to_dict()
                 content = _serialize_tool_payload_for_model(payload)
-                reminder = _render_new_cli_tool_message_reminder(new_cli_entries)
+                reminder = _render_tool_system_reminder(
+                    self.context_manager,
+                    new_cli_entries=new_cli_entries,
+                    new_skill_entries=new_skill_entries,
+                )
                 if reminder:
                     content = f"{content}\n\n{reminder}"
-                skill_reminder = _render_new_skill_tool_message_reminder(
-                    self.context_manager.skills_dir,
-                    new_skill_entries,
-                    user_skills_dir=self.context_manager.user_skills_dir,
-                    project_skills_dir=self.context_manager.project_skills_dir,
-                )
-                if skill_reminder:
-                    content = f"{content}\n\n{skill_reminder}"
                 tool_message = ToolMessage(
                     content=content,
                     tool_call_id=tool_call.tool_call_id.data,
@@ -1097,11 +1070,6 @@ def _render_system_output_style_prompt(ctx: PromptRenderContext) -> str | None:
     )
 
 
-def _system_reminder_enabled(ctx: PromptRenderContext) -> bool:
-    state = _load_cli_context_state(ctx)
-    return _system_reminder_has_content(ctx, state)
-
-
 def _cli_command_for_prompt(value: BashCliPreset | dict[str, Any]) -> str:
     if isinstance(value, BashCliPreset):
         return str(value.command or "")
@@ -1136,16 +1104,49 @@ def _render_cli_entry_lines(value: BashCliPreset | dict[str, Any], *, indent: st
     return lines
 
 
-def _render_system_reminder_prompt(ctx: PromptRenderContext) -> str | None:
-    state = _load_cli_context_state(ctx)
-    if not _system_reminder_has_content(ctx, state):
-        return None
-
-    include_initial_cli = not bool(state.get("initial_available_cli_injected"))
-    pending_new_cli = list(state.get("pending_new_bash_cli") or [])
-    pending_reminders = list(state.get("pending_system_reminders") or [])
+def _render_initial_user_system_reminder(ctx: PromptRenderContext) -> str | None:
+    cli_state = _load_cli_context_state(ctx)
+    skill_state = _load_skill_context_state(ctx)
+    include_initial_cli = not bool(cli_state.get("initial_available_cli_injected")) and bool(ctx.cli_bash_presets)
+    pending_new_cli = list(cli_state.get("pending_new_bash_cli") or [])
+    include_initial_skills = not bool(skill_state.get("initial_skill_context_injected")) and (
+        _ctx_user_skills_dir(ctx).exists() or _ctx_project_skills_dir(ctx).exists()
+    )
+    if include_initial_skills and not skill_state.get("known_skills") and not skill_state.get("skills_fingerprint"):
+        skill_state["skills_dir"] = str(_ctx_project_skills_dir(ctx))
+        skill_state["skills_dir_fingerprint"] = _skills_dir_fingerprint(_ctx_project_skills_dir(ctx))
+        skill_state["user_skills_dir"] = str(_ctx_user_skills_dir(ctx))
+        skill_state["project_skills_dir"] = str(_ctx_project_skills_dir(ctx))
+        skill_state["skills_fingerprint"] = _skills_fingerprint(_ctx_user_skills_dir(ctx), _ctx_project_skills_dir(ctx))
+        skill_state["known_skills"] = {
+            skill["name"]: skill
+            for skill in _scan_multilevel_skills(
+                user_skills_dir=_ctx_user_skills_dir(ctx),
+                project_skills_dir=_ctx_project_skills_dir(ctx),
+            )
+        }
+        _write_skill_context_state(ctx, skill_state)
+    pending_new_skills = list(skill_state.get("pending_new_skills") or [])
     include_time = include_initial_cli or any(bool(item.get("include_time")) for item in pending_new_cli)
-    include_time = include_time or any(bool(item.get("include_time")) for item in pending_reminders)
+    include_time = include_time or any(bool(item.get("include_time")) for item in cli_state.get("pending_system_reminders") or [])
+
+    sections: list[str] = []
+    cli_section = _render_cli_context_section(
+        initial_presets=ctx.cli_bash_presets if include_initial_cli else [],
+        new_cli_entries=pending_new_cli,
+    )
+    if cli_section:
+        sections.extend(cli_section)
+    skill_section = _render_skill_context_section(
+        ctx,
+        include_initial=include_initial_skills,
+        available_skills=sorted((skill_state.get("known_skills") or {}).values(), key=lambda item: str(item.get("name") or "")),
+        new_skill_entries=pending_new_skills,
+    )
+    if skill_section:
+        sections.extend(skill_section)
+    if not sections:
+        return None
 
     lines = ["<system-reminder>"]
     if include_time:
@@ -1157,88 +1158,127 @@ def _render_system_reminder_prompt(ctx: PromptRenderContext) -> str | None:
                 "",
             ]
         )
-
-    cli_lines: list[str] = []
-    if include_initial_cli:
-        cli_lines.append("<available-bash-cli>")
-        for preset in ctx.cli_bash_presets:
-            cli_lines.extend(_render_cli_entry_lines(preset, indent="  "))
-        cli_lines.append("</available-bash-cli>")
-
-    if pending_new_cli:
-        if cli_lines:
-            cli_lines.append("")
-        cli_lines.append("<new-bash-cli>")
-        for item in pending_new_cli:
-            cli_lines.extend(_render_cli_entry_lines(item, indent="  "))
-        cli_lines.append("</new-bash-cli>")
-
-    if cli_lines:
-        lines.extend(["<cli-context>", *[f"  {line}" if line else "" for line in cli_lines], "</cli-context>"])
+    lines.extend(sections)
     lines.append("</system-reminder>")
+    if cli_section:
+        _consume_system_reminder_state(ctx)
+    if skill_section:
+        _consume_skill_reminder_state(ctx)
     return "\n".join(lines)
 
 
-def _skill_reminder_enabled(ctx: PromptRenderContext) -> bool:
-    state = _load_skill_context_state(ctx)
-    if not bool(state.get("initial_skill_context_injected")) and (
-        _ctx_user_skills_dir(ctx).exists() or _ctx_project_skills_dir(ctx).exists()
-    ):
-        if not state.get("known_skills") and not state.get("skills_dir_fingerprint"):
-            state["skills_dir"] = str(_ctx_project_skills_dir(ctx))
-            state["skills_dir_fingerprint"] = _skills_dir_fingerprint(_ctx_project_skills_dir(ctx))
-            state["user_skills_dir"] = str(_ctx_user_skills_dir(ctx))
-            state["project_skills_dir"] = str(_ctx_project_skills_dir(ctx))
-            state["skills_fingerprint"] = _skills_fingerprint(_ctx_user_skills_dir(ctx), _ctx_project_skills_dir(ctx))
-            state["known_skills"] = {
-                skill["name"]: skill
-                for skill in _scan_multilevel_skills(
-                    user_skills_dir=_ctx_user_skills_dir(ctx),
-                    project_skills_dir=_ctx_project_skills_dir(ctx),
-                )
-            }
-            _write_skill_context_state(ctx, state)
-        return True
-    return _skill_reminder_has_content(state)
-
-
-def _render_skill_reminder_prompt(ctx: PromptRenderContext) -> str | None:
-    state = _load_skill_context_state(ctx)
-    include_initial = not bool(state.get("initial_skill_context_injected")) and (
-        _ctx_user_skills_dir(ctx).exists() or _ctx_project_skills_dir(ctx).exists()
-    )
-    pending_new_skills = list(state.get("pending_new_skills") or [])
-    if not include_initial and not pending_new_skills:
+def _render_tool_system_reminder(
+    context_manager: AgentContextManager,
+    *,
+    new_cli_entries: list[dict[str, Any]],
+    new_skill_entries: list[dict[str, Any]],
+) -> str | None:
+    if not new_cli_entries and not new_skill_entries:
         return None
-
+    ctx = PromptRenderContext(
+        session_id=context_manager.store.case_run_ref.session_id if context_manager.store is not None else "session",
+        workspace_root=context_manager.workspace_root,
+        session_dir=context_manager.session_dir,
+        skills_dir=context_manager.skills_dir,
+        turn_id=getattr(context_manager, "turn_id", None),
+        projection={},
+        tool_names=[],
+        request_id=None,
+        request_type="agent_turn",
+        cli_bash_presets=context_manager.cli_bash_presets,
+        user_lora_root=context_manager.user_lora_root,
+        project_lora_root=context_manager.project_lora_root,
+        user_skills_dir=context_manager.user_skills_dir,
+        project_skills_dir=context_manager.project_skills_dir,
+    )
+    sections: list[str] = []
+    cli_section = _render_cli_context_section(initial_presets=[], new_cli_entries=new_cli_entries)
+    if cli_section:
+        sections.extend(cli_section)
+    skill_section = _render_skill_context_section(
+        ctx,
+        include_initial=False,
+        available_skills=[],
+        new_skill_entries=new_skill_entries,
+    )
+    if skill_section:
+        sections.extend(skill_section)
+    if not sections:
+        return None
     lines = [
         "<system-reminder>",
-        "  <skills-context>",
-        f"    <skills-directory>{escape(str(_ctx_project_skills_dir(ctx)), quote=False)}</skills-directory>",
-        f"    <user-skills-directory>{escape(str(_ctx_user_skills_dir(ctx)), quote=False)}</user-skills-directory>",
-        f"    <project-skills-directory>{escape(str(_ctx_project_skills_dir(ctx)), quote=False)}</project-skills-directory>",
-        "    <selection-rule>Project skills override user skills with the same name.</selection-rule>",
+        "<time>",
+        f"  当前系统时间为：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        "</time>",
+        "",
+        *sections,
+        "</system-reminder>",
+    ]
+    if cli_section:
+        _consume_system_reminder_state(ctx)
+    if skill_section:
+        _consume_skill_reminder_state(ctx)
+    return "\n".join(lines)
+
+
+def _render_cli_context_section(
+    *,
+    initial_presets: list[BashCliPreset],
+    new_cli_entries: list[dict[str, Any]],
+) -> list[str]:
+    cli_lines: list[str] = []
+    if initial_presets:
+        cli_lines.append("<available-bash-cli>")
+        for preset in initial_presets:
+            cli_lines.extend(_render_cli_entry_lines(preset, indent="  "))
+        cli_lines.append("</available-bash-cli>")
+    if new_cli_entries:
+        if cli_lines:
+            cli_lines.append("")
+        cli_lines.append("<new-bash-cli>")
+        for item in new_cli_entries:
+            cli_lines.extend(_render_cli_entry_lines(item, indent="  "))
+        cli_lines.append("</new-bash-cli>")
+    if not cli_lines:
+        return []
+    return ["<cli-context>", *[f"  {line}" if line else "" for line in cli_lines], "</cli-context>"]
+
+
+def _render_skill_context_section(
+    ctx: PromptRenderContext,
+    *,
+    include_initial: bool,
+    available_skills: list[dict[str, Any]],
+    new_skill_entries: list[dict[str, Any]],
+) -> list[str]:
+    if not include_initial and not new_skill_entries:
+        return []
+    lines = [
+        "<skills-context>",
+        f"  <skills-directory>{escape(str(_ctx_project_skills_dir(ctx)), quote=False)}</skills-directory>",
+        f"  <user-skills-directory>{escape(str(_ctx_user_skills_dir(ctx)), quote=False)}</user-skills-directory>",
+        f"  <project-skills-directory>{escape(str(_ctx_project_skills_dir(ctx)), quote=False)}</project-skills-directory>",
+        "  <selection-rule>Project skills override user skills with the same name.</selection-rule>",
     ]
     if include_initial:
         lines.extend(
             [
-                "    <instruction>",
-                "      Skills are discovered from the user and project skill directories. A standard skill is a subdirectory containing SKILL.md with name and description frontmatter.",
-                "      The available skill list contains names and descriptions only. Load the full SKILL.md instructions only when the task requires that skill.",
-                "    </instruction>",
+                "  <instruction>",
+                "    Skills are discovered from the user and project skill directories. A standard skill is a subdirectory containing SKILL.md with name and description frontmatter.",
+                "    The available skill list contains names and descriptions only. Load the full SKILL.md instructions only when the task requires that skill.",
+                "  </instruction>",
             ]
         )
-        skills = sorted((state.get("known_skills") or {}).values(), key=lambda item: str(item.get("name") or ""))
-        if skills:
-            lines.append("    <available-skills>")
-            lines.extend(_render_skill_entries(skills, indent="      "))
-            lines.append("    </available-skills>")
-    if pending_new_skills:
-        lines.append("    <new-skills>")
-        lines.extend(_render_skill_entries(pending_new_skills, indent="      "))
-        lines.append("    </new-skills>")
-    lines.extend(["  </skills-context>", "</system-reminder>"])
-    return "\n".join(lines)
+        if available_skills:
+            lines.append("  <available-skills>")
+            lines.extend(_render_skill_entries(available_skills, indent="    "))
+            lines.append("  </available-skills>")
+    if new_skill_entries:
+        lines.append("  <new-skills>")
+        lines.extend(_render_skill_entries(new_skill_entries, indent="    "))
+        lines.append("  </new-skills>")
+    lines.append("</skills-context>")
+    return lines
 
 
 def _render_skill_entries(skills: list[dict[str, Any]], *, indent: str) -> list[str]:
@@ -1284,34 +1324,6 @@ def _render_skill_entries(skills: list[dict[str, Any]], *, indent: str) -> list[
     return lines
 
 
-def _render_runtime_env_info_prompt(ctx: PromptRenderContext) -> str:
-    return (
-        "# Runtime Context\n\n"
-        f"- Current UTC time: {datetime.now(timezone.utc).isoformat()}\n"
-        f"- Workspace root: {ctx.workspace_root}\n"
-        f"- Session id: {ctx.session_id}\n"
-        f"- Turn id: {ctx.turn_id or 'unknown'}\n"
-        f"- Request id: {ctx.request_id or 'unknown'}\n"
-        f"- Request type: {ctx.request_type}"
-    )
-
-
-def _render_file_status(ctx: PromptRenderContext) -> str | None:
-    rows = ctx.projection.get("file_status") or []
-    if not rows:
-        return "# File State\n\nNo file reads or writes have been recorded for this session yet."
-    lines = [
-        "# File State",
-        "",
-        "Recently tracked workspace files. If a file is already known unchanged, prefer using the earlier context instead of re-reading it.",
-    ]
-    for row in rows[:20]:
-        content_hash = str(row.get("content_hash") or "")
-        short_hash = content_hash[:12] if content_hash else "unknown"
-        lines.append(f"- {row.get('status')}: {row.get('path')} (hash: {short_hash})")
-    return "\n".join(lines)
-
-
 def _render_available_tools_prompt(ctx: PromptRenderContext) -> str:
     tools = ", ".join(ctx.tool_names) if ctx.tool_names else "none"
     return "\n".join(
@@ -1332,22 +1344,6 @@ def _render_available_tools_prompt(ctx: PromptRenderContext) -> str:
             "Use tools to ground claims in the workspace. Pick the smallest tool call that can answer the question, and avoid unnecessary repeat reads when the session already contains current file content.",
         ]
     )
-
-
-def _render_projection(ctx: PromptRenderContext) -> str | None:
-    messages = ctx.projection.get("recent_messages") or []
-    if not messages:
-        return None
-    lines = [
-        "# Recent Context",
-        "",
-        "A compact view of the latest conversation messages. Use it for continuity, but prefer explicit user instructions in the current turn when there is tension.",
-    ]
-    for message in messages[-6:]:
-        role = message.get("role") or "unknown"
-        content = str(message.get("content") or "").replace("\n", " ")
-        lines.append(f"- {role}: {content}")
-    return "\n".join(lines)
 
 
 def _render_tool_result_reminders_prompt(ctx: PromptRenderContext) -> str | None:
@@ -1537,18 +1533,6 @@ def _write_skill_context_state(ctx: PromptRenderContext, state: dict[str, Any]) 
     path = _skill_context_state_path(ctx)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(path, state)
-
-
-def _system_reminder_has_content(ctx: PromptRenderContext, state: dict[str, Any]) -> bool:
-    return (
-        (not bool(state.get("initial_available_cli_injected")) and bool(ctx.cli_bash_presets))
-        or bool(state.get("pending_new_bash_cli"))
-        or bool(state.get("pending_system_reminders"))
-    )
-
-
-def _skill_reminder_has_content(state: dict[str, Any]) -> bool:
-    return bool(state.get("pending_new_skills")) or bool(state.get("pending_system_reminders"))
 
 
 def _consume_system_reminder_state(ctx: PromptRenderContext) -> None:
@@ -1839,51 +1823,6 @@ def _infer_installed_cli_names(command: str) -> list[str]:
         global_index = parts.index("-g")
         return [part for part in parts[global_index + 1 :] if not part.startswith("-")]
     return []
-
-
-def _render_new_cli_tool_message_reminder(entries: list[dict[str, Any]]) -> str | None:
-    if not entries:
-        return None
-    lines = [
-        "<system-reminder>",
-        "<time>",
-        f"  当前系统时间为：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
-        "</time>",
-        "",
-        "<cli-context>",
-        "  <new-bash-cli>",
-    ]
-    for entry in entries:
-        lines.extend(_render_cli_entry_lines(entry, indent="    "))
-    lines.extend(["  </new-bash-cli>", "</cli-context>", "</system-reminder>"])
-    return "\n".join(lines)
-
-
-def _render_new_skill_tool_message_reminder(
-    skills_dir: Path,
-    entries: list[dict[str, Any]],
-    *,
-    user_skills_dir: Path | None = None,
-    project_skills_dir: Path | None = None,
-) -> str | None:
-    if not entries:
-        return None
-    resolved_project_skills_dir = (project_skills_dir or skills_dir).expanduser().resolve()
-    resolved_user_skills_dir = (user_skills_dir or Path.home() / ".lora" / "skills").expanduser().resolve()
-    lines = [
-        "<system-reminder>",
-        "  <skills-context>",
-        f"    <skills-directory>{escape(str(resolved_project_skills_dir), quote=False)}</skills-directory>",
-        f"    <user-skills-directory>{escape(str(resolved_user_skills_dir), quote=False)}</user-skills-directory>",
-        f"    <project-skills-directory>{escape(str(resolved_project_skills_dir), quote=False)}</project-skills-directory>",
-        "    <selection-rule>Project skills override user skills with the same name.</selection-rule>",
-        "    <new-skills>",
-        *_render_skill_entries(entries, indent="      "),
-        "    </new-skills>",
-        "  </skills-context>",
-        "</system-reminder>",
-    ]
-    return "\n".join(lines)
 
 
 def _record_unknown_tool_call(

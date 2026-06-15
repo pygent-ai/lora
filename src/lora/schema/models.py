@@ -21,6 +21,7 @@ class ResolvedAgentConfig:
     model_name: str
     api_key: str | None = None
     api_key_source: str = "missing"
+    api_key_env: str = "DEEPSEEK_API_KEY"
     base_url: str | None = None
 
     def __post_init__(self) -> None:
@@ -29,6 +30,7 @@ class ResolvedAgentConfig:
         if self.api_key is not None and not isinstance(self.api_key, str):
             raise ValueError("api_key must be a string or None")
         self.api_key_source = _require(self.api_key_source, "api_key_source")
+        self.api_key_env = _require(self.api_key_env, "api_key_env")
         if self.base_url is not None:
             self.base_url = _require(self.base_url, "base_url")
 
@@ -37,6 +39,7 @@ class ResolvedAgentConfig:
             "alias": self.alias,
             "model_name": self.model_name,
             "api_key_source": self.api_key_source,
+            "api_key_env": self.api_key_env,
             "base_url": self.base_url,
         }
 

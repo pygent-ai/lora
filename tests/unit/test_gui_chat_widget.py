@@ -8,11 +8,11 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFontInfo, QFontMetrics
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QSizePolicy, QTextEdit, QWidget
 
-from gui.theme import register_ui_fonts, theme_stylesheet
+from gui.theme import UI_FONT_FAMILIES, register_ui_fonts, theme_stylesheet
 from gui.workers import InspectorEvent
 from gui.widgets.chat import ChatPane
 from gui.widgets.chat_rows import AssistantMessageRow
@@ -1361,7 +1361,7 @@ class GuiChatWidgetTests(unittest.TestCase):
         self.assertIn("font-weight", item.toHtml().lower())
         self.assertEqual(_visible_chat_flow(pane), ["阅读和理解代码\n继续执行"])
 
-    def test_code_block_text_uses_fixed_pitch_font(self) -> None:
+    def test_code_block_text_uses_ui_font_family(self) -> None:
         pane = ChatPane()
 
         pane.add_message("assistant", "```python\nprint('hi')\n```")
@@ -1369,10 +1369,8 @@ class GuiChatWidgetTests(unittest.TestCase):
         label = pane.findChild(QLabel, "ChatCodeBlockText")
         self.assertIsNotNone(label)
         assert label is not None
-        self.assertTrue(label.font().fixedPitch())
-        self.assertNotEqual(QFontInfo(label.font()).family(), pane.font().family())
-        metrics = QFontMetrics(label.font())
-        self.assertEqual(metrics.horizontalAdvance("iiii"), metrics.horizontalAdvance("WWWW"))
+        self.assertFalse(label.font().fixedPitch())
+        self.assertEqual(label.font().families()[0], UI_FONT_FAMILIES[0])
 
     def test_assistant_markdown_renders_code_block_widget_instead_of_rich_text_label(self) -> None:
         pane = ChatPane()

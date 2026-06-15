@@ -113,7 +113,15 @@ uv run lora repair gate <repair_attempt_id>
 
 ## 配置 Agent
 
-Lora 默认会读取 workspace 下的 `.env` 和 `lora.yaml`。推荐把密钥放在环境变量里，再通过 agent profile 引用。
+Lora 会读取 `lora.yaml` 和分层凭证文件。推荐把 API key 放在用户级 `~/.lora/credentials.env`，在配置里只引用环境变量名。完整说明见 [doc/api-key-management.md](doc/api-key-management.md)。
+
+快速开始：
+
+```powershell
+Copy-Item lora.yaml.example lora.yaml
+uv run lora credentials set DEEPSEEK_API_KEY
+uv run lora credentials validate
+```
 
 示例 `lora.yaml`：
 
@@ -149,7 +157,7 @@ uv run lora --agent dev --model deepseek-v4-flash chat --message "hello"
 
 ## 默认 Agent 行为
 
-默认 `AgentRuntimeAdapter` 会创建 `LoraAgent`。`LoraAgent` 会加载工作区 `.env`，读取已解析的 agent profile，并兼容 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`。
+默认 `AgentRuntimeAdapter` 会创建 `LoraAgent`。启动时会按 `~/.lora/credentials.env` → `<workspace>/.env.local` → 遗留 `<workspace>/.env` 的顺序加载凭证，并读取已解析的 agent profile，兼容 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_BASE_URL`。
 
 如果没有可用 API key，Lora 不会发起外部模型调用，而是返回一条包含 agent alias 的固定提示。这让本地测试可以在没有真实模型凭据的情况下覆盖 CLI、session、trace 和 evaluation 链路。
 
@@ -241,7 +249,7 @@ doc_design/           设计与开发文档
 - repair plan、manual diff attempt 捕获和 regression gate。
 - workspace setup 的受控文件操作与路径安全检查。
 - 持久化 diff 快照、patch 产物和模型可见的 `diff` 查询工具。
-- prompt 渲染记录、static prompt cache 和 prompt injection policy 基础链路。
+- prompt 渲染记录、static prompt cache、request-system prompt 拼接和 user/tool `<system-reminder>` 注入链路。
 
 规划中的能力：
 

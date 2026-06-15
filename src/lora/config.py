@@ -4,8 +4,14 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .io import load_env_file
 from .schema import BashCliPreset, ResolvedAgentConfig, RunConfig
+from .secrets import (
+    DEFAULT_API_KEY_ENV,
+    lookup_credential,
+    load_credentials,
+    resolve_api_key_env_name,
+    warn_plaintext_api_key,
+)
 
 
 DEFAULT_MODEL_NAME = "deepseek-v4-flash"
@@ -44,7 +50,7 @@ def load_run_config(
 ) -> RunConfig:
     root = Path(workspace_root or os.environ.get("LORA_WORKSPACE_ROOT") or Path.cwd()).expanduser().resolve()
     user_lora_root = (Path.home() / ".lora").expanduser().resolve()
-    load_env_file(root / ".env")
+    load_credentials(user_lora_root=user_lora_root, workspace_root=root)
     config_path = Path(config_file or root / "lora.yaml").expanduser()
     if not config_path.is_absolute():
         config_path = root / config_path
@@ -137,7 +143,8 @@ def _resolve_agent_config(
         or _non_empty(_dig(config_data, "runtime.model"))
         or DEFAULT_MODEL_NAME
     )
-    api_key, api_key_source = _resolve_api_key(model_request)
+    api_key_env = resolve_api_key_env_name(model_request)
+    api_key, api_key_source = _resolve_api_key(model_request, api_key_env=api_key_env)
     base_url = (
         _non_empty(model_request.get("base_url"))
         or _non_empty(os.environ.get("DEEPSEEK_BASE_URL"))
@@ -150,6 +157,7 @@ def _resolve_agent_config(
         model_name=model_name,
         api_key=api_key,
         api_key_source=api_key_source,
+        api_key_env=api_key_env,
         base_url=base_url,
     )
 
@@ -203,18 +211,19 @@ def _agent_profile(config_data: dict[str, Any], alias: str) -> dict[str, Any]:
     raise ValueError(f"Agent alias {alias!r} is not configured")
 
 
-def _resolve_api_key(model_request: dict[str, Any]) -> tuple[str | None, str]:
-    api_key_env = _non_empty(model_request.get("api_key_env"))
-    if api_key_env:
-        value = _non_empty(os.environ.get(api_key_env))
-        if value:
-            return value, f"env:{api_key_env}"
+def _resolve_api_key(model_request: dict[str, Any], *, api_key_env: str) -> tuple[str | None, str]:
+    value, source = lookup_credential(api_key_env)
+    if value:
+        return value, source
     configured = _non_empty(model_request.get("api_key"))
     if configured:
+        warn_plaintext_api_key()
         return configured, "config:model_request.api_key"
-    deepseek_key = _non_empty(os.environ.get("DEEPSEEK_API_KEY"))
-    if deepseek_key:
-        return deepseek_key, "env:DEEPSEEK_API_KEY"
+    if api_key_env != DEFAULT_API_KEY_ENV:
+        return None, "missing"
+    fallback_value, fallback_source = lookup_credential(DEFAULT_API_KEY_ENV)
+    if fallback_value:
+        return fallback_value, fallback_source
     return None, "missing"
 
 

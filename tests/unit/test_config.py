@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from collections.abc import Iterator
@@ -114,7 +115,8 @@ class ConfigTests(unittest.TestCase):
                 load_run_config(workspace_root=root, agent_alias="missing")
 
     def test_api_key_source_falls_back_to_config_without_leaking_key(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, _clean_model_env():
+        with tempfile.TemporaryDirectory() as tmp, _clean_model_env(), warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
             root = Path(tmp)
             (root / "lora.yaml").write_text(
                 "\n".join(

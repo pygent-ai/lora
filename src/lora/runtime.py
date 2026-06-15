@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import shutil
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -11,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .io import plain_data
-from .schema import AgentSession, BashCliPreset, CaseDefinition, CaseRunRef, CaseRunResult, RunConfig
+from .schema import AgentSession, CaseDefinition, CaseRunRef, CaseRunResult, RunConfig
 from .session import SessionManager
 from .trace import EventStore
 
@@ -45,13 +44,6 @@ class EchoAgent:
         user_messages = [message for message in context.history if message.get("role") == "user"]
         content = user_messages[-1]["content"] if user_messages else ""
         yield {"role": "assistant", "content": f"Echo: {content}", "type": "conversation.assistant_message"}
-
-
-def _cli_status_for_initial_reminder(preset: BashCliPreset) -> str:
-    command = str(getattr(preset, "command", "") or "")
-    if command.startswith("uv run "):
-        return "Available via uv run in this workspace."
-    return "Status: installed." if shutil.which(str(getattr(preset, "name", "") or "")) else "Status: not installed."
 
 
 class AgentRuntimeAdapter:
@@ -93,7 +85,7 @@ class AgentRuntimeAdapter:
         try:
             _start_agent_run(self.agent, case_run_ref, resolved_turn_id)
             wrapped_user_input = wrap_user_message(user_input, self.config.user_identity)
-            initial_reminder = _initial_user_system_reminder(session, self.config)
+            initial_reminder = _render_initial_user_reminder(self.agent, context)
             if initial_reminder:
                 wrapped_user_input = f"{wrapped_user_input}\n\n{initial_reminder}"
             context.add_message({"role": "user", "content": wrapped_user_input})
@@ -258,6 +250,12 @@ class AgentRuntimeAdapter:
         try:
             _start_agent_run(self.agent, case_run_ref, turn_id)
             input_messages = _case_messages(case)
+            initial_reminder = _render_initial_user_reminder(self.agent, context)
+            if initial_reminder and input_messages:
+                input_messages[0] = {
+                    **input_messages[0],
+                    "content": f"{input_messages[0]['content']}\n\n{initial_reminder}",
+                }
             for message in input_messages:
                 context.add_message(message)
                 store.append(
@@ -453,38 +451,12 @@ def wrap_user_message(user_message: str, user_identity: str = "default") -> str:
     )
 
 
-def _initial_user_system_reminder(session: AgentSession, config: RunConfig) -> str | None:
-    state_path = Path(session.session_dir) / "state" / "cli_context.json"
-    if state_path.exists():
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            state = {}
-        if state.get("initial_available_cli_injected"):
-            return None
-    if not config.cli_bash_presets:
+def _render_initial_user_reminder(agent: Any, context: RuntimeContext) -> str | None:
+    render = getattr(agent, "render_initial_user_reminder", None)
+    if render is None:
         return None
-    lines = [
-        "<system-reminder>",
-        "<time>",
-        f"  当前系统时间为：{__import__('datetime').datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
-        "</time>",
-        "",
-        "<cli-context>",
-        "  <available-bash-cli>",
-    ]
-    for preset in config.cli_bash_presets:
-        lines.extend(
-            [
-                f"    <{preset.name}>",
-                f"      {escape(preset.description, quote=False)}",
-                *([f"      Command: {escape(preset.command, quote=False)}"] if preset.command else []),
-                f"      {_cli_status_for_initial_reminder(preset)}",
-                f"    </{preset.name}>",
-            ]
-        )
-    lines.extend(["  </available-bash-cli>", "</cli-context>", "</system-reminder>"])
-    return "\n".join(lines)
+    reminder = render(context)
+    return str(reminder) if reminder else None
 
 
 def _case_carry_context(case: CaseDefinition) -> bool:

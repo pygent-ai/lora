@@ -1,10 +1,12 @@
 # User Prompt Injection Implementation Plan
 
+> Status: superseded by the prompt routing refactor. Keep this file as historical context only. Current implementation appends initial CLI/skill reminders to user messages, appends newly discovered CLI/skill reminders to tool messages, and keeps request-scoped system guidance in `phase="request_system"` modules.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement structured user-message wrapping and triggered system reminders for CLI context with optional time.
 
-**Architecture:** Add resolved user/CLI configuration to `RunConfig`, wrap new user messages before they enter runtime history, and add a request-scoped dynamic `runtime.system_reminder` module backed by session state. CLI reminders are pending-state driven, so ordinary events do not refresh them.
+**Current Architecture:** Add resolved user/CLI configuration to `RunConfig`, wrap new user messages before they enter runtime history, append initial CLI/skill context to user messages through a shared `<system-reminder>`, and append newly discovered CLI/skill context to tool messages through the same wrapper. Reminder content is not a prompt module.
 
 **Tech Stack:** Python dataclasses, current YAML-subset config parser, existing prompt module framework, pytest/unittest tests.
 
@@ -51,11 +53,11 @@ Add tests for first-session CLI reminder with time, no repeated full CLI reminde
 - [ ] **Step 2: Run tests to verify failure**
 
 Run: `pytest tests/unit/test_runtime_adapter.py tests/scenario/test_cli_flow.py -q`
-Expected: failure because `runtime.system_reminder` and CLI reminder state do not exist yet.
+Expected: failure because CLI reminder state and user/tool message reminder rendering do not exist yet.
 
-- [ ] **Step 3: Implement reminder state and dynamic module**
+- [ ] **Step 3: Implement reminder state and message renderers**
 
-Add a session-state helper in `agent.py`, register `runtime.system_reminder`, render first-session CLI context and pending new CLI entries, and consume pending state only after prompt rendering is persisted.
+Add a session-state helper in `agent.py`, render first-session CLI context into the user message, render pending new CLI entries into the tool message, and consume pending state after the model-visible message is built.
 
 - [ ] **Step 4: Run tests to verify pass**
 

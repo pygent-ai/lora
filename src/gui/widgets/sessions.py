@@ -58,6 +58,7 @@ class _SessionGroupHeader(QWidget):
         scope_id: str,
         on_remove: Callable[[str], None] | None = None,
         draggable: bool = False,
+        show_directory_icon: bool = False,
     ):
         super().__init__()
         self.setObjectName("SessionGroupHeader")
@@ -77,6 +78,16 @@ class _SessionGroupHeader(QWidget):
         self.arrow.setAlignment(Qt.AlignCenter)
         self.arrow.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
+        if show_directory_icon:
+            dir_icon = QLabel("")
+            dir_icon.setObjectName("SessionGroupDirIcon")
+            dir_icon.setFixedSize(_TYPO.body_size + _GROUP_PAD, _TYPO.body_size + _GROUP_PAD)
+            dir_icon.setAlignment(Qt.AlignCenter)
+            dir_icon.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            dir_icon.setPixmap(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon).pixmap(14, 14))
+        else:
+            dir_icon = None
+
         title = QLabel(label)
         title.setObjectName("SessionGroupTitle")
         title.setMinimumWidth(0)
@@ -89,6 +100,8 @@ class _SessionGroupHeader(QWidget):
         counter.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
         layout.addWidget(self.arrow)
+        if dir_icon is not None:
+            layout.addWidget(dir_icon)
         layout.addWidget(title, 1)
         layout.addWidget(counter)
         if on_remove is not None:
@@ -179,6 +192,7 @@ class _SessionGroupSection(QWidget):
             scope_id=group.scope.scope_id,
             on_remove=on_remove,
             draggable=True,
+            show_directory_icon=group.scope.workspace_root is not None,
         )
         self.header.setToolTip(group.scope.tooltip)
         self.header.toggle_requested.connect(self._toggle_collapsed)

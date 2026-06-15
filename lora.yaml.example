@@ -1,0 +1,13 @@
+agent:
+  default_alias: dev
+
+agents:
+  - alias: dev
+    model_request:
+      api_key_env: DEEPSEEK_API_KEY
+      model_name: deepseek-v4-flash
+      base_url: https://api.deepseek.com
+  - alias: fast-check
+    model_request:
+      api_key_env: DEEPSEEK_API_KEY
+      model_name: deepseek-v4-flash

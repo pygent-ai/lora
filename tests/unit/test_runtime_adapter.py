@@ -451,6 +451,40 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertIn("conversation.tool_message", [event["type"] for event in events])
             self.assertEqual([message["role"] for message in messages], ["user", "assistant", "tool", "assistant"])
 
+    def test_run_case_appends_initial_skill_reminder_to_first_user_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            skill_file = workspace / ".lora" / "skills" / "case-helper" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True, exist_ok=True)
+            skill_file.write_text(
+                "---\nname: case-helper\ndescription: Help with case runs.\n---\n",
+                encoding="utf-8",
+            )
+            config = RunConfig(workspace_root=workspace, lora_root=workspace / ".lora", max_steps=3)
+            manager = SessionManager(config)
+            ref = manager.create("case-a")
+            run = manager.start_case_run(ref.session_id, "case-a")
+            session = manager.load(ref.session_id)
+            case = CaseDefinition.from_dict({"id": "case-a", "input": {"content": "hello"}})
+            agent = LoraAgent(
+                config,
+                resolved_agent=ResolvedAgentConfig(
+                    alias=config.agent_alias,
+                    model_name="test-model",
+                    api_key=None,
+                    api_key_source="none",
+                    base_url=config.base_url,
+                ),
+            )
+
+            asyncio.run(AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_case(session, case, run))
+
+            loaded = manager.load(ref.session_id)
+            self.assertIn("hello", loaded.history[0]["content"])
+            self.assertIn("<system-reminder>", loaded.history[0]["content"])
+            self.assertIn("<skills-context>", loaded.history[0]["content"])
+            self.assertIn("<name>case-helper</name>", loaded.history[0]["content"])
+
     def test_carry_context_false_hides_prior_history_but_preserves_it_after_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", max_steps=3)
@@ -708,7 +742,7 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertEqual(len(llm.request_messages), 2)
             self.assertEqual(llm.request_system_prompts[0], llm.request_system_prompts[1])
             self.assertEqual(loaded.system_prompt, llm.request_system_prompts[0])
-            self.assertNotIn("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", llm.request_system_prompts[0])
+            self.assertNotIn("__SYSTEM_PROMPT_REQUEST_BOUNDARY__", llm.request_system_prompts[0])
             self.assertEqual(llm.request_messages[0], llm.request_messages[1][: len(llm.request_messages[0])])
 
     def test_lora_agent_allows_unlimited_steps_until_no_tool_calls(self) -> None:
@@ -849,9 +883,19 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             ref = manager.create("chat", mode="chat")
             run = manager.start_case_run(ref.session_id, "chat")
             session = manager.load(ref.session_id)
+            agent = LoraAgent(
+                config,
+                resolved_agent=ResolvedAgentConfig(
+                    alias=config.agent_alias,
+                    model_name="test-model",
+                    api_key=None,
+                    api_key_source="none",
+                    base_url=config.base_url,
+                ),
+            )
 
             result = asyncio.run(
-                AgentRuntimeAdapter(config=config, session_manager=manager).run_turn(
+                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
                     session=session,
                     user_input="hello chat",
                     case_run_ref=run,
@@ -874,11 +918,16 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertEqual(result["status"], "passed")
             self.assertIn("Lora agent is wired into chat", result["final_answer"])
             self.assertIn("You are Lora", loaded.system_prompt)
-            self.assertNotIn("Available tools", loaded.system_prompt)
+            self.assertIn("# Available Tools", loaded.system_prompt)
+            self.assertIn("# Tool Result Handling", loaded.system_prompt)
+            self.assertIn("# Context Budget", loaded.system_prompt)
+            self.assertNotIn("# Runtime Context", loaded.system_prompt)
+            self.assertNotIn("# File State", loaded.system_prompt)
+            self.assertNotIn("# Recent Context", loaded.system_prompt)
             self.assertTrue(prompt_text_path.exists())
             self.assertTrue(session_prompt_text_path.exists())
             rendered_prompt = prompt_text_path.read_text(encoding="utf-8")
-            self.assertIn("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", rendered_prompt)
+            self.assertNotIn("__SYSTEM_PROMPT_REQUEST_BOUNDARY__", rendered_prompt)
             self.assertIn("# Available Tools", rendered_prompt)
             self.assertIn(
                 "Tools currently available for this request: bash, read, write, edit, glob, grep, diff.",
@@ -901,15 +950,11 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 rendered_prompt,
             )
             self.assertIn("Use bash as a fallback for verification or composed shell commands", rendered_prompt)
-            self.assertIn("runtime.system_reminder", prompt_event["payload"]["dynamic_module_ids"])
-            self.assertIn("<system-reminder>", rendered_prompt)
-            self.assertIn("当前系统时间为：", rendered_prompt)
-            self.assertIn("<available-bash-cli>", rendered_prompt)
-            self.assertIn("<rg>", rendered_prompt)
-            self.assertIn("<lora-chat>", rendered_prompt)
-            self.assertIn("uv run lora chat --new -m", rendered_prompt)
-            self.assertIn("uv run lora chat --session &lt;session_id&gt; -m", rendered_prompt)
-            self.assertIn("Available via uv run in this workspace.", rendered_prompt)
+            self.assertIn("tool.available", prompt_event["payload"]["request_system_module_ids"])
+            self.assertIn("system.tool_result_reminders", prompt_event["payload"]["request_system_module_ids"])
+            self.assertIn("system.token_budget", prompt_event["payload"]["request_system_module_ids"])
+            self.assertNotIn("runtime.system_reminder", prompt_event["payload"].get("request_system_module_ids", []))
+            self.assertNotIn("<system-reminder>", rendered_prompt)
             self.assertTrue(prompt_event["payload"]["static_prompt_created"])
             self.assertEqual(prompt_event["payload"]["injection_decision"]["reason"], "before_model_request")
             self.assertEqual([item["role"] for item in loaded.history], ["user", "assistant"])
@@ -1014,11 +1059,13 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             self.assertEqual(first_metadata["prompt_hash"], second_metadata["prompt_hash"])
             self.assertTrue(first_prompt_event["payload"]["static_prompt_created"])
             self.assertFalse(second_prompt_event["payload"]["static_prompt_created"])
-            self.assertIn("tool.available", second_prompt_event["payload"]["dynamic_module_ids"])
-            self.assertIn("runtime.system_reminder", first_prompt_event["payload"]["dynamic_module_ids"])
-            self.assertNotIn("runtime.system_reminder", second_prompt_event["payload"]["dynamic_module_ids"])
+            self.assertIn("tool.available", second_prompt_event["payload"]["request_system_module_ids"])
+            self.assertIn("system.tool_result_reminders", second_prompt_event["payload"]["request_system_module_ids"])
+            self.assertIn("system.token_budget", second_prompt_event["payload"]["request_system_module_ids"])
+            self.assertNotIn("runtime.system_reminder", first_prompt_event["payload"].get("request_system_module_ids", []))
+            self.assertNotIn("runtime.system_reminder", second_prompt_event["payload"].get("request_system_module_ids", []))
             first_rendered = Path(first_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
-            self.assertIn("<available-bash-cli>", first_rendered)
+            self.assertNotIn("<available-bash-cli>", first_rendered)
 
     def test_static_prompt_describes_multilevel_lora_paths_without_skill_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as user_tmp:
@@ -1104,28 +1151,19 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 )
             )
 
-            first_prompt_event = next(
-                event for event in _read_jsonl(Path(first_run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
-            )
-            second_prompt_event = next(
-                event
-                for event in _read_jsonl(Path(second_run.run_dir) / "events.jsonl")
-                if event["type"] == "prompt.rendered"
-            )
-            first_rendered = Path(first_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
-            second_rendered = Path(second_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            loaded = manager.load(ref.session_id)
+            first_user_message = loaded.history[0]["content"]
+            second_user_message = loaded.history[2]["content"]
             static_prompt = (Path(ref.session_dir) / "context" / "prompts" / "static_prompt.txt").read_text(
                 encoding="utf-8"
             )
 
-            self.assertIn("runtime.skill_reminder", first_prompt_event["payload"]["dynamic_module_ids"])
-            self.assertNotIn("runtime.skill_reminder", second_prompt_event["payload"]["dynamic_module_ids"])
-            self.assertIn("<skills-context>", first_rendered)
-            self.assertIn(f"<skills-directory>{workspace / '.lora' / 'skills'}</skills-directory>", first_rendered)
-            self.assertIn("<available-skills>", first_rendered)
-            self.assertIn("<name>code-review</name>", first_rendered)
-            self.assertIn("<description>Review code changes and prioritize bugs.</description>", first_rendered)
-            self.assertNotIn("<skills-context>", second_rendered)
+            self.assertIn("<skills-context>", first_user_message)
+            self.assertIn(f"<skills-directory>{workspace / '.lora' / 'skills'}</skills-directory>", first_user_message)
+            self.assertIn("<available-skills>", first_user_message)
+            self.assertIn("<name>code-review</name>", first_user_message)
+            self.assertIn("<description>Review code changes and prioritize bugs.</description>", first_user_message)
+            self.assertNotIn("<skills-context>", second_user_message)
             self.assertNotIn("<skills-context>", static_prompt)
 
     def test_available_skills_include_user_and_project_sources_with_project_shadowing(self) -> None:
@@ -1172,10 +1210,8 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 )
             )
 
-            prompt_event = next(
-                event for event in _read_jsonl(Path(run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
-            )
-            rendered = Path(prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            loaded = manager.load(ref.session_id)
+            rendered = loaded.history[0]["content"]
             state = json.loads((Path(ref.session_dir) / "state" / "skill_context.json").read_text(encoding="utf-8"))
 
             self.assertIn("<user-skills-directory>", rendered)
@@ -1232,15 +1268,11 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 )
             )
 
-            second_prompt_event = next(
-                event
-                for event in _read_jsonl(Path(second_run.run_dir) / "events.jsonl")
-                if event["type"] == "prompt.rendered"
-            )
-            second_rendered = Path(second_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            loaded = manager.load(ref.session_id)
+            second_user_message = loaded.history[2]["content"]
 
-            self.assertNotIn("runtime.skill_reminder", second_prompt_event["payload"]["dynamic_module_ids"])
-            self.assertNotIn("<skills-context>", second_rendered)
+            self.assertNotIn("runtime.skill_reminder", second_user_message)
+            self.assertNotIn("<skills-context>", second_user_message)
 
     def test_bash_tool_detects_new_skill_and_reminds_before_next_model_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1280,22 +1312,18 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             prompt_events = [
                 event for event in _read_jsonl(Path(run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
             ]
-            second_rendered = Path(prompt_events[1]["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
             loaded = manager.load(ref.session_id)
             tool_messages = [message for message in loaded.history if message["role"] == "tool"]
             state = json.loads((state_dir / "skill_context.json").read_text(encoding="utf-8"))
 
             self.assertEqual(result["status"], "passed")
             self.assertEqual(len(prompt_events), 2)
-            self.assertIn("runtime.skill_reminder", prompt_events[1]["payload"]["dynamic_module_ids"])
-            self.assertIn("<new-skills>", second_rendered)
-            self.assertIn("<skills-directory>", second_rendered)
-            self.assertIn("<name>debugging</name>", second_rendered)
-            self.assertIn("<description>Investigate failures systematically before proposing fixes.</description>", second_rendered)
+            self.assertNotIn("runtime.skill_reminder", prompt_events[1]["payload"].get("request_system_module_ids", []))
             self.assertEqual(len(tool_messages), 1)
             self.assertIn("<system-reminder>", tool_messages[0]["content"])
             self.assertIn("<new-skills>", tool_messages[0]["content"])
             self.assertIn("<name>debugging</name>", tool_messages[0]["content"])
+            self.assertIn("<description>Investigate failures systematically before proposing fixes.</description>", tool_messages[0]["content"])
             self.assertEqual(state["pending_new_skills"], [])
             self.assertEqual(state["pending_system_reminders"], [])
 
@@ -1365,16 +1393,18 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             prompt_events = [
                 event for event in _read_jsonl(Path(run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
             ]
-            second_rendered = Path(prompt_events[1]["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            loaded = manager.load(ref.session_id)
+            tool_messages = [message for message in loaded.history if message["role"] == "tool"]
 
             self.assertEqual(result["status"], "passed")
-            self.assertIn("runtime.skill_reminder", prompt_events[1]["payload"]["dynamic_module_ids"])
-            self.assertIn("<new-skills>", second_rendered)
-            self.assertIn("<description>Project-level review guidance.</description>", second_rendered)
-            self.assertIn("<scope>project</scope>", second_rendered)
-            self.assertIn("<uri>project://skills/code-review/SKILL.md</uri>", second_rendered)
-            self.assertIn("<shadowed>", second_rendered)
-            self.assertIn("<uri>user://skills/code-review/SKILL.md</uri>", second_rendered)
+            self.assertNotIn("runtime.skill_reminder", prompt_events[1]["payload"].get("request_system_module_ids", []))
+            self.assertEqual(len(tool_messages), 1)
+            self.assertIn("<new-skills>", tool_messages[0]["content"])
+            self.assertIn("<description>Project-level review guidance.</description>", tool_messages[0]["content"])
+            self.assertIn("<scope>project</scope>", tool_messages[0]["content"])
+            self.assertIn("<uri>project://skills/code-review/SKILL.md</uri>", tool_messages[0]["content"])
+            self.assertIn("<shadowed>", tool_messages[0]["content"])
+            self.assertIn("<uri>user://skills/code-review/SKILL.md</uri>", tool_messages[0]["content"])
 
     def test_pending_new_cli_is_rendered_once_with_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1432,22 +1462,15 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 )
             )
 
-            first_prompt_event = next(
-                event for event in _read_jsonl(Path(first_run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
-            )
-            second_prompt_event = next(
-                event
-                for event in _read_jsonl(Path(second_run.run_dir) / "events.jsonl")
-                if event["type"] == "prompt.rendered"
-            )
-            first_rendered = Path(first_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
-            second_rendered = Path(second_prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            loaded = manager.load(ref.session_id)
+            first_user_message = loaded.history[0]["content"]
+            second_user_message = loaded.history[2]["content"]
             state = json.loads((state_dir / "cli_context.json").read_text(encoding="utf-8"))
 
-            self.assertIn("<new-bash-cli>", first_rendered)
-            self.assertIn("<pyright>", first_rendered)
-            self.assertIn("当前系统时间为：", first_rendered)
-            self.assertNotIn("<new-bash-cli>", second_rendered)
+            self.assertIn("<new-bash-cli>", first_user_message)
+            self.assertIn("<pyright>", first_user_message)
+            self.assertIn("当前系统时间为：", first_user_message)
+            self.assertNotIn("<new-bash-cli>", second_user_message)
             self.assertEqual(state["pending_new_bash_cli"], [])
             self.assertEqual(state["pending_system_reminders"], [])
 
@@ -1505,13 +1528,15 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             prompt_events = [
                 event for event in _read_jsonl(Path(run.run_dir) / "events.jsonl") if event["type"] == "prompt.rendered"
             ]
-            second_rendered = Path(prompt_events[1]["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
+            loaded = manager.load(ref.session_id)
+            tool_messages = [message for message in loaded.history if message["role"] == "tool"]
 
             self.assertEqual(result["status"], "passed")
             self.assertEqual(len(prompt_events), 2)
-            self.assertIn("<new-bash-cli>", second_rendered)
-            self.assertIn("<madeupcli>", second_rendered)
-            self.assertIn("当前系统时间为：", second_rendered)
+            self.assertEqual(len(tool_messages), 1)
+            self.assertIn("<new-bash-cli>", tool_messages[0]["content"])
+            self.assertIn("<madeupcli>", tool_messages[0]["content"])
+            self.assertIn("当前系统时间为：", tool_messages[0]["content"])
 
     def test_bash_install_appends_new_cli_reminder_to_tool_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

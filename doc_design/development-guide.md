@@ -309,7 +309,8 @@ agents:
 | `agent.default_alias` | 没有通过 CLI 显式指定时使用的 agent 别名 |
 | `agents[].alias` | agent profile 的稳定别名，必须非空且唯一 |
 | `agents[].model_request.api_key_env` | API key 来源环境变量，推荐优先使用 |
-| `agents[].model_request.api_key` | 本地明文 API key，仅适合不提交的个人配置 |
+| `agents[].model_request.api_key` | 已废弃的明文 API key 字段，仅保留兼容 |
+| 用户级凭证文件 `~/.lora/credentials.env` | 推荐的日常密钥存放位置，见 `doc/api-key-management.md` |
 | `agents[].model_request.model_name` | 发起模型请求时使用的模型名称 |
 
 解析规则：
@@ -1500,22 +1501,31 @@ request_type: str = "agent_turn"
 
 ### 12.3 `PromptRegistry`
 
-初始化时注册默认模块：
+初始化时注册默认 system prompt 模块：
 
 | id | phase | type | cache_scope | order | 内容 |
 | --- | --- | --- | --- | --- | --- |
 | `system.identity` | static | system | session | 10 | Lora 身份和回答语言 |
 | `system.tool_policy` | static | policy | session | 20 | 工具调用策略 |
 | `system.injection_guard` | static | policy | session | 30 | 非可信内容和 prompt injection 防护 |
+| `system.path_policy` | static | policy | session | 35 | workspace、project/user Lora root 和工具路径规则 |
 | `system.coding_rules` | static | system | session | 40 | 编码工作规则 |
 | `system.output_style` | static | system | session | 50 | 输出风格 |
-| `runtime.system_reminder` | dynamic | runtime | request | 95 | 首次 CLI 上下文和新 CLI 提醒 |
-| `runtime.env_info` | dynamic | runtime | turn | 100 | UTC 时间、workspace、session、turn、request |
-| `project.file_status` | dynamic | project | request | 110 | 文件读取状态 |
-| `tool.available` | dynamic | tool | turn | 120 | 当前工具名 |
-| `memory.recent_projection` | dynamic | memory | turn | 130 | 最近历史摘要 |
-| `runtime.tool_result_reminders` | dynamic | runtime | request | 140 | 工具结果处理提醒 |
-| `runtime.token_budget` | dynamic | runtime | request | 150 | 上下文预算提醒 |
+| `tool.available` | request_system | tool | turn | 120 | 当前实际可用工具 |
+| `system.tool_result_reminders` | request_system | system | request | 140 | 工具结果处理提醒 |
+| `system.token_budget` | request_system | system | request | 150 | 上下文预算提醒 |
+
+已移除的 prompt modules：
+
+- `runtime.system_reminder`
+- `runtime.skill_reminder`
+- `runtime.env_info`
+- `project.file_status`
+- `memory.recent_projection`
+- `runtime.tool_result_reminders`
+- `runtime.token_budget`
+
+其中 CLI/skill reminder 不再通过 prompt module 渲染；初始内容追加到 user message，新发现内容追加到 tool message，并共用一个 `<system-reminder>` 包装。
 
 方法：
 
@@ -1534,15 +1544,15 @@ composer = PromptComposer(registry=None)
 
 行为：
 
-- 调用 `compose_static()` 渲染 static 模块。
-- 调用 `compose_dynamic()` 渲染 dynamic 模块。
-- 如果存在 dynamic prompt，插入边界常量 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`。
-- 返回最终 prompt 文本和 rendered module 元数据。
+- 调用 `compose_static()` 渲染 `phase == "static"` 的模块。
+- 调用 `compose_request_system()` 渲染 `phase == "request_system"` 的模块。
+- 如果存在 request system prompt，直接追加到 static prompt 后面，不插入额外边界 marker。
+- 返回真实发送给模型的完整 system prompt 文本和 rendered module 元数据。
 
-#### `compose_static(ctx)` / `compose_dynamic(ctx, module_ids=None)`
+#### `compose_static(ctx)` / `compose_request_system(ctx, module_ids=None)`
 
 - `compose_static()` 只渲染 `phase == "static"` 的模块。
-- `compose_dynamic()` 只渲染 `phase == "dynamic"` 的模块，可按 `module_ids` 精确选择。
+- `compose_request_system()` 只渲染 `phase == "request_system"` 的模块，可按 `module_ids` 精确选择。
 - 两者都会为 module metadata 记录 input hash、content hash 和 render time。
 
 module metadata 包含：
@@ -1575,7 +1585,6 @@ manager = AgentContextManager(session_dir=..., workspace_root=..., store=...)
 - `file_state = FileStateTracker(session_dir / "state")`
 - `prompt_composer = PromptComposer()`
 - `static_prompt_cache = StaticPromptSessionCache(session_dir, prompt_composer)`
-- `injection_policy = PromptInjectionPolicy()`
 
 #### `projection(history, limit=8) -> dict`
 
@@ -1602,14 +1611,12 @@ compose_prompt
 
 ```text
 build_model_request_prompt
-  -> AgentContextManager.projection
-  -> if store exists: append context.projection_created
   -> PromptRenderContext
   -> StaticPromptSessionCache.get_or_create
-  -> PromptComposer.resolve_dynamic_modules
-  -> PromptInjectionPolicy.decide
-  -> PromptComposer.compose_dynamic
-  -> join static prompt, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, dynamic prompt
+  -> PromptComposer.compose_request_system
+  -> join static prompt and request system prompt
+  -> runtime_context.system_prompt = prompt.text
+  -> runtime_context.session.system_prompt = prompt.text
   -> if store exists: append prompt.rendered
   -> return ModelRequestPrompt
 ```
@@ -1618,14 +1625,14 @@ build_model_request_prompt
 
 - `module_ids`
 - `static_module_ids`
-- `dynamic_module_ids`
+- `request_system_module_ids`
+- `dynamic_module_ids`（旧字段占位，当前为空）
 - `modules`
 - `prompt_hash`
 - `static_prompt_hash`
-- `dynamic_prompt_hash`
+- `request_system_prompt_hash`
+- `dynamic_prompt_hash`（旧字段占位，当前为 `None`）
 - `static_prompt_created`
-- `injection_decision`
-- `dynamic_inputs`
 
 `StaticPromptSessionCache` 会把 session 级 static prompt 写入：
 
@@ -1634,7 +1641,7 @@ build_model_request_prompt
 .lora/sessions/{session_id}/context/prompts/static_prompt.json
 ```
 
-`EventStore` 收到 `prompt.rendered` 事件时，会把本次模型请求的完整 rendered prompt 文本写入 run 目录和 session 目录：
+`EventStore` 收到 `prompt.rendered` 事件时，会把本次模型请求的完整 rendered system prompt 文本写入 run 目录和 session 目录；`session.json.system_prompt` 也保存最新一次真实发送给模型的完整 system prompt：
 
 ```text
 {run_dir}/rendered_prompts/{turn_id}.txt
@@ -1642,6 +1649,8 @@ build_model_request_prompt
 .lora/sessions/{session_id}/context/rendered_prompts/{case_run_id}/{turn_id}.txt
 .lora/sessions/{session_id}/context/rendered_prompts/{case_run_id}/{turn_id}.json
 ```
+
+`<system-reminder>` 不写入 static prompt，也不写入 request system prompt。初始 CLI/skill context 追加到首个 user message；工具执行后新发现的 CLI/skill context 追加到对应 tool message。
 
 #### `file_status() -> list[dict]`
 
@@ -2021,7 +2030,7 @@ def start_run(self, case_run_ref: CaseRunRef, turn_id: str | None) -> None:
 | regression | 已实现 manifest 读取、suite 执行、汇总产物和 regression 事件 | 后续可增加选择性运行、标签过滤和历史对比 |
 | analysis | 已抽出独立 `FailureAnalyzer`，覆盖 runtime/tool/assertion/file/budget 等归因 | 后续可增加更细的 root cause 策略 |
 | repair | 已实现最小闭环 | `lora repair plan/apply/gate` 支持确定性计划、人工 patch 捕获和命令/regression gate |
-| prompt 落盘 | 已保存 session static prompt 和每次请求的 rendered prompt 文本/元数据 | 后续可增加保留策略和敏感信息过滤 |
+| prompt 落盘 | 已保存 session static prompt、每次请求真实发送的完整 rendered system prompt 文本/元数据，以及最新 `session.json.system_prompt` | 后续可增加保留策略和敏感信息过滤 |
 | agent 管理 | 已支持 `--agent`、agent profile 解析、模型请求配置和密钥脱敏；运行时仍默认使用 `LoraAgent` | 后续增加 agent profile CRUD 和 adapter registry |
 
 ## 18. 推荐扩展路线

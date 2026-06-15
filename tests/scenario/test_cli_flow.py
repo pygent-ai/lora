@@ -9,6 +9,22 @@ import unittest
 from pathlib import Path
 
 
+def _isolated_cli_env(root: Path) -> dict[str, str]:
+    home = root / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path.cwd() / "src"),
+        "USERPROFILE": str(home),
+        "HOME": str(home),
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    for key in ("DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL", "LORA_MODEL"):
+        env.pop(key, None)
+    return env
+
+
 class CliScenarioTests(unittest.TestCase):
     def test_session_create_show_and_case_run_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -31,7 +47,7 @@ class CliScenarioTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
             create = subprocess.run(
                 [
                     sys.executable,
@@ -104,6 +120,7 @@ class CliScenarioTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
             )
             replay_payload = json.loads(replay.stdout)
@@ -128,7 +145,7 @@ class CliScenarioTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
             run = subprocess.run(
                 [sys.executable, "-m", "lora", "--workspace-root", str(root), "optimize", str(case_file)],
                 check=True,
@@ -192,13 +209,14 @@ class CliScenarioTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
 
             run = subprocess.run(
                 [sys.executable, "-m", "lora", "--workspace-root", str(root), "regression", "run"],
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
             )
             payload = json.loads(run.stdout)
@@ -223,7 +241,7 @@ class CliScenarioTests(unittest.TestCase):
     def test_case_run_supports_fork_session_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
             create = subprocess.run(
                 [
                     sys.executable,
@@ -239,6 +257,7 @@ class CliScenarioTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
             )
             source_session_id = json.loads(create.stdout)["session_id"]
@@ -271,6 +290,7 @@ class CliScenarioTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
             )
             show_payload = json.loads(show.stdout)
@@ -281,7 +301,7 @@ class CliScenarioTests(unittest.TestCase):
     def test_case_run_supports_resume_and_shared_session_modes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
             create = subprocess.run(
                 [
                     sys.executable,
@@ -358,7 +378,7 @@ class CliScenarioTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
 
             run = subprocess.run(
                 [sys.executable, "-m", "lora", "--workspace-root", str(root), "case", "run", str(case_file)],
@@ -401,7 +421,7 @@ class CliScenarioTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
 
             run = subprocess.run(
                 [sys.executable, "-m", "lora", "--workspace-root", str(root), "case", "run", str(case_file)],
@@ -421,7 +441,7 @@ class CliScenarioTests(unittest.TestCase):
     def test_chat_message_creates_session_and_records_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
             chat = subprocess.run(
                 [
                     sys.executable,
@@ -458,14 +478,17 @@ class CliScenarioTests(unittest.TestCase):
             self.assertIn("# Identity", static_prompt)
             self.assertIn("# Coding Work", static_prompt)
             self.assertNotIn("# Runtime Context", static_prompt)
-            self.assertIn("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", rendered_prompt)
-            self.assertIn("# Runtime Context", rendered_prompt)
+            self.assertNotIn("__SYSTEM_PROMPT_REQUEST_BOUNDARY__", rendered_prompt)
+            self.assertNotIn("# Runtime Context", rendered_prompt)
             self.assertIn("# Available Tools", rendered_prompt)
-            self.assertIn("# Recent Context", rendered_prompt)
+            self.assertIn("# Tool Result Handling", rendered_prompt)
+            self.assertIn("# Context Budget", rendered_prompt)
+            self.assertNotIn("# Recent Context", rendered_prompt)
             self.assertIn("system.identity", prompt_event["payload"]["static_module_ids"])
             self.assertIn("system.coding_rules", prompt_event["payload"]["static_module_ids"])
-            self.assertIn("runtime.env_info", prompt_event["payload"]["dynamic_module_ids"])
-            self.assertIn("tool.available", prompt_event["payload"]["dynamic_module_ids"])
+            self.assertIn("tool.available", prompt_event["payload"]["request_system_module_ids"])
+            self.assertIn("system.tool_result_reminders", prompt_event["payload"]["request_system_module_ids"])
+            self.assertIn("system.token_budget", prompt_event["payload"]["request_system_module_ids"])
             self.assertEqual(prompt_event["payload"]["injection_decision"]["reason"], "before_model_request")
 
     def test_chat_agent_alias_records_safe_profile_metadata(self) -> None:
@@ -485,7 +508,7 @@ class CliScenarioTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
             env.pop("DEEPSEEK_API_KEY", None)
             env.pop("DEV_PROFILE_KEY", None)
             chat = subprocess.run(
@@ -527,7 +550,7 @@ class CliScenarioTests(unittest.TestCase):
                 "agents:\n  - alias: dev\n    model_request:\n      model_name: dev-model\n",
                 encoding="utf-8",
             )
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = _isolated_cli_env(root)
             run = subprocess.run(
                 [
                     sys.executable,

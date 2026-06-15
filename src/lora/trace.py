@@ -202,6 +202,8 @@ class EventStore:
             "created_at": event.timestamp,
             "prompt_hash": event.payload.get("prompt_hash"),
             "module_ids": event.payload.get("module_ids", []),
+            "static_module_ids": event.payload.get("static_module_ids", []),
+            "request_system_module_ids": event.payload.get("request_system_module_ids", []),
             "modules": event.payload.get("modules", []),
             "dynamic_inputs": event.payload.get("dynamic_inputs", {}),
         }

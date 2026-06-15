@@ -3,9 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtGui import QFontDatabase
+from PySide6.QtGui import QFont, QFontDatabase
 
 THEMES = ("day", "night")
+UI_FONT_FAMILIES = (
+    "Microsoft YaHei UI",
+    "Segoe UI Variable Text",
+    "SF Pro Text",
+    "PingFang SC",
+    "Segoe UI",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +168,12 @@ def register_ui_fonts() -> None:
             QFontDatabase.addApplicationFont(str(font_path))
 
 
+def apply_ui_font(application) -> None:
+    font = QFont()
+    font.setFamilies(list(UI_FONT_FAMILIES))
+    application.setFont(font)
+
+
 def _candidate_ui_font_paths() -> tuple[Path, ...]:
     fonts_dir = Path("C:/Windows/Fonts")
     return (
@@ -186,6 +199,7 @@ def _stylesheet(palette: ThemePalette) -> str:
     group_pad = text_relative_spacing(t.body_size)
     meta_pad = text_relative_spacing(t.meta_size)
     group_action_size = t.body_size + group_pad
+    ui_font_stack = _qss_font_stack(UI_FONT_FAMILIES)
     if palette.name == "day":
         app_bg = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #fbf8f3, stop:0.38 #f5f4f2, stop:0.72 #eef3f9, stop:1 #eaf4ee)"
         accent_fill = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f7aff, stop:1 #4ea8ff)"
@@ -213,7 +227,7 @@ def _stylesheet(palette: ThemePalette) -> str:
     selected_fill = c.selection
     return f"""
 QWidget {{
-    font-family: "Microsoft YaHei UI", "Segoe UI Variable Text", "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+    font-family: {ui_font_stack}, sans-serif;
     font-size: {t.body_size}px;
     color: {c.text};
 }}
@@ -222,6 +236,226 @@ QMainWindow, #CentralShell {{
 }}
 #CentralShell {{
     border: 0;
+}}
+#ResourcesWindow, #ResourcesShell {{
+    background: {app_bg};
+}}
+#ResourcesShell {{
+    border: 0;
+}}
+#ResourceHeader, #ResourceCategoryPane, #ResourceGalleryPane, #ResourceSpecPane {{
+    background: {c.glass};
+    border: 1px solid {c.border};
+    border-radius: {r.pane}px;
+}}
+#ResourceHeader {{
+    background: {c.glass_strong};
+}}
+#ResourceHeaderTitle {{
+    color: {c.text};
+    font-size: {t.title_size - 2}px;
+    font-weight: 700;
+}}
+#ResourceHeaderSubtitle, #ResourceSpecMeta {{
+    color: {c.text_muted};
+    font-size: {t.meta_size + 1}px;
+}}
+#ResourcePaneTitle, #ResourceSpecTitle {{
+    color: {c.text};
+    font-size: {t.body_size + 2}px;
+    font-weight: 700;
+}}
+#ResourceSearchInput {{
+    background: {c.input};
+    border: 1px solid {c.border};
+    border-radius: {r.card}px;
+    color: {c.text};
+    padding: {s.control_pad_y}px {s.control_pad_x}px;
+}}
+#ResourceSearchInput:focus {{
+    border-color: {c.border_strong};
+    background: {c.surface};
+}}
+#ResourceCategoryTree, #ResourcePreviewScroll, #ResourceCardHost {{
+    background: transparent;
+    border: 0;
+}}
+#ResourceCategoryTree::item {{
+    padding: 9px 8px;
+    border-radius: {r.chip}px;
+    color: {c.text_muted};
+}}
+#ResourceCategoryTree::item:selected {{
+    background: {selected_fill};
+    color: {c.text};
+}}
+#ResourceCard {{
+    background: {pill_fill};
+    border: 1px solid {c.border};
+    border-radius: {r.card}px;
+    color: {c.text};
+    font-size: {t.body_size}px;
+    font-weight: 600;
+    padding: 10px 12px;
+    text-align: left;
+}}
+#ResourceCard:hover {{
+    background: {hover_fill};
+    border-color: {c.border_strong};
+}}
+#ResourceCard:checked {{
+    background: {selected_fill};
+    border-color: rgba(20,126,251,0.30);
+}}
+#ResourceCard[checked="true"] {{
+    background: {selected_fill};
+    border-color: rgba(20,126,251,0.30);
+}}
+#ResourceCardName {{
+    color: {c.text};
+    font-size: {t.body_size}px;
+    font-weight: 700;
+}}
+#ResourceCardCategory, #ResourceCardValue {{
+    color: {c.text_muted};
+    font-size: {t.meta_size + 1}px;
+}}
+#ResourceColorSwatch {{
+    border: 1px solid {c.border_strong};
+    border-radius: 9px;
+    font-size: {t.meta_size + 1}px;
+    font-weight: 700;
+    padding: 8px;
+}}
+#ResourceFontSample {{
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 9px;
+    color: {c.text};
+    padding: 6px 8px;
+}}
+#ResourceFontPreview {{
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 9px;
+}}
+#ResourceFontHeadline {{
+    color: {c.text};
+    background: transparent;
+}}
+#ResourceFontSample {{
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    color: {c.text};
+    padding: 0;
+}}
+#ResourceFontRuler, #ResourceFontResolved {{
+    color: {c.text_muted};
+    background: transparent;
+    border: 0;
+    padding: 0;
+}}
+#ResourceFontResolved {{
+    font-size: {t.meta_size}px;
+}}
+#ResourceComponentPreviewButton, #ResourceComponentPreviewInput, #ResourceComponentPreviewLabel,
+#ResourceIconPreview, #ResourceStandardIconPreview, #ResourcePaletteSwatch, #ResourceLayoutPreview,
+#ResourceModulePreview, #ResourceStylePreview {{
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 9px;
+    color: {c.text_muted};
+    padding: 6px 8px;
+}}
+#ResourceComponentPreviewCheckBox, #ResourceComponentPreviewRadioButton, #ResourceComponentPreviewComboBox,
+#ResourceComponentPreviewToolButton, #ResourceComponentPreviewSpinBox, #ResourceComponentPreviewSlider,
+#ResourceComponentPreviewProgressBar, #ResourceComponentPreviewScrollBar, #ResourceComponentPreviewDateEdit,
+#ResourceComponentPreviewTimeEdit, #ResourceComponentPreviewDateTimeEdit, #ResourceComponentPreviewFontComboBox {{
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 9px;
+    color: {c.text_muted};
+    padding: 6px 8px;
+}}
+#ResourceComponentPreviewListWidget, #ResourceComponentPreviewTreeWidget, #ResourceComponentPreviewTableWidget,
+#ResourceComponentPreviewTabWidget, #ResourceComponentPreviewPlainText, #ResourceComponentPreviewTextEdit {{
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 9px;
+    color: {c.text_muted};
+}}
+#ResourceComponentPreviewGroupBox {{
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 9px;
+    color: {c.text_muted};
+    margin-top: 8px;
+    padding: 8px;
+}}
+#ResourceComponentPreviewLcd, #ResourceComponentPreviewDial {{
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 9px;
+    color: {c.text_muted};
+}}
+#ResourceStylePreviewChip {{
+    background: {pill_fill};
+    border: 1px solid {c.border};
+    border-radius: {r.chip}px;
+    color: {c.text_muted};
+    padding: 4px 8px;
+}}
+#ResourceTypographyPreview, #ResourceSpacingPreview, #ResourceRadiusPreview, #ResourceGlassPanePreview,
+#ResourceSegmentedPreview {{
+    background: {c.surface_alt};
+    border: 1px solid {c.border};
+    border-radius: 9px;
+    color: {c.text};
+    padding: 6px 8px;
+}}
+#ResourceAccentActionPreview {{
+    background: {accent_fill};
+    border: 1px solid rgba(255,255,255,0.28);
+    border-radius: {r.card}px;
+    color: {c.accent_text};
+    font-weight: 700;
+    padding: 8px 12px;
+}}
+#ResourceGlassPanePreview {{
+    background: {c.glass};
+    border: 1px solid {c.border_strong};
+    border-radius: {r.pane}px;
+}}
+#ResourceSegmentedPreviewOption {{
+    color: {c.text_muted};
+    border-radius: {max(4, r.chip - 1)}px;
+    padding: 5px 8px;
+}}
+#ResourceSegmentedPreviewOption[selected="true"] {{
+    background: {c.surface};
+    color: {c.text};
+    border: 1px solid rgba(20,126,251,0.16);
+}}
+#ResourceSpecText {{
+    background: {c.input};
+    border: 1px solid {c.border};
+    border-radius: {r.card}px;
+    color: {c.text_muted};
+    font-family: {ui_font_stack}, sans-serif;
+    font-size: {t.meta_size + 1}px;
+    padding: 10px;
+}}
+#ResourceCopyButton {{
+    background: {accent_fill};
+    border: 1px solid rgba(255,255,255,0.28);
+    border-radius: {r.card}px;
+    color: {c.accent_text};
+    font-weight: 700;
+    padding: {s.control_pad_y + 1}px {s.control_pad_x + 2}px;
+}}
+#ResourceCopyButton:hover {{
+    background: {c.accent_hover};
 }}
 #SessionSidebar, #ChatPane, #TraceInspector {{
     background: {c.glass};
@@ -571,7 +805,7 @@ QTabBar::tab:hover {{
     background: {c.surface_alt};
     border: 1px solid {c.border};
     border-radius: 5px;
-    font-family: "Consolas", "Courier New", monospace;
+    font-family: {ui_font_stack}, sans-serif;
     padding: 1px 5px;
 }}
 #ChatQuoteBlock {{
@@ -642,14 +876,14 @@ QTabBar::tab:hover {{
 }}
 #ChatCodeBlockLanguage {{
     color: {c.text_soft};
-    font-family: "Consolas", "Courier New", monospace;
+    font-family: {ui_font_stack}, sans-serif;
     font-size: {t.meta_size}px;
     font-weight: 600;
     padding: 0 0 2px 0;
 }}
 #ChatCodeBlockText {{
     color: {c.text_muted};
-    font-family: "Consolas", "Courier New", monospace;
+    font-family: {ui_font_stack}, sans-serif;
     font-size: {t.body_size}px;
 }}
 #ComposerDock {{
@@ -888,3 +1122,7 @@ QToolTip {{
     padding: 6px 8px;
 }}
 """
+
+
+def _qss_font_stack(families: tuple[str, ...]) -> str:
+    return ", ".join(f'"{family}"' for family in families)

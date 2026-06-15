@@ -262,6 +262,24 @@ class GuiSessionSidebarTests(unittest.TestCase):
         self.assertFalse(project_delete.icon().isNull())
         self.assertIsNone(conversation_delete)
 
+    def test_project_group_header_shows_directory_icon_only_for_directory_scopes(self) -> None:
+        sidebar = SessionSidebar()
+        sidebar.set_session_groups(_groups(), active_scope_id="conversation", active_session_id=None)
+
+        conversation_header = sidebar._group_sections[0].header
+        project_header = sidebar._group_sections[1].header
+
+        conversation_icon = conversation_header.findChild(QLabel, "SessionGroupDirIcon")
+        project_icon = project_header.findChild(QLabel, "SessionGroupDirIcon")
+
+        self.assertIsNone(conversation_icon)
+        self.assertIsNotNone(project_icon)
+        assert project_icon is not None
+        pixmap = project_icon.pixmap()
+        self.assertIsNotNone(pixmap)
+        assert pixmap is not None
+        self.assertFalse(pixmap.isNull())
+
     def test_project_delete_button_emits_scope_id(self) -> None:
         sidebar = SessionSidebar()
         sidebar.set_session_groups(_groups(), active_scope_id="conversation", active_session_id=None)
