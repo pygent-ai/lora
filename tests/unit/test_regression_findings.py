@@ -6,12 +6,12 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from lora.case import CaseManager
+from lora.evaluation import CaseManager
 from lora.config import load_mapping_file, load_run_config
-from lora.redaction import REDACTED, redact_secrets
+from lora.core.redaction import REDACTED, redact_secrets
 from lora.schema import CaseRunRef, ContextEvent, RunConfig
-from lora.session import SessionManager
-from lora.trace import EventStore
+from lora.sessions import SessionManager
+from lora.tracing import EventStore
 
 
 class DocumentationRegressionFindingTests(unittest.TestCase):

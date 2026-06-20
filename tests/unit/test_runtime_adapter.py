@@ -12,10 +12,10 @@ from unittest.mock import patch
 from pygent.message import AssistantMessage, AssistantMessageChunk, ToolCall
 from pygent.module.tool import BaseTool, ToolCategory
 
-from lora.agent import LoraAgent, _to_pygent_message
+from lora.runtime import LoraAgent, _to_pygent_message
 from lora.runtime import AgentRuntimeAdapter
 from lora.schema import BashCliPreset, CaseDefinition, ResolvedAgentConfig, RunConfig
-from lora.session import SessionManager
+from lora.sessions import SessionManager
 
 
 class RecordingAgent:
@@ -1126,7 +1126,16 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            config = RunConfig(workspace_root=workspace, lora_root=workspace / ".lora")
+            config = RunConfig(
+                workspace_root=workspace,
+                lora_root=workspace / ".lora",
+                resolved_agent=ResolvedAgentConfig(
+                    alias="default",
+                    model_name="test-model",
+                    api_key=None,
+                    api_key_source="missing",
+                ),
+            )
             manager = SessionManager(config)
             ref = manager.create("chat", mode="chat")
 
@@ -1408,7 +1417,16 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
 
     def test_pending_new_cli_is_rendered_once_with_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora")
+            config = RunConfig(
+                workspace_root=tmp,
+                lora_root=Path(tmp) / ".lora",
+                resolved_agent=ResolvedAgentConfig(
+                    alias="default",
+                    model_name="test-model",
+                    api_key=None,
+                    api_key_source="missing",
+                ),
+            )
             manager = SessionManager(config)
             ref = manager.create("chat", mode="chat")
             state_dir = Path(ref.session_dir) / "state"
@@ -1515,7 +1533,7 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             agent = FakeBashLoraAgent(config)
             agent.llm = BashThenAnswerLLM()
 
-            with patch("lora.agent.shutil.which", return_value="C:/tools/madeupcli.exe"):
+            with patch("lora.runtime.agent.shutil.which", return_value="C:/tools/madeupcli.exe"):
                 result = asyncio.run(
                     AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
                         session=session,
@@ -1548,7 +1566,7 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             agent = FakeBashLoraAgent(config)
             agent.llm = BashThenAnswerLLM()
 
-            with patch("lora.agent.shutil.which", return_value="C:/tools/typescript-language-server.cmd"):
+            with patch("lora.runtime.agent.shutil.which", return_value="C:/tools/typescript-language-server.cmd"):
                 asyncio.run(
                     AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
                         session=session,

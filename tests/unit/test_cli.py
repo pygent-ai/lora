@@ -17,7 +17,7 @@ class CliFormattingTests(unittest.TestCase):
         parser.set_defaults(handler=lambda args: {"final_answer": "开发指南"})
         stdout = io.StringIO()
 
-        with patch("lora.cli.build_parser", return_value=parser), patch("sys.stdout", stdout):
+        with patch("lora.cli.main.build_parser", return_value=parser), patch("sys.stdout", stdout):
             exit_code = main([])
 
         self.assertEqual(exit_code, 0)

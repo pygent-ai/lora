@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora.case import CaseManager
+from lora.evaluation import CaseManager
 from lora.schema import CaseDefinition, CaseRunRef
 
 

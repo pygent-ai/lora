@@ -99,6 +99,11 @@ class RunConfig:
     bash_full_output_allowlist: list[str] = field(default_factory=list)
     allow_read_outside_workspace: bool = True
     user_lora_root: str | None = None
+    context_window: int | None = None
+    context_compression_enabled: bool = True
+    context_compression_trigger_ratio: float = 0.9
+    context_compression_file_read_count: int = 5
+    context_compression_file_read_max_chars: int = 5000
 
     def __post_init__(self) -> None:
         self.workspace_root = _abs_path(self.workspace_root)
@@ -108,6 +113,10 @@ class RunConfig:
             self.case_file = _abs_path(self.case_file)
         if self.max_steps != -1 and self.max_steps <= 0:
             raise ValueError("max_steps must be -1 or greater than 0")
+        if self.context_window is not None:
+            self.context_window = int(self.context_window)
+            if self.context_window <= 0:
+                raise ValueError("context_window must be greater than 0")
         self.agent_alias = _require(self.agent_alias, "agent_alias")
         if self.model_name is not None:
             self.model_name = _require(self.model_name, "model_name")
@@ -124,6 +133,16 @@ class RunConfig:
             _require(item, "bash_full_output_allowlist item")
             for item in self.bash_full_output_allowlist
         ]
+        self.context_compression_enabled = bool(self.context_compression_enabled)
+        self.context_compression_trigger_ratio = float(self.context_compression_trigger_ratio)
+        if self.context_compression_trigger_ratio <= 0:
+            raise ValueError("context_compression_trigger_ratio must be greater than 0")
+        self.context_compression_file_read_count = int(self.context_compression_file_read_count)
+        if self.context_compression_file_read_count < 0:
+            raise ValueError("context_compression_file_read_count must be greater than or equal to 0")
+        self.context_compression_file_read_max_chars = int(self.context_compression_file_read_max_chars)
+        if self.context_compression_file_read_max_chars < 0:
+            raise ValueError("context_compression_file_read_max_chars must be greater than or equal to 0")
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -324,6 +343,8 @@ class AgentSession:
     created_at: str
     updated_at: str
     system_prompt: str = ""
+    status: str = "normal"
+    token_usage: dict[str, Any] = field(default_factory=dict)
     history: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -346,6 +367,8 @@ class AgentSession:
             created_at=data["created_at"],
             updated_at=data["updated_at"],
             system_prompt=data.get("system_prompt", ""),
+            status=data.get("status", "normal"),
+            token_usage=dict(data.get("token_usage") or {}),
             history=list(data.get("history") or []),
             metadata=dict(data.get("metadata") or {}),
         )

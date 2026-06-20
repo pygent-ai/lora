@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lora.config import load_run_config
-from lora.secrets import (
+from lora.credentials import (
     DEFAULT_API_KEY_ENV,
     credential_is_configured,
     delete_user_credential,

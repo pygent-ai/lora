@@ -5,8 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "PySide6>=6.8.0",
-    "pygent-ai==0.1.13",
+    "fastapi>=0.115.0",
+    "pygent-ai==0.1.14",
+    "uvicorn>=0.32.0",
 ]
 
 [dependency-groups]
@@ -16,15 +17,17 @@ dev = [
 credentials = [
     "keyring>=25.0.0",
 ]
+legacy-gui = [
+    "PySide6>=6.8.0",
+]
 
 [project.scripts]
 lora = "lora.cli:main"
-lora-gui = "gui.__main__:main"
-lora-resources = "gui.resources_app:main"
+lora-api = "lora_api.main:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lora", "src/gui"]
+packages = ["src/lora", "src/lora_api", "src/gui"]

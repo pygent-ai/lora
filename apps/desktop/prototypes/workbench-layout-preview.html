@@ -1,0 +1,824 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lora Workbench Layout Preview</title>
+    <style>
+      :root {
+        --bg: #eef3f5;
+        --bg-quiet: #e8eef1;
+        --surface: #fbfcfd;
+        --surface-2: #f4f7f9;
+        --line: #d7e0e5;
+        --line-strong: #c2d0d8;
+        --text: #1e2732;
+        --muted: #647386;
+        --soft: #8b99a9;
+        --accent: #167c80;
+        --accent-2: #1f6ca8;
+        --success: #14845f;
+        --warning: #ad741c;
+        --error: #c84a57;
+        --shadow: 0 20px 60px rgba(42, 63, 76, 0.14);
+        --history-width: 304px;
+        --trace-width: 388px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--text);
+        background:
+          linear-gradient(120deg, rgba(22, 124, 128, 0.05), transparent 36%),
+          linear-gradient(180deg, var(--bg), var(--bg-quiet));
+        font-family:
+          "Microsoft YaHei UI",
+          "Segoe UI",
+          system-ui,
+          sans-serif;
+      }
+
+      button,
+      textarea {
+        font: inherit;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: var(--history-width) minmax(720px, 1fr);
+        gap: 14px;
+        padding: 16px;
+        transition: grid-template-columns 180ms ease;
+      }
+
+      .app.history-collapsed {
+        --history-width: 68px;
+      }
+
+      .history {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 18px 14px;
+        color: var(--muted);
+        background: transparent;
+        transition: padding 180ms ease;
+      }
+
+      .history-shell {
+        display: flex;
+        flex-direction: column;
+        min-height: 100%;
+        gap: 14px;
+      }
+
+      .history-top {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: start;
+      }
+
+      .brand {
+        min-width: 0;
+      }
+
+      .brand-title {
+        margin: 0;
+        color: var(--text);
+        font-size: 24px;
+        font-weight: 760;
+        line-height: 1.05;
+      }
+
+      .brand-path {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .icon-button {
+        width: 36px;
+        height: 36px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.42);
+        cursor: pointer;
+        transition:
+          background 140ms ease,
+          color 140ms ease,
+          border-color 140ms ease;
+      }
+
+      .icon-button:hover {
+        color: var(--text);
+        border-color: var(--line-strong);
+        background: rgba(255, 255, 255, 0.74);
+      }
+
+      .rail-glyph {
+        width: 1em;
+        height: 1em;
+        display: inline-grid;
+        place-items: center;
+        flex: 0 0 auto;
+        color: currentColor;
+        font-weight: 800;
+        line-height: 1;
+      }
+
+      .rail-glyph.chevron {
+        font-size: 28px;
+        transform: translateY(-1px);
+      }
+
+      .rail-glyph.plus {
+        font-size: 28px;
+        transform: translateY(-1px);
+      }
+
+      .rail-glyph.small {
+        font-size: 16px;
+      }
+
+      .primary-action {
+        height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border: 0;
+        border-radius: 8px;
+        color: white;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        box-shadow: 0 10px 24px rgba(22, 124, 128, 0.18);
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      .section-label {
+        margin: 2px 4px 0;
+        color: var(--soft);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .session-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .session-row {
+        position: relative;
+        display: grid;
+        grid-template-columns: 4px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 58px;
+        padding: 10px 10px 10px 0;
+        border-radius: 8px;
+        color: var(--muted);
+      }
+
+      .session-row.active {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.52);
+      }
+
+      .rail {
+        width: 4px;
+        align-self: stretch;
+        border-radius: 999px;
+        background: transparent;
+      }
+
+      .session-row.active .rail {
+        background: var(--accent);
+      }
+
+      .session-title {
+        min-width: 0;
+        overflow: hidden;
+        color: inherit;
+        font-size: 13px;
+        font-weight: 720;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .session-meta {
+        margin-top: 4px;
+        color: var(--soft);
+        font-size: 11px;
+      }
+
+      .status-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        background: var(--success);
+      }
+
+      .history-bottom {
+        margin-top: auto;
+        display: grid;
+        gap: 10px;
+      }
+
+      .plain-action {
+        height: 38px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.42);
+        cursor: pointer;
+      }
+
+      .app.history-collapsed .history {
+        padding: 18px 8px;
+      }
+
+      .app.history-collapsed .history-shell {
+        align-items: center;
+      }
+
+      .app.history-collapsed .history-top {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: center;
+        justify-items: center;
+        width: 44px;
+      }
+
+      .app.history-collapsed .brand {
+        display: flex;
+        justify-content: center;
+        width: 44px;
+      }
+
+      .app.history-collapsed .brand-title {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        border-radius: 10px;
+        color: white;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        font-size: 22px;
+        line-height: 1;
+      }
+
+      .app.history-collapsed .brand-path,
+      .app.history-collapsed .action-label,
+      .app.history-collapsed .section-label,
+      .app.history-collapsed .session-list,
+      .app.history-collapsed .plain-action-label {
+        display: none;
+      }
+
+      .app.history-collapsed .history .icon-button,
+      .app.history-collapsed .primary-action,
+      .app.history-collapsed .plain-action {
+        width: 44px;
+        min-width: 44px;
+        height: 44px;
+        min-height: 44px;
+        padding: 0;
+      }
+
+      .app.history-collapsed .primary-action,
+      .app.history-collapsed .plain-action {
+        justify-content: center;
+      }
+
+      .app.history-collapsed .history .rail-glyph {
+        margin: 0;
+      }
+
+      .app.history-collapsed .history-bottom {
+        width: 44px;
+        justify-items: center;
+      }
+
+      .workbench {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) var(--trace-width);
+        gap: 12px;
+        overflow: hidden;
+        border: 1px solid var(--line-strong);
+        border-radius: 12px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+        transition: grid-template-columns 180ms ease;
+      }
+
+      .app.trace-collapsed {
+        --trace-width: 56px;
+      }
+
+      .chat {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        overflow: hidden;
+      }
+
+      .chat-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-height: 72px;
+        padding: 16px 22px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(251, 252, 253, 0.78);
+      }
+
+      .chat-title {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .chat-title h2 {
+        margin: 0;
+        font-size: 17px;
+        line-height: 1.2;
+      }
+
+      .chat-title p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .status-pill {
+        min-width: 76px;
+        padding: 8px 10px;
+        border: 1px solid #b9d5d1;
+        border-radius: 8px;
+        color: var(--accent);
+        background: #ecf8f6;
+        font-size: 12px;
+        font-weight: 800;
+        text-align: center;
+      }
+
+      .transcript {
+        min-height: 0;
+        overflow: auto;
+        padding: 24px 30px;
+        background:
+          linear-gradient(180deg, rgba(244, 247, 249, 0.72), rgba(251, 252, 253, 0.2)),
+          var(--surface);
+      }
+
+      .message {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 22px;
+      }
+
+      .message.user {
+        justify-content: flex-end;
+      }
+
+      .avatar {
+        flex: 0 0 26px;
+        width: 26px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        color: white;
+        background: var(--accent);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .bubble {
+        max-width: min(680px, 76%);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px 14px;
+        background: white;
+        font-size: 14px;
+        line-height: 1.65;
+      }
+
+      .message.user .bubble {
+        color: #0f2f39;
+        background: #e8f3ff;
+        border-color: #c8dff4;
+      }
+
+      .activity {
+        max-width: 720px;
+        margin: 0 0 22px 36px;
+        border: 1px solid #cddce1;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #f6fafb;
+      }
+
+      .activity-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+        font-weight: 760;
+      }
+
+      .activity-row {
+        display: grid;
+        grid-template-columns: 18px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .composer {
+        padding: 14px 16px 16px;
+        background: var(--surface);
+      }
+
+      .composer-box {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 12px;
+        align-items: end;
+        min-height: 112px;
+        padding: 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        background: white;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 76px;
+        resize: none;
+        border: 0;
+        outline: 0;
+        color: var(--text);
+        background: transparent;
+      }
+
+      .send {
+        height: 36px;
+        min-width: 90px;
+        border: 0;
+        border-radius: 8px;
+        color: white;
+        background: linear-gradient(135deg, var(--accent-2), var(--accent));
+        cursor: pointer;
+        font-weight: 800;
+      }
+
+      .trace {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: auto auto 1fr;
+        overflow: hidden;
+        border-left: 1px solid var(--line);
+        background: var(--surface-2);
+      }
+
+      .trace-header {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: start;
+        min-height: 72px;
+        padding: 16px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .trace-title h3 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .trace-title p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .trace-tabs {
+        display: flex;
+        gap: 6px;
+        padding: 12px 14px 0;
+      }
+
+      .tab {
+        padding: 7px 10px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: var(--muted);
+        background: transparent;
+        font-size: 12px;
+        font-weight: 760;
+      }
+
+      .tab.active {
+        color: var(--text);
+        border-color: var(--line);
+        background: white;
+      }
+
+      .trace-list {
+        min-height: 0;
+        overflow: auto;
+        padding: 12px 14px 18px;
+      }
+
+      .trace-event {
+        display: grid;
+        grid-template-columns: 10px 1fr;
+        gap: 10px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .trace-event .status-dot {
+        margin-top: 5px;
+      }
+
+      .trace-event strong {
+        display: block;
+        font-size: 12px;
+      }
+
+      .trace-event span {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.45;
+      }
+
+      .app.trace-collapsed .trace {
+        border-left-color: var(--line-strong);
+      }
+
+      .app.trace-collapsed .trace-header {
+        grid-template-columns: 1fr;
+        justify-items: center;
+        padding: 16px 8px;
+      }
+
+      .app.trace-collapsed .trace-title,
+      .app.trace-collapsed .trace-tabs,
+      .app.trace-collapsed .trace-list {
+        display: none;
+      }
+
+      .vertical-label {
+        display: none;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0;
+        writing-mode: vertical-rl;
+      }
+
+      .app.trace-collapsed .vertical-label {
+        display: block;
+      }
+
+      @media (max-width: 1040px) {
+        .app {
+          grid-template-columns: 68px minmax(0, 1fr);
+        }
+
+        .app:not(.history-collapsed) .history {
+          position: fixed;
+          z-index: 4;
+          inset: 16px auto 16px 16px;
+          width: 304px;
+          border-radius: 12px;
+          background: rgba(238, 243, 245, 0.94);
+          box-shadow: 0 18px 48px rgba(42, 63, 76, 0.16);
+        }
+
+        .workbench {
+          grid-template-columns: minmax(0, 1fr) 56px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app" id="app">
+      <aside class="history" aria-label="历史会话">
+        <div class="history-shell">
+          <div class="history-top">
+            <div class="brand">
+              <h1 class="brand-title">Lora</h1>
+              <p class="brand-path">E:\Projects\lora</p>
+            </div>
+            <button class="icon-button" id="toggleHistory" title="展开或收起历史会话" type="button">
+              <span class="rail-glyph chevron" id="historyChevron">‹</span>
+            </button>
+          </div>
+
+          <button class="primary-action" title="新建对话" type="button">
+            <span class="rail-glyph plus">+</span>
+            <span class="action-label">New Chat</span>
+          </button>
+
+          <div class="section-label">Sessions</div>
+          <div class="session-list">
+            <div class="session-row active">
+              <div class="rail"></div>
+              <div>
+                <div class="session-title">Electron + React 本地桌面迁移</div>
+                <div class="session-meta">今天 20:16 · Ready</div>
+              </div>
+              <div class="status-dot"></div>
+            </div>
+            <div class="session-row">
+              <div class="rail"></div>
+              <div>
+                <div class="session-title">Trace 面板布局讨论</div>
+                <div class="session-meta">昨天 · 12 turns</div>
+              </div>
+              <div class="status-dot" style="background: var(--warning)"></div>
+            </div>
+            <div class="session-row">
+              <div class="rail"></div>
+              <div>
+                <div class="session-title">GUI 中文显示修复</div>
+                <div class="session-meta">6 月 16 日 · Done</div>
+              </div>
+              <div class="status-dot"></div>
+            </div>
+          </div>
+
+          <div class="history-bottom">
+            <button class="plain-action" title="选择项目" type="button">
+              <span class="rail-glyph small">□</span>
+              <span class="plain-action-label">Choose Project</span>
+            </button>
+            <button class="plain-action" title="设置" type="button">
+              <span class="rail-glyph small">⚙</span>
+              <span class="plain-action-label">Settings</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <section class="workbench" aria-label="工作区">
+        <section class="chat" aria-label="对话框">
+          <header class="chat-header">
+            <div class="chat-title">
+              <h2>Electron + React 本地桌面迁移</h2>
+              <p>default / deepseek-v4-flash · 当前工作区内的主对话面板</p>
+            </div>
+            <div class="status-pill">Ready</div>
+          </header>
+
+          <div class="transcript">
+            <article class="message user">
+              <div class="bubble">左边历史会话要融入背景，Trace 要在工作区内展开收起。</div>
+            </article>
+
+            <article class="message assistant">
+              <div class="avatar">L</div>
+              <div class="bubble">
+                明白。这个布局把历史会话降成背景导航层，把对话框和 Trace 放进同一个工作区。Trace 收起后，对话区域会自然拿回宽度。
+              </div>
+            </article>
+
+            <div class="activity">
+              <div class="activity-head">
+                <span>执行活动</span>
+                <span style="color: var(--success)">Done</span>
+              </div>
+              <div class="activity-row">
+                <div class="status-dot"></div>
+                <span>读取当前 PySide6 布局和 FastAPI 合约</span>
+                <span>180ms</span>
+              </div>
+              <div class="activity-row">
+                <div class="status-dot"></div>
+                <span>生成 React 工作区布局草图</span>
+                <span>320ms</span>
+              </div>
+            </div>
+
+            <article class="message assistant">
+              <div class="avatar">L</div>
+              <div class="bubble">
+                现在你可以试试左侧和右侧的收起按钮，看“历史会话【对话框【Trace 信息】】”这个嵌套关系是否符合你的直觉。
+              </div>
+            </article>
+          </div>
+
+          <footer class="composer">
+            <div class="composer-box">
+              <textarea placeholder="Message Lora..."></textarea>
+              <button class="send" type="button">Send</button>
+            </div>
+          </footer>
+        </section>
+
+        <aside class="trace" aria-label="Trace 信息">
+          <header class="trace-header">
+            <div class="trace-title">
+              <h3>Trace 信息</h3>
+              <p>Session: chat-20260616 · Run: ready</p>
+            </div>
+            <button class="icon-button" id="toggleTrace" title="展开或收起 Trace" type="button">›</button>
+            <div class="vertical-label">TRACE</div>
+          </header>
+
+          <nav class="trace-tabs" aria-label="Trace tabs">
+            <button class="tab active" type="button">Events</button>
+            <button class="tab" type="button">Tools</button>
+            <button class="tab" type="button">Files</button>
+            <button class="tab" type="button">Config</button>
+          </nav>
+
+          <div class="trace-list">
+            <div class="trace-event">
+              <div class="status-dot"></div>
+              <div>
+                <strong>conversation.user_message</strong>
+                <span>用户提出新的布局层级要求。</span>
+              </div>
+            </div>
+            <div class="trace-event">
+              <div class="status-dot"></div>
+              <div>
+                <strong>model.request</strong>
+                <span>整理 GUI 层级、工作区状态和可折叠面板。</span>
+              </div>
+            </div>
+            <div class="trace-event">
+              <div class="status-dot"></div>
+              <div>
+                <strong>tool.call</strong>
+                <span>渲染工作区内部 Trace 检查器。</span>
+              </div>
+            </div>
+            <div class="trace-event">
+              <div class="status-dot" style="background: var(--warning)"></div>
+              <div>
+                <strong>layout.warning</strong>
+                <span>窄屏时 Trace 默认收起，避免挤压对话框。</span>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <script>
+      const app = document.querySelector("#app");
+      const historyButton = document.querySelector("#toggleHistory");
+      const historyChevron = document.querySelector("#historyChevron");
+      const traceButton = document.querySelector("#toggleTrace");
+      const brandTitle = document.querySelector(".brand-title");
+
+      historyButton.addEventListener("click", () => {
+        app.classList.toggle("history-collapsed");
+        const collapsed = app.classList.contains("history-collapsed");
+        historyChevron.textContent = collapsed ? "›" : "‹";
+        historyButton.title = collapsed ? "展开历史会话" : "收起历史会话";
+        brandTitle.textContent = collapsed ? "L" : "Lora";
+      });
+
+      traceButton.addEventListener("click", () => {
+        app.classList.toggle("trace-collapsed");
+        const collapsed = app.classList.contains("trace-collapsed");
+        traceButton.textContent = collapsed ? "‹" : "›";
+        traceButton.title = collapsed ? "展开 Trace" : "收起 Trace";
+      });
+    </script>
+  </body>
+</html>

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora.analysis import FailureAnalyzer
+from lora.evaluation import FailureAnalyzer
 from lora.schema import ContextEvent
 
 

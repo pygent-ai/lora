@@ -7,6 +7,7 @@ import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from collections.abc import Iterator
+from unittest.mock import patch
 
 from lora.config import load_mapping_file, load_run_config
 
@@ -103,6 +104,23 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.agent_alias, "fast-check")
         self.assertEqual(config.model_name, "cli-model")
 
+    def test_load_run_config_accepts_utf8_bom_config_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _clean_model_env():
+            root = Path(tmp)
+            (root / "lora.yaml").write_bytes(
+                b"\xef\xbb\xbfagents:\n"
+                b"  - alias: gui-e2e\n"
+                b"    model_request:\n"
+                b"      api_key_env: LORA_GUI_E2E_KEY\n"
+                b"      model_name: bom-model\n"
+            )
+
+            config = load_run_config(workspace_root=root, agent_alias="gui-e2e")
+
+        self.assertEqual(config.agent_alias, "gui-e2e")
+        self.assertEqual(config.model_name, "bom-model")
+        self.assertEqual(config.resolved_agent.api_key_env, "LORA_GUI_E2E_KEY")  # type: ignore[union-attr]
+
     def test_missing_agent_alias_fails_before_session_creation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -115,7 +133,12 @@ class ConfigTests(unittest.TestCase):
                 load_run_config(workspace_root=root, agent_alias="missing")
 
     def test_api_key_source_falls_back_to_config_without_leaking_key(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, _clean_model_env(), warnings.catch_warnings():
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            _clean_model_env(),
+            patch("lora.config.Path.home", return_value=Path(tmp)),
+            warnings.catch_warnings(),
+        ):
             warnings.simplefilter("ignore", DeprecationWarning)
             root = Path(tmp)
             (root / "lora.yaml").write_text(

@@ -14,6 +14,7 @@ class RepairFlowScenarioTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            _write_no_api_config(root)
             (root / ".lora").mkdir()
             (root / ".lora" / "repair.json").write_text(
                 json.dumps({"commands": [[sys.executable, "-c", "print('gate passed')"]]}),
@@ -41,6 +42,7 @@ class RepairFlowScenarioTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
             )
             run_payload = json.loads(run.stdout)
@@ -61,6 +63,7 @@ class RepairFlowScenarioTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
             )
             plan_payload = json.loads(plan.stdout)
@@ -88,6 +91,7 @@ class RepairFlowScenarioTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
             )
             apply_payload = json.loads(apply.stdout)
@@ -109,6 +113,7 @@ class RepairFlowScenarioTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env=env,
             )
             gate_payload = json.loads(gate.stdout)
@@ -123,6 +128,24 @@ class RepairFlowScenarioTests(unittest.TestCase):
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _write_no_api_config(root: Path) -> None:
+    (root / "lora.yaml").write_text(
+        "\n".join(
+            [
+                "agent:",
+                "  default_alias: test",
+                "agents:",
+                "  - alias: test",
+                "    model_request:",
+                "      model_name: test-model",
+                "      api_key_env: LORA_SCENARIO_NO_API_KEY",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 
 from lora.schema import RunConfig
-from lora.session import SessionManager
-from lora.trace import DESIGN_EVENT_TYPES, EventStore
-from lora.regression import RegressionRunner
-from lora.case import CaseManager
+from lora.sessions import SessionManager
+from lora.tracing import DESIGN_EVENT_TYPES, EventStore
+from lora.evaluation.regression import RegressionRunner
+from lora.evaluation import CaseManager
 
 
 class TraceEventStoreScenarioTests(unittest.TestCase):

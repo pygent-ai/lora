@@ -113,7 +113,7 @@ uv run lora repair gate <repair_attempt_id>
 
 ## 配置 Agent
 
-Lora 会读取 `lora.yaml` 和分层凭证文件。推荐把 API key 放在用户级 `~/.lora/credentials.env`，在配置里只引用环境变量名。完整说明见 [doc/api-key-management.md](doc/api-key-management.md)。
+Lora 会读取 `lora.yaml` 和分层凭证文件。推荐把 API key 放在用户级 `~/.lora/credentials.env`，在配置里只引用环境变量名。完整说明见 [docs/guides/api-key-management.md](docs/guides/api-key-management.md)。
 
 快速开始：
 
@@ -233,8 +233,7 @@ tests/
   scenario/           CLI 与端到端场景测试
 
 examples/             示例脚本
-doc/                  使用文档
-doc_design/           设计与开发文档
+docs/                 项目级文档
 ```
 
 ## 当前状态
@@ -271,6 +270,8 @@ Lora 适合用于：
 
 ## 更多文档
 
-- `doc/lora-chat.md`：`lora chat` 使用说明。
-- `doc_design/development-guide.md`：内部开发指南。
-- `doc_design/`：架构设计、模块拆分和后续规划。
+- `docs/README.md`：文档总索引。
+- `docs/api/local-service.md`：本地 FastAPI 服务接口说明。
+- `docs/cli/lora-chat.md`：`lora chat` 使用说明。
+- `docs/guides/development-guide.md`：内部开发指南。
+- `docs/design/`：架构设计、模块拆分和运行时设计文档。

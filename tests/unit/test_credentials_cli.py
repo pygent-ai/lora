@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lora.cli import main
-from lora.secrets import read_env_entries
+from lora.credentials import read_env_entries
 
 
 class CredentialsCliTests(unittest.TestCase):

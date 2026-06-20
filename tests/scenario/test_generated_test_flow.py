@@ -13,6 +13,7 @@ class GeneratedTestFlowScenarioTests(unittest.TestCase):
     def test_failed_run_generates_case_and_registers_regression_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            _write_no_api_config(root)
             case_file = root / "failing.yaml"
             case_file.write_text(
                 "\n".join(
@@ -69,9 +70,28 @@ def _lora(root: Path, env: dict[str, str], *args: str) -> dict[str, object]:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
     )
     return json.loads(result.stdout)
+
+
+def _write_no_api_config(root: Path) -> None:
+    (root / "lora.yaml").write_text(
+        "\n".join(
+            [
+                "agent:",
+                "  default_alias: test",
+                "agents:",
+                "  - alias: test",
+                "    model_request:",
+                "      model_name: test-model",
+                "      api_key_env: LORA_SCENARIO_NO_API_KEY",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:

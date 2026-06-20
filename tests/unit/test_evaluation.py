@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora.case import CaseManager
+from lora.evaluation import CaseManager
 from lora.evaluation import Evaluator
 from lora.schema import CaseDefinition, RunConfig
-from lora.session import SessionManager
-from lora.trace import EventStore
+from lora.sessions import SessionManager
+from lora.tracing import EventStore
 
 
 class EvaluatorTests(unittest.TestCase):

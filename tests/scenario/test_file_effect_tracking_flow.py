@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 
 from lora.schema import CaseRunRef
-from lora.tools import ToolContext, ToolInterceptor
-from lora.trace import EventStore
+from lora.runtime import ToolContext, ToolInterceptor
+from lora.tracing import EventStore
 
 
 class FileEffectTrackingScenarioTests(unittest.TestCase):

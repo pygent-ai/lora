@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from lora.schema import CaseRunRef, ContextEvent
-from lora.trace import EventStore
+from lora.tracing import EventStore
 
 
 class EventStoreTests(unittest.TestCase):

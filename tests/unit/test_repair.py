@@ -8,8 +8,8 @@ from pathlib import Path
 
 from lora.repair import RepairWorkflow, _gate_status
 from lora.schema import RunConfig
-from lora.session import SessionManager
-from lora.trace import EventStore
+from lora.sessions import SessionManager
+from lora.tracing import EventStore
 
 
 class RepairWorkflowTests(unittest.TestCase):

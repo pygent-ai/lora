@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from lora.schema import RunConfig, SessionSpec
-from lora.session import SessionManager
+from lora.sessions import SessionManager
 
 
 class SessionManagerTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class SessionManagerTests(unittest.TestCase):
 
             self.assertEqual(loaded.session_id, ref.session_id)
             self.assertTrue((Path(ref.session_dir) / "metadata.json").exists())
-            self.assertTrue((Path(tmp) / "sessions" / ref.session_id / "session.json").exists())
+            self.assertFalse((Path(tmp) / "sessions").exists())
 
     def test_multiple_runs_do_not_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -40,8 +40,11 @@ class SessionManagerTests(unittest.TestCase):
             manager.finish_case_run(run, "passed")
 
             metadata = json.loads((Path(run.run_dir) / "run_metadata.json").read_text(encoding="utf-8"))
+            session_metadata = json.loads((Path(session.session_dir) / "metadata.json").read_text(encoding="utf-8"))
             loaded = manager.load(session.session_id)
             self.assertEqual(metadata["status"], "passed")
+            self.assertEqual(session_metadata["last_case_run_id"], run.case_run_id)
+            self.assertEqual(session_metadata["last_case_run_status"], "passed")
             self.assertEqual(loaded.metadata["last_case_run_id"], run.case_run_id)
 
     def test_find_case_run_returns_ref_from_run_metadata(self) -> None:
@@ -72,13 +75,9 @@ class SessionManagerTests(unittest.TestCase):
             manager.save(session)
 
             lora_session_text = (Path(ref.session_dir) / "session.json").read_text(encoding="utf-8")
-            pygent_session_text = (Path(tmp) / "sessions" / ref.session_id / "session.json").read_text(
-                encoding="utf-8"
-            )
             self.assertNotIn(secret, lora_session_text)
-            self.assertNotIn(secret, pygent_session_text)
             self.assertIn("DEEPSEEK_API_KEY=[REDACTED]", lora_session_text)
-            self.assertIn("DEEPSEEK_API_KEY=[REDACTED]", pygent_session_text)
+            self.assertFalse((Path(tmp) / "sessions").exists())
 
     def test_load_or_create_resume_requires_session_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

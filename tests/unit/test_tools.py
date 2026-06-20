@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 
 from lora.schema import CaseRunRef
-from lora.diffing import DiffTool
-from lora.tools import FileStateTracker, ReadRange, ToolContext, ToolInterceptor
-from lora.trace import EventStore
+from lora.tracing import DiffTool
+from lora.runtime import FileStateTracker, ReadRange, ToolContext, ToolInterceptor
+from lora.tracing import EventStore
 
 
 class ToolTests(unittest.TestCase):
@@ -640,7 +640,7 @@ class FileEffectTrackerSpecTests(unittest.TestCase):
 
 
 def _file_effect_tracker_class():
-    import lora.tools as tools
+    import lora.runtime.tools as tools
 
     try:
         return tools.FileEffectTracker

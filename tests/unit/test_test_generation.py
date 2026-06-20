@@ -6,11 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora.case import CaseManager
+from lora.evaluation import CaseManager
 from lora.schema import RunConfig
-from lora.session import SessionManager
-from lora.test_generation import RegressionRegistrar, TestGenerator
-from lora.trace import EventStore
+from lora.sessions import SessionManager
+from lora.evaluation import RegressionRegistrar, TestGenerator
+from lora.tracing import EventStore
 
 
 class TestGeneratorTests(unittest.TestCase):
