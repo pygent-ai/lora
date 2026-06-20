@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -156,6 +157,22 @@ class AgentRuntimeAdapter:
                     final_parts=final_parts,
                 )
                 await _emit_runtime_message(on_runtime_message, runtime_message)
+        except asyncio.CancelledError:
+            message_count += _flush_assistant_delta(
+                assistant_delta_parts,
+                context=context,
+                store=store,
+                turn_id=resolved_turn_id,
+                final_parts=final_parts,
+            )
+            status = "skipped"
+            error = "cancelled"
+            store.append(
+                "runtime.cancelled",
+                actor="system",
+                payload={"status": status, "reason": error},
+                turn_id=resolved_turn_id,
+            )
         except Exception as exc:  # noqa: BLE001 - preserve partial chat state on agent failures.
             message_count += _flush_assistant_delta(
                 assistant_delta_parts,

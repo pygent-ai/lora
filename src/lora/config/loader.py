@@ -47,6 +47,7 @@ def load_run_config(
     model: str | None = None,
     agent_alias: str | None = None,
     max_steps: int | None = None,
+    context_window: int | None = None,
 ) -> RunConfig:
     root = Path(workspace_root or os.environ.get("LORA_WORKSPACE_ROOT") or Path.cwd()).expanduser().resolve()
     user_lora_root = (Path.home() / ".lora").expanduser().resolve()
@@ -102,6 +103,7 @@ def load_run_config(
         ),
         user_lora_root=str(user_lora_root),
         context_window=_int_config(
+            context_window,
             model_request.get("context_window"),
             os.environ.get("LORA_CONTEXT_WINDOW"),
             _dig(config_data, "context_window"),

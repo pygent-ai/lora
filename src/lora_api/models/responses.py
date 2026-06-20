@@ -20,6 +20,7 @@ class RuntimeConfigResponse(BaseModel):
     user_lora_root: str
     base_url: str | None
     max_steps: int
+    context_window: int | None
 
 
 class ProjectResponse(BaseModel):

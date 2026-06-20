@@ -10,3 +10,4 @@ class ApiEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     session_id: str | None = None
     case_run_id: str | None = None
+    sequence: int | None = None

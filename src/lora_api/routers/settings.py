@@ -29,6 +29,7 @@ def update_settings(
         agent_alias=overrides.get("agent_alias", context.agent_alias),
         model=overrides.get("model", context.model),
         max_steps=overrides.get("max_steps", context.max_steps),
+        context_window=overrides.get("context_window", context.context_window),
     )
     api_key = _clean_optional_string(request.api_key)
     if api_key:
@@ -54,6 +55,8 @@ def _settings_overrides(request: UpdateSettingsRequest) -> dict[str, object | No
         overrides[context_field] = _clean_optional_string(getattr(request, request_field))
     if "max_steps" in request.model_fields_set:
         overrides["max_steps"] = request.max_steps
+    if "context_window" in request.model_fields_set:
+        overrides["context_window"] = request.context_window
     return overrides
 
 

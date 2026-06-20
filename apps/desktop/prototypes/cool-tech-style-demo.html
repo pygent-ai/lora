@@ -1,0 +1,1225 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lora Silver Tech Style Demo</title>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <style>
+      :root {
+        --bg: #f3f6f8;
+        --bg-quiet: #e4e9ed;
+        --surface: #fbfcfd;
+        --surface-2: #f0f4f7;
+        --surface-3: #e7edf2;
+        --surface-glass: rgba(250, 252, 253, 0.9);
+        --metal-1: #ffffff;
+        --metal-2: #dfe5ea;
+        --metal-3: #b8c2ca;
+        --line: #c8d0d7;
+        --line-strong: #aab5be;
+        --line-glow: rgba(139, 156, 170, 0.32);
+        --text: #1c2630;
+        --muted: #62717e;
+        --soft: #8a98a3;
+        --accent: #6f7e8b;
+        --accent-2: #c7d0d8;
+        --accent-deep: #465460;
+        --success: #168263;
+        --warning: #a96e12;
+        --error: #c7435a;
+        --shadow: 0 24px 70px rgba(42, 55, 66, 0.16);
+        --history-width: 304px;
+        --trace-width: 388px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        min-height: 100%;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--text);
+        background: var(--bg);
+        font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+      }
+
+      button,
+      textarea,
+      input {
+        font: inherit;
+      }
+
+      button {
+        color: inherit;
+      }
+
+      .app-shell {
+        width: 100%;
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: var(--history-width) minmax(720px, 1fr);
+        gap: 14px;
+        padding: 16px;
+        transition: grid-template-columns 180ms ease;
+      }
+
+      .app-shell.history-collapsed {
+        --history-width: 68px;
+      }
+
+      .app-shell.trace-collapsed {
+        --trace-width: 56px;
+      }
+
+      .history {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 18px 14px;
+        color: var(--muted);
+        transition: padding 180ms ease;
+      }
+
+      .history-shell {
+        display: flex;
+        flex-direction: column;
+        min-height: 100%;
+        gap: 14px;
+      }
+
+      .history-top {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: start;
+      }
+
+      .brand {
+        min-width: 0;
+      }
+
+      .brand-title {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin: 0;
+        color: var(--text);
+        font-size: 24px;
+        font-weight: 800;
+        line-height: 1.05;
+      }
+
+      .brand-mark {
+        width: 12px;
+        height: 12px;
+        border-radius: 5px;
+        background: #9aa6b1;
+        box-shadow:
+          0 8px 18px rgba(92, 106, 118, 0.18),
+          inset 0 1px 0 rgba(255, 255, 255, 0.9);
+      }
+
+      .brand-path {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .icon-button {
+        width: 36px;
+        height: 36px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        color: var(--muted);
+        background: #f7f9fa;
+        box-shadow:
+          0 8px 18px rgba(42, 55, 66, 0.08),
+          inset 0 1px 0 rgba(255, 255, 255, 0.9);
+        cursor: pointer;
+        transition:
+          background 140ms ease,
+          color 140ms ease,
+          border-color 140ms ease,
+          box-shadow 140ms ease;
+      }
+
+      .icon-button:hover,
+      .icon-button:focus-visible {
+        color: var(--accent-deep);
+        border-color: var(--line-glow);
+        background: #eef2f5;
+        box-shadow:
+          0 0 0 3px rgba(127, 144, 157, 0.1),
+          inset 0 1px 0 rgba(255, 255, 255, 0.95);
+        outline: 0;
+      }
+
+      .primary-action,
+      .send,
+      .settings-save {
+        border: 1px solid #bcc7d0;
+        border-radius: 12px;
+        color: #2f3a43;
+        background: #f8fafb;
+        box-shadow:
+          0 8px 18px rgba(86, 101, 114, 0.1),
+          inset 0 1px 0 rgba(255, 255, 255, 0.96);
+        cursor: pointer;
+        font-weight: 800;
+      }
+
+      .primary-action:hover,
+      .send:hover,
+      .settings-save:hover {
+        border-color: #a8b4bd;
+        background: #eef3f6;
+      }
+
+      .primary-action {
+        height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+
+      .section-label {
+        margin: 2px 4px 0;
+        color: var(--soft);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .session-groups {
+        flex: 1 1 auto;
+        display: grid;
+        align-content: start;
+        gap: 10px;
+        overflow: auto;
+      }
+
+      .session-group {
+        display: grid;
+        gap: 7px;
+      }
+
+      .session-group-header {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        min-height: 34px;
+        padding: 7px 8px;
+        border: 1px solid rgba(174, 185, 194, 0.76);
+        border-radius: 12px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.62);
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .session-group-header.active {
+        color: var(--text);
+        border-color: rgba(142, 154, 165, 0.58);
+        background: #f6f8fa;
+      }
+
+      .group-label,
+      .session-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .group-label {
+        font-size: 12px;
+        font-weight: 760;
+      }
+
+      .group-count {
+        color: var(--soft);
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      .session-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .session-row {
+        position: relative;
+        display: grid;
+        grid-template-columns: 4px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 58px;
+        padding: 10px 10px 10px 0;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        color: var(--muted);
+        background: transparent;
+      }
+
+      .session-row.active {
+        color: var(--text);
+        border-color: rgba(156, 169, 180, 0.55);
+        background: #f8fafb;
+        box-shadow:
+          0 12px 24px rgba(42, 55, 66, 0.08),
+          inset 0 1px 0 rgba(255, 255, 255, 0.9);
+      }
+
+      .session-row:hover {
+        background: rgba(255, 255, 255, 0.58);
+      }
+
+      .session-rail {
+        width: 4px;
+        align-self: stretch;
+        border-radius: 999px;
+        background: transparent;
+      }
+
+      .session-row.active .session-rail {
+        background: #8c99a4;
+        box-shadow: 0 0 10px rgba(117, 132, 145, 0.25);
+      }
+
+      .session-title {
+        color: inherit;
+        font-size: 13px;
+        font-weight: 740;
+      }
+
+      .session-meta {
+        margin-top: 4px;
+        color: var(--soft);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .session-status,
+      .status-pill,
+      .activity-state {
+        min-width: 58px;
+        padding: 5px 8px;
+        border: 1px solid rgba(96, 120, 141, 0.5);
+        border-radius: 12px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.72);
+        font-size: 11px;
+        font-weight: 800;
+        text-align: center;
+        white-space: nowrap;
+      }
+
+      .is-running {
+        color: #49606e;
+        border-color: rgba(84, 103, 117, 0.34);
+        background: #f4f7f9;
+        box-shadow: 0 0 16px rgba(103, 123, 138, 0.12);
+      }
+
+      .is-success {
+        color: var(--success);
+        border-color: rgba(53, 214, 160, 0.36);
+        background: rgba(53, 214, 160, 0.08);
+      }
+
+      .is-warning {
+        color: var(--warning);
+        border-color: rgba(244, 184, 74, 0.38);
+        background: rgba(244, 184, 74, 0.08);
+      }
+
+      .is-error {
+        color: var(--error);
+        border-color: rgba(255, 107, 127, 0.4);
+        background: rgba(255, 107, 127, 0.09);
+      }
+
+      .history-bottom {
+        margin-top: auto;
+        display: grid;
+        gap: 10px;
+      }
+
+      .runtime-card,
+      .plain-action {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #f7f9fa;
+        box-shadow:
+          0 10px 22px rgba(42, 55, 66, 0.06),
+          inset 0 1px 0 rgba(255, 255, 255, 0.9);
+      }
+
+      .runtime-card {
+        display: grid;
+        gap: 4px;
+        padding: 12px;
+      }
+
+      .runtime-card strong {
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      .runtime-card span {
+        color: var(--muted);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .plain-action {
+        height: 38px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      .workbench {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) var(--trace-width);
+        gap: 0;
+        min-height: calc(100vh - 32px);
+        overflow: hidden;
+        border: 1px solid var(--line-strong);
+        border-radius: 16px;
+        background: var(--surface);
+        box-shadow:
+          var(--shadow),
+          inset 0 1px 0 rgba(255, 255, 255, 0.95);
+        transition: grid-template-columns 180ms ease;
+      }
+
+      .chat {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        overflow: hidden;
+      }
+
+      .chat-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-height: 72px;
+        padding: 16px 22px;
+        border-bottom: 1px solid var(--line);
+        background:
+          rgba(250, 252, 253, 0.94);
+      }
+
+      .chat-title {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .chat-title h2 {
+        margin: 0;
+        color: var(--text);
+        font-size: 17px;
+        line-height: 1.2;
+      }
+
+      .chat-title p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .transcript {
+        min-height: 0;
+        overflow: auto;
+        padding: 24px 30px;
+        background: #f5f7f9;
+      }
+
+      .message {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 22px;
+      }
+
+      .message.user {
+        justify-content: flex-end;
+      }
+
+      .avatar {
+        flex: 0 0 28px;
+        width: 28px;
+        height: 28px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(174, 185, 194, 0.78);
+        border-radius: 12px;
+        color: var(--accent-deep);
+        background: #f7f9fa;
+        box-shadow:
+          0 8px 16px rgba(42, 55, 66, 0.08),
+          inset 0 1px 0 rgba(255, 255, 255, 0.95);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .bubble {
+        max-width: min(680px, 76%);
+        border: 1px solid var(--line);
+        border-left: 2px solid #9ca9b4;
+        border-radius: 12px;
+        padding: 12px 14px;
+        color: #26313b;
+        background: #ffffff;
+        font-size: 14px;
+        line-height: 1.65;
+        white-space: pre-wrap;
+      }
+
+      .message.user .bubble {
+        color: #1f2a34;
+        border-color: rgba(160, 172, 181, 0.72);
+        border-left-color: rgba(160, 172, 181, 0.72);
+        background: #f1f4f7;
+      }
+
+      .activity {
+        max-width: 760px;
+        margin: 0 0 22px 38px;
+        border: 1px solid rgba(168, 179, 188, 0.78);
+        border-radius: 12px;
+        overflow: hidden;
+        background: #ffffff;
+        box-shadow:
+          0 14px 28px rgba(42, 55, 66, 0.08),
+          inset 0 1px 0 rgba(255, 255, 255, 0.95);
+      }
+
+      .activity.error {
+        border-color: rgba(255, 107, 127, 0.38);
+      }
+
+      .activity-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        color: var(--text);
+        background: #f1f4f7;
+        font-size: 12px;
+        font-weight: 760;
+      }
+
+      .activity-detail {
+        margin: 0;
+        max-height: 140px;
+        padding: 12px;
+        overflow: auto;
+        color: var(--muted);
+        font-family: "Cascadia Mono", Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+      }
+
+      .composer {
+        padding: 14px 16px 16px;
+        border-top: 1px solid rgba(32, 50, 68, 0.75);
+        background: rgba(232, 238, 243, 0.88);
+      }
+
+      .composer-box {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 12px;
+        align-items: end;
+        min-height: 112px;
+        padding: 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 14px;
+        background: #ffffff;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.96),
+          0 14px 28px rgba(42, 55, 66, 0.08);
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 76px;
+        resize: none;
+        border: 0;
+        outline: 0;
+        color: var(--text);
+        background: transparent;
+      }
+
+      textarea::placeholder {
+        color: var(--soft);
+      }
+
+      .send {
+        min-width: 104px;
+        height: 36px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+
+      .trace {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: auto auto 1fr;
+        overflow: hidden;
+        border-left: 1px solid var(--line);
+        background: #eef2f5;
+      }
+
+      .trace-header {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: start;
+        min-height: 72px;
+        padding: 16px 14px;
+        border-bottom: 1px solid var(--line);
+        background: #f7f9fa;
+      }
+
+      .trace-title h3 {
+        margin: 0;
+        color: var(--text);
+        font-size: 15px;
+      }
+
+      .trace-title p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .trace-tabs {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+        padding: 12px 14px 0;
+      }
+
+      .tab {
+        min-width: 0;
+        padding: 7px 8px;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        color: var(--muted);
+        background: transparent;
+        font-size: 12px;
+        font-weight: 760;
+        cursor: pointer;
+      }
+
+      .tab.active {
+        color: var(--accent-deep);
+        border-color: rgba(150, 163, 174, 0.58);
+        background: #ffffff;
+        box-shadow: inset 0 -2px 0 rgba(111, 126, 139, 0.55);
+      }
+
+      .trace-list,
+      .config-list {
+        min-height: 0;
+        overflow: auto;
+        padding: 12px 14px 18px;
+      }
+
+      .trace-event {
+        position: relative;
+        display: grid;
+        grid-template-columns: 12px 1fr;
+        gap: 10px;
+        padding: 11px 0;
+        border-bottom: 1px solid rgba(199, 208, 216, 0.8);
+      }
+
+      .trace-event::before {
+        content: "";
+        position: absolute;
+        left: 5px;
+        top: 26px;
+        bottom: -8px;
+        width: 1px;
+        background: rgba(170, 181, 190, 0.68);
+      }
+
+      .trace-event:last-child::before {
+        display: none;
+      }
+
+      .status-dot {
+        width: 10px;
+        height: 10px;
+        margin-top: 5px;
+        border-radius: 999px;
+        background: var(--success);
+        box-shadow: 0 0 16px rgba(53, 214, 160, 0.36);
+      }
+
+      .status-dot.running {
+        background: #667887;
+        box-shadow: 0 0 14px rgba(103, 123, 138, 0.34);
+        animation: pulse 1.8s ease-in-out infinite;
+      }
+
+      .status-dot.warning {
+        background: var(--warning);
+        box-shadow: 0 0 16px rgba(244, 184, 74, 0.32);
+      }
+
+      .status-dot.error {
+        background: var(--error);
+        box-shadow: 0 0 18px rgba(255, 107, 127, 0.42);
+      }
+
+      .trace-event strong {
+        display: block;
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      .trace-event span {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.45;
+      }
+
+      .config-row {
+        display: grid;
+        gap: 4px;
+        padding: 10px;
+        border: 1px solid rgba(199, 208, 216, 0.92);
+        border-radius: 12px;
+        margin-bottom: 8px;
+        background: rgba(255, 255, 255, 0.62);
+      }
+
+      .config-row strong {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      .config-row span {
+        color: var(--text);
+        font-family: "Cascadia Mono", Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+
+      .vertical-label {
+        display: none;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0;
+        writing-mode: vertical-rl;
+      }
+
+      .settings-backdrop {
+        position: fixed;
+        z-index: 7;
+        inset: 0;
+        display: none;
+        place-items: center;
+        padding: 24px;
+        background: rgba(221, 228, 233, 0.58);
+        backdrop-filter: blur(10px);
+      }
+
+      .settings-backdrop.open {
+        display: grid;
+      }
+
+      .settings-panel {
+        width: min(620px, 100%);
+        max-height: calc(100vh - 48px);
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        overflow: hidden;
+        border: 1px solid var(--line-strong);
+        border-radius: 16px;
+        background: var(--surface-glass);
+        box-shadow:
+          var(--shadow),
+          inset 0 1px 0 rgba(255, 255, 255, 0.98);
+      }
+
+      .settings-header,
+      .settings-actions {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 18px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .settings-actions {
+        justify-content: flex-end;
+        border-top: 1px solid var(--line);
+        border-bottom: 0;
+      }
+
+      .settings-header h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .settings-header p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .settings-form {
+        display: grid;
+        gap: 12px;
+        padding: 18px 20px;
+      }
+
+      .settings-form label {
+        display: grid;
+        gap: 6px;
+      }
+
+      .settings-form label span {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      input {
+        width: 100%;
+        min-width: 0;
+        border: 1px solid var(--line-strong);
+        border-radius: 12px;
+        outline: 0;
+        padding: 9px 10px;
+        color: var(--text);
+        background: #ffffff;
+      }
+
+      input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(127, 144, 157, 0.12);
+      }
+
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 8;
+        max-width: min(460px, calc(100vw - 48px));
+        padding: 12px 14px;
+        border: 1px solid rgba(156, 169, 180, 0.72);
+        border-radius: 12px;
+        color: var(--accent-deep);
+        background: rgba(255, 255, 255, 0.94);
+        box-shadow: 0 16px 36px rgba(42, 55, 66, 0.18);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .app-shell.history-collapsed .history {
+        padding: 18px 8px;
+      }
+
+      .app-shell.history-collapsed .history-shell,
+      .app-shell.history-collapsed .history-top {
+        align-items: center;
+      }
+
+      .app-shell.history-collapsed .brand-title {
+        width: 44px;
+        height: 44px;
+        justify-content: center;
+        border-radius: 14px;
+        background: #d9e0e6;
+        box-shadow: 0 14px 28px rgba(86, 101, 114, 0.22);
+        color: #202a33;
+      }
+
+      .app-shell.history-collapsed .brand-mark,
+      .app-shell.history-collapsed .brand-path,
+      .app-shell.history-collapsed .action-label,
+      .app-shell.history-collapsed .section-label,
+      .app-shell.history-collapsed .session-groups,
+      .app-shell.history-collapsed .runtime-card,
+      .app-shell.history-collapsed .plain-action-label {
+        display: none;
+      }
+
+      .app-shell.history-collapsed .history .icon-button,
+      .app-shell.history-collapsed .primary-action,
+      .app-shell.history-collapsed .plain-action {
+        width: 44px;
+        min-width: 44px;
+        height: 44px;
+        min-height: 44px;
+        padding: 0;
+        justify-content: center;
+      }
+
+      .app-shell.trace-collapsed .trace-header {
+        grid-template-columns: 1fr;
+        justify-items: center;
+        padding: 16px 8px;
+      }
+
+      .app-shell.trace-collapsed .trace-title,
+      .app-shell.trace-collapsed .trace-tabs,
+      .app-shell.trace-collapsed .trace-list,
+      .app-shell.trace-collapsed .config-list {
+        display: none;
+      }
+
+      .app-shell.trace-collapsed .vertical-label {
+        display: block;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 0.68;
+          transform: scale(0.92);
+        }
+        50% {
+          opacity: 1;
+          transform: scale(1.08);
+        }
+      }
+
+      @media (max-width: 1040px) {
+        .app-shell {
+          grid-template-columns: 68px minmax(0, 1fr);
+        }
+
+        .app-shell:not(.history-collapsed) .history {
+          position: fixed;
+          z-index: 4;
+          inset: 16px auto 16px 16px;
+          width: 304px;
+          border: 1px solid var(--line-strong);
+          border-radius: 16px;
+          background: rgba(250, 252, 253, 0.94);
+          box-shadow: var(--shadow);
+        }
+
+        .workbench {
+          grid-template-columns: minmax(0, 1fr) 56px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app-shell" id="app">
+      <aside class="history" aria-label="Session history">
+        <div class="history-shell">
+          <div class="history-top">
+            <div class="brand">
+              <h1 class="brand-title"><span class="brand-mark"></span><span class="brand-word">Lora</span></h1>
+              <p class="brand-path">C:\Projects\lora</p>
+            </div>
+            <button class="icon-button" id="toggleHistory" title="Collapse history" type="button" aria-label="Collapse history">
+              <i data-lucide="panel-left-close"></i>
+            </button>
+          </div>
+
+          <button class="primary-action" type="button">
+            <i data-lucide="message-square-plus"></i>
+            <span class="action-label">New Chat</span>
+          </button>
+
+          <div class="section-label">Sessions</div>
+          <div class="session-groups">
+            <section class="session-group">
+              <button class="session-group-header active" type="button">
+                <i data-lucide="folder-code"></i>
+                <span class="group-label">lora workspace</span>
+                <span class="group-count">4</span>
+              </button>
+              <div class="session-list">
+                <div class="session-row active">
+                  <div class="session-rail"></div>
+                  <div>
+                    <div class="session-title">白银金属科技风前端改版</div>
+                    <div class="session-meta">2026-06-20 18:42 / local runtime</div>
+                  </div>
+                  <span class="session-status is-running">Running</span>
+                </div>
+                <div class="session-row">
+                  <div class="session-rail"></div>
+                  <div>
+                    <div class="session-title">session groups API polish</div>
+                    <div class="session-meta">2026-06-20 17:35 / tests passed</div>
+                  </div>
+                  <span class="session-status is-success">Done</span>
+                </div>
+                <div class="session-row">
+                  <div class="session-rail"></div>
+                  <div>
+                    <div class="session-title">trace event inspector</div>
+                    <div class="session-meta">2026-06-19 22:16 / idle</div>
+                  </div>
+                  <span class="session-status">Ready</span>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div class="history-bottom">
+            <div class="runtime-card">
+              <strong>default agent</strong>
+              <span>deepseek-chat / max_steps -1</span>
+              <span>3 workspaces indexed</span>
+            </div>
+            <button class="plain-action" id="openSettings" type="button">
+              <i data-lucide="sliders-horizontal"></i>
+              <span class="plain-action-label">Settings</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <section class="workbench" aria-label="Workbench">
+        <section class="chat" aria-label="Chat">
+          <header class="chat-header">
+            <div class="chat-title">
+              <h2>白银金属科技风前端改版</h2>
+              <p>default / deepseek-chat / max_steps -1 / local agent runtime</p>
+            </div>
+            <div class="status-pill is-running">Running</div>
+          </header>
+
+          <div class="transcript">
+            <article class="message user">
+              <div class="bubble">要以白色、银色为主，做成冷白金属科技风，不要满屏蓝色。</div>
+            </article>
+            <article class="message assistant">
+              <div class="avatar">L</div>
+              <div class="bubble">我会保留三栏工作台结构，把视觉重心放在冷白背景、银灰金属面板、精密边框、浅色高光和小面积状态灯上。</div>
+            </article>
+            <section class="activity">
+              <div class="activity-head">
+                <span>tool.render_static_demo</span>
+                <span class="activity-state is-running">Running</span>
+              </div>
+              <pre class="activity-detail">theme.tokens.apply({
+  surface: "white-silver metal",
+  accent: "steel telemetry",
+  density: "engineering workbench"
+})
+
+trace.stream("css", "layout", "status")</pre>
+            </section>
+            <section class="activity error">
+              <div class="activity-head">
+                <span>tool.inspect_contrast</span>
+                <span class="activity-state is-warning">Review</span>
+              </div>
+              <pre class="activity-detail">warning: keep color accents small and instrument-like.
+result: status chips are readable, transcript remains primary.</pre>
+            </section>
+            <article class="message assistant">
+              <div class="avatar">L</div>
+              <div class="bubble">这版 demo 走“银白金属控制台”方向：主视觉是白色、银色、冷灰和金属渐变，运行态只用小面积钢灰状态灯强调。</div>
+            </article>
+          </div>
+
+          <footer class="composer">
+            <div class="composer-box">
+              <textarea placeholder="Message Lora...">继续把这个方向实现到 React 前端里</textarea>
+              <button class="send" type="button">
+                <i data-lucide="send-horizontal"></i>
+                <span>Send</span>
+              </button>
+            </div>
+          </footer>
+        </section>
+
+        <aside class="trace" aria-label="Trace inspector">
+          <header class="trace-header">
+            <div class="trace-title">
+              <h3>Trace</h3>
+              <p>Session: cool-tech / Run: live-42f9</p>
+            </div>
+            <button class="icon-button" id="toggleTrace" title="Collapse trace" type="button" aria-label="Collapse trace">
+              <i data-lucide="panel-right-close"></i>
+            </button>
+            <div class="vertical-label">TRACE</div>
+          </header>
+
+          <nav class="trace-tabs" aria-label="Trace tabs">
+            <button class="tab active" type="button" data-tab="events">Events</button>
+            <button class="tab" type="button" data-tab="tools">Tools</button>
+            <button class="tab" type="button" data-tab="files">Files</button>
+            <button class="tab" type="button" data-tab="config">Config</button>
+          </nav>
+
+          <div class="trace-list" id="eventsPanel">
+            <div class="trace-event">
+              <div class="status-dot running"></div>
+              <div>
+                <strong>assistant.delta</strong>
+                <span>Streaming visual rationale and component mapping.</span>
+              </div>
+            </div>
+            <div class="trace-event">
+              <div class="status-dot"></div>
+              <div>
+                <strong>file.created</strong>
+                <span>apps/desktop/prototypes/cool-tech-style-demo.html</span>
+              </div>
+            </div>
+            <div class="trace-event">
+              <div class="status-dot warning"></div>
+              <div>
+                <strong>design.review</strong>
+                <span>Glow constrained to focus, running, and selected states.</span>
+              </div>
+            </div>
+            <div class="trace-event">
+              <div class="status-dot error"></div>
+              <div>
+                <strong>contrast.edge_case</strong>
+                <span>Error state sample for toast and telemetry visibility.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="config-list" id="configPanel" hidden>
+            <div class="config-row">
+              <strong>workspace</strong>
+              <span>C:\Projects\lora</span>
+            </div>
+            <div class="config-row">
+              <strong>theme</strong>
+              <span>silver-tech-light</span>
+            </div>
+            <div class="config-row">
+              <strong>accent</strong>
+              <span>#6f7e8b / #c7d0d8</span>
+            </div>
+            <div class="config-row">
+              <strong>surface</strong>
+              <span>white and silver layered metal panels</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <div class="settings-backdrop" id="settingsBackdrop">
+      <section class="settings-panel" aria-label="Settings">
+        <header class="settings-header">
+          <div>
+            <h2>Settings</h2>
+            <p>Cold technical system panel preview.</p>
+          </div>
+          <button class="icon-button" id="closeSettings" type="button" aria-label="Close settings">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+        <div class="settings-form">
+          <label>
+            <span>Workspace</span>
+            <input value="C:\Projects\lora" />
+          </label>
+          <label>
+            <span>Agent</span>
+            <input value="default" />
+          </label>
+          <label>
+            <span>Model</span>
+            <input value="deepseek-chat" />
+          </label>
+        </div>
+        <footer class="settings-actions">
+          <button class="plain-action" id="cancelSettings" type="button">Cancel</button>
+          <button class="settings-save" type="button">Save and Reload</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="toast">Runtime telemetry connected. Cool tech theme preview is active.</div>
+
+    <script>
+      const app = document.getElementById("app");
+      const settingsBackdrop = document.getElementById("settingsBackdrop");
+      const eventsPanel = document.getElementById("eventsPanel");
+      const configPanel = document.getElementById("configPanel");
+
+      document.getElementById("toggleHistory").addEventListener("click", () => {
+        app.classList.toggle("history-collapsed");
+      });
+
+      document.getElementById("toggleTrace").addEventListener("click", () => {
+        app.classList.toggle("trace-collapsed");
+      });
+
+      document.getElementById("openSettings").addEventListener("click", () => {
+        settingsBackdrop.classList.add("open");
+      });
+
+      document.getElementById("closeSettings").addEventListener("click", () => {
+        settingsBackdrop.classList.remove("open");
+      });
+
+      document.getElementById("cancelSettings").addEventListener("click", () => {
+        settingsBackdrop.classList.remove("open");
+      });
+
+      document.querySelectorAll(".tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
+          tab.classList.add("active");
+          const showConfig = tab.dataset.tab === "config";
+          eventsPanel.hidden = showConfig;
+          configPanel.hidden = !showConfig;
+        });
+      });
+
+      if (window.lucide) {
+        window.lucide.createIcons({ attrs: { width: 17, height: 17, "stroke-width": 2 } });
+      }
+    </script>
+  </body>
+</html>

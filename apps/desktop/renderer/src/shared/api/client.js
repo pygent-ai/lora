@@ -1,4 +1,6 @@
 const DEFAULT_BASE_URL = "http://127.0.0.1:8765";
+const STREAM_RESUME_TIMEOUT_MS = 55_000;
+const STREAM_RESUME_RETRY_DELAY_MS = 1_000;
 
 export function createApiClient(options = {}) {
   const baseUrl = normalizeBaseUrl(options.baseUrl || defaultBaseUrl());
@@ -65,12 +67,14 @@ export function createApiClient(options = {}) {
 }
 
 export function settingsPayload(settings) {
+  const contextWindow = settingsNumber(settings.contextWindow);
   return compactObject({
     workspace_root: settingsString(settings.workspaceRoot),
     config_path: settingsString(settings.configPath),
     agent_alias: settingsString(settings.agent),
     model: settingsString(settings.model),
     max_steps: Number.isFinite(settings.maxSteps) ? settings.maxSteps : undefined,
+    context_window: contextWindow !== undefined ? contextWindow : null,
     api_key: cleanString(settings.apiKey),
   });
 }
@@ -87,6 +91,44 @@ export function parseSseEvents(text) {
 }
 
 async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, signal }) {
+  let resumeCaseRunId = request.resumeCaseRunId || null;
+  let resumeFromEvent = Number.isFinite(request.resumeFromEvent) ? request.resumeFromEvent : null;
+  const startedAt = Date.now();
+  let attempt = 0;
+
+  while (true) {
+    try {
+      await streamChatAttempt({
+        baseUrl,
+        fetchImpl,
+        request: { ...request, resumeCaseRunId, resumeFromEvent },
+        onEvent: (event) => {
+          const data = event?.data || {};
+          if (data.case_run_id) {
+            resumeCaseRunId = data.case_run_id;
+          }
+          if (Number.isFinite(data.sequence)) {
+            resumeFromEvent = data.sequence;
+          }
+          emitStreamEvent(event, onEvent);
+        },
+        signal,
+      });
+      return;
+    } catch (err) {
+      if (signal?.aborted || isAbortError(err) || !resumeCaseRunId) {
+        throw err;
+      }
+      if (Date.now() - startedAt >= STREAM_RESUME_TIMEOUT_MS) {
+        throw err;
+      }
+      attempt += 1;
+      await delay(Math.min(STREAM_RESUME_RETRY_DELAY_MS * attempt, 5_000), signal);
+    }
+  }
+}
+
+async function streamChatAttempt({ baseUrl, fetchImpl, request, onEvent, signal }) {
   const response = await fetchImpl(`${baseUrl}/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -95,6 +137,8 @@ async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, signal }) 
       session_id: request.sessionId || null,
       case_id: request.caseId || "chat",
       turn_id: request.turnId || null,
+      resume_case_run_id: request.resumeCaseRunId || null,
+      resume_from_event: Number.isFinite(request.resumeFromEvent) ? request.resumeFromEvent : null,
     }),
     signal,
   });
@@ -104,7 +148,7 @@ async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, signal }) 
   if (!response.body?.getReader) {
     const text = await response.text();
     for (const event of parseSseEvents(text)) {
-      onEvent?.(event);
+      emitStreamEvent(event, onEvent);
     }
     return;
   }
@@ -125,16 +169,52 @@ async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, signal }) 
   emitCompleteSseBlocks(`${buffer}\n\n`, onEvent);
 }
 
+function delay(ms, signal) {
+  if (signal?.aborted) {
+    return Promise.reject(abortError());
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timeout);
+        reject(abortError());
+      },
+      { once: true },
+    );
+  });
+}
+
+function isAbortError(err) {
+  return err instanceof DOMException && err.name === "AbortError";
+}
+
+function abortError() {
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
 function emitCompleteSseBlocks(buffer, onEvent) {
   const blocks = buffer.split(/\r?\n\r?\n/);
   const pending = blocks.pop() || "";
   for (const block of blocks) {
     const event = parseSseBlock(block);
     if (event !== null) {
-      onEvent?.(event);
+      emitStreamEvent(event, onEvent);
     }
   }
   return pending;
+}
+
+function emitStreamEvent(event, onEvent) {
+  if (!onEvent) {
+    return;
+  }
+  try {
+    onEvent(event);
+  } catch (err) {
+    console.error("SSE event handler failed", err, event);
+  }
 }
 
 function parseSseBlock(block) {
@@ -185,6 +265,14 @@ function settingsValue(value) {
 function settingsString(value) {
   const clean = settingsValue(value);
   return typeof clean === "string" ? clean : undefined;
+}
+
+function settingsNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return undefined;
+  }
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
 function cleanString(value) {

@@ -20,6 +20,7 @@ class ApiContext:
     agent_alias: str | None = None
     model: str | None = None
     max_steps: int | None = None
+    context_window: int | None = None
     state_path: str | None = None
     _config: RunConfig | None = None
     _manager: SessionManager | None = None
@@ -49,7 +50,7 @@ class ApiContext:
 
     def reload(self, overrides: dict[str, Any] | None = None) -> RunConfig:
         if overrides:
-            for key in ("workspace_root", "config_path", "agent_alias", "model", "max_steps"):
+            for key in ("workspace_root", "config_path", "agent_alias", "model", "max_steps", "context_window"):
                 if key in overrides:
                     setattr(self, key, overrides[key])
         with self._lock:
@@ -68,6 +69,7 @@ class ApiContext:
                 agent_alias=self.agent_alias or "default",
                 model_name=self.model,
                 max_steps=self.max_steps if self.max_steps is not None else -1,
+                context_window=self.context_window,
             )
         return load_run_config(
             workspace_root=scope.workspace_root,
@@ -75,6 +77,7 @@ class ApiContext:
             agent_alias=self.agent_alias,
             model=self.model,
             max_steps=self.max_steps,
+            context_window=self.context_window,
         )
 
     def _load_config(self) -> RunConfig:
@@ -84,6 +87,7 @@ class ApiContext:
             agent_alias=self.agent_alias,
             model=self.model,
             max_steps=self.max_steps,
+            context_window=self.context_window,
         )
 
 

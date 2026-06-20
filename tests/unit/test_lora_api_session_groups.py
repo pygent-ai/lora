@@ -6,6 +6,7 @@ from lora.core.io import read_json, write_json
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
 from lora_api.dependencies import ApiContext
+from lora_api.services.session_service import SessionService
 
 
 def test_session_groups_are_partitioned_by_remembered_project(tmp_path: Path) -> None:
@@ -28,6 +29,7 @@ def test_session_groups_are_partitioned_by_remembered_project(tmp_path: Path) ->
     assert response.active_scope_id == scope_a
     assert groups[scope_a].scope.label == "project-a"
     assert groups[scope_b].scope.label == "project-b"
+    assert groups["conversation"].scope.label == "Chat"
     assert [record.title for record in groups[scope_a].sessions] == ["Project A chat"]
     assert [record.title for record in groups[scope_b].sessions] == ["Project B chat"]
 
@@ -69,6 +71,26 @@ def test_project_list_omits_missing_recent_directories(tmp_path: Path) -> None:
     response = list_projects(context=context)
 
     assert [item.scope_id for item in response.projects] == [f"project:{project.resolve()}"]
+
+
+def test_session_list_uses_first_user_message_as_title_when_metadata_title_is_missing(tmp_path: Path) -> None:
+    manager = SessionManager(
+        RunConfig(
+            workspace_root=str(tmp_path),
+            lora_root=str((tmp_path / ".lora").resolve()),
+        )
+    )
+    ref = manager.create("chat", mode="chat")
+    session = manager.load(ref.session_id)
+    session.history = [
+        {"role": "assistant", "content": "ready"},
+        {"role": "user", "content": "  Build a LoRA training script\nwith resume support  "},
+    ]
+    manager.save(session)
+
+    records = SessionService(manager).list_chat_sessions()
+
+    assert records[0].title == "Build a LoRA training script with resume support"
 
 
 def _create_titled_chat(workspace_root: Path, title: str) -> str:

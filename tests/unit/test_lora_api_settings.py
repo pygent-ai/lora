@@ -23,6 +23,7 @@ def test_update_settings_saves_api_key_and_reloads_runtime_config(tmp_path: Path
                 "      api_key_env: GUI_TEST_KEY",
                 "      model_name: original-model",
                 "      base_url: https://example.test",
+                "      context_window: 32000",
             ]
         )
         + "\n",
@@ -39,6 +40,7 @@ def test_update_settings_saves_api_key_and_reloads_runtime_config(tmp_path: Path
                 agent_alias="dev",
                 model="updated-model",
                 max_steps=7,
+                context_window=64000,
                 api_key="secret-from-gui",
             ),
             context=context,
@@ -50,9 +52,38 @@ def test_update_settings_saves_api_key_and_reloads_runtime_config(tmp_path: Path
     assert response.agent == "dev"
     assert response.model == "updated-model"
     assert response.max_steps == 7
+    assert response.context_window == 64000
     assert response.api_key_env == "GUI_TEST_KEY"
     assert response.api_key_source == "env:GUI_TEST_KEY"
     assert context.manager is not before_manager
+
+
+def test_update_settings_can_clear_context_window_override(tmp_path: Path) -> None:
+    from lora_api.models.requests import UpdateSettingsRequest
+    from lora_api.routers.settings import update_settings
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "lora.yaml").write_text(
+        "\n".join(
+            [
+                "agents:",
+                "  - alias: dev",
+                "    model_request:",
+                "      model_name: original-model",
+                "      context_window: 32000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    context = ApiContext(workspace_root=str(workspace), agent_alias="dev", context_window=64000)
+
+    response = update_settings(UpdateSettingsRequest(context_window=None), context=context)
+
+    assert response.context_window == 32000
+    assert context.context_window is None
 
 
 def test_update_settings_switches_workspace_and_rebuilds_session_manager(tmp_path: Path) -> None:

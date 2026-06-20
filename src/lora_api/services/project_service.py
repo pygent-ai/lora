@@ -33,6 +33,7 @@ def config_response(config: RunConfig) -> RuntimeConfigResponse:
         user_lora_root=config.user_lora_root or "",
         base_url=config.base_url,
         max_steps=config.max_steps,
+        context_window=config.context_window,
     )
 
 

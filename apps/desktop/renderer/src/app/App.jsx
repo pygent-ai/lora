@@ -1,7 +1,28 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  FolderCode,
+  MessageSquarePlus,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  SendHorizontal,
+  Settings as SettingsIcon,
+  SlidersHorizontal,
+  Trash2,
+  X,
+} from "lucide-react";
 
 import { createApiClient } from "../shared/api/client.js";
+import {
+  activityHeaderText,
+  activityRows,
+  formatProcessedDuration,
+  thinkingHeaderSource,
+  toolHeaderSource,
+} from "./activityModel.js";
 import { createInitialLayoutState, toggleHistory, toggleTrace } from "./layoutState.js";
+import { parseInlineMarkdown, parseMarkdownBlocks } from "./markdown.js";
 
 const EMPTY_SETTINGS = {
   workspace_root: "",
@@ -13,9 +34,12 @@ const EMPTY_SETTINGS = {
   user_lora_root: "",
   base_url: "",
   max_steps: -1,
+  context_window: null,
 };
 
 const TRACE_TABS = ["Events", "Tools", "Files", "Config"];
+const TOOL_ARGUMENT_PREVIEW_LIMIT = 4_000;
+const TOOL_RESULT_PREVIEW_LIMIT = 6_000;
 
 export function App() {
   const api = useMemo(() => createApiClient(), []);
@@ -26,6 +50,7 @@ export function App() {
   const [activeScopeId, setActiveScopeId] = useState("");
   const [activeSession, setActiveSession] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [activityCollapseToken, setActivityCollapseToken] = useState(0);
   const [traceEvents, setTraceEvents] = useState([]);
   const [liveEvents, setLiveEvents] = useState([]);
   const [status, setStatus] = useState("Loading");
@@ -51,6 +76,7 @@ export function App() {
       const detail = await api.getSession(sessionId);
       setActiveSession(detail.session);
       setMessages(historyToMessages(detail.history || []));
+      setActivityCollapseToken((value) => value + 1);
       setLiveEvents([]);
       await loadTrace(detail.session);
     },
@@ -151,11 +177,20 @@ export function App() {
       setTraceEvents([]);
       setLiveEvents([]);
       const assistantId = `assistant-${Date.now()}`;
+      const activityId = `activity-${Date.now()}`;
       let streamSessionId = activeSession?.session_id || null;
       let finalStatus = "Ready";
       setMessages((items) => [
         ...items,
         { id: `user-${Date.now()}`, role: "user", content: message },
+        {
+          id: activityId,
+          role: "activity",
+          title: "Thinking",
+          content: "Thinking",
+          status: "running",
+          startedAt: Date.now(),
+        },
         { id: assistantId, role: "assistant", content: "" },
       ]);
 
@@ -170,16 +205,31 @@ export function App() {
               }
               setLiveEvents((items) => [...items, apiEventToTraceEvent(data)]);
               if (eventType === "assistant.delta") {
-                appendAssistantDelta(setMessages, assistantId, String(data.payload?.delta || ""));
+                appendAssistantDelta(setMessages, activityId, assistantId, String(data.payload?.delta || ""));
+              } else if (eventType === "runtime.message") {
+                appendRuntimeActivity(setMessages, activityId, assistantId, data);
               } else if (eventType === "chat.completed") {
                 finalStatus = String(data.payload?.status || "Done");
+                finalizeRuntimeActivity(setMessages, activityId, finalStatus);
+                setActivityCollapseToken((value) => value + 1);
                 const finalAnswer = data.payload?.final_answer;
                 if (typeof finalAnswer === "string" && finalAnswer.trim()) {
                   replaceAssistantMessage(setMessages, assistantId, finalAnswer);
                 }
               } else if (eventType === "chat.error") {
                 finalStatus = "Error";
+                finalizeRuntimeActivity(setMessages, activityId, finalStatus);
+                setActivityCollapseToken((value) => value + 1);
                 replaceAssistantMessage(setMessages, assistantId, `Error: ${data.payload?.error || "chat failed"}`);
+              } else if (eventType === "chat.cancelled") {
+                finalStatus = "Skipped";
+                finalizeRuntimeActivity(setMessages, activityId, finalStatus);
+                setActivityCollapseToken((value) => value + 1);
+                replaceAssistantMessage(
+                  setMessages,
+                  assistantId,
+                  data.payload?.reason || "Chat cancelled after reconnect timeout.",
+                );
               }
             },
           },
@@ -193,6 +243,8 @@ export function App() {
       } catch (err) {
         setStatus("Error");
         setError(readableError(err));
+        finalizeRuntimeActivity(setMessages, activityId, "Error");
+        setActivityCollapseToken((value) => value + 1);
         replaceAssistantMessage(setMessages, assistantId, `Error: ${readableError(err)}`);
       } finally {
         setRunning(false);
@@ -250,6 +302,7 @@ export function App() {
       <Workbench
         activeSession={activeSession}
         messages={messages}
+        activityCollapseToken={activityCollapseToken}
         settings={settings}
         status={status}
         running={running}
@@ -290,9 +343,21 @@ function SessionSidebar({
   onToggle,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState({});
+  const [acknowledgedStatuses, setAcknowledgedStatuses] = useState({});
 
   function toggleGroup(scopeId) {
     setCollapsedGroups((current) => ({ ...current, [scopeId]: !current[scopeId] }));
+  }
+
+  function acknowledgeSessionStatus(session) {
+    const statusKind = sessionStatusKind(session.last_case_run_status);
+    if (statusKind === "running") {
+      return;
+    }
+    setAcknowledgedStatuses((current) => ({
+      ...current,
+      [session.session_id]: sessionStatusIdentity(session),
+    }));
   }
 
   return (
@@ -311,12 +376,12 @@ function SessionSidebar({
             type="button"
             onClick={onToggle}
           >
-            <span className="rail-glyph chevron">{collapsed ? ">" : "<"}</span>
+            {collapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
           </button>
         </div>
 
         <button className="primary-action" disabled={running} title="New chat" type="button" onClick={onCreateSession}>
-          <span className="rail-glyph plus">+</span>
+          <MessageSquarePlus aria-hidden="true" />
           <span className="action-label">New Chat</span>
         </button>
 
@@ -334,14 +399,7 @@ function SessionSidebar({
                   type="button"
                   onClick={() => toggleGroup(scope.scope_id)}
                 >
-                  <span
-                    aria-hidden="true"
-                    className={isCollapsed ? "group-arrow collapsed" : "group-arrow"}
-                  />
-                  <span
-                    aria-hidden="true"
-                    className={scope.workspace_root ? "group-icon project" : "group-icon conversation"}
-                  />
+                  {scope.workspace_root && <FolderCode aria-hidden="true" />}
                   <span className="group-label">{scope.label || "Workspace"}</span>
                   <span className="group-count">{group.sessions?.length || 0}</span>
                 </button>
@@ -349,12 +407,13 @@ function SessionSidebar({
                   <div className="session-list">
                     {(group.sessions || []).length === 0 && <div className="empty-state compact">No chats yet</div>}
                     {(group.sessions || []).map((session) => (
-                      <SessionRow
-                        active={session.session_id === activeSessionId}
-                        key={session.session_id}
-                        running={running}
-                        scope={scope}
-                        session={session}
+                        <SessionRow
+                          active={session.session_id === activeSessionId}
+                          key={session.session_id}
+                          scope={scope}
+                          session={session}
+                        statusAcknowledged={acknowledgedStatuses[session.session_id] === sessionStatusIdentity(session)}
+                        onAcknowledgeStatus={acknowledgeSessionStatus}
                         onDeleteSession={onDeleteSession}
                         onSelectSession={onSelectSession}
                       />
@@ -373,11 +432,11 @@ function SessionSidebar({
             <span>{projects.length ? `${projects.length} workspace` : "active workspace only"}</span>
           </div>
           <button className="plain-action" title="Switch workspace" type="button" onClick={onOpenSettings}>
-            <span className="rail-glyph small">[]</span>
+            <SlidersHorizontal aria-hidden="true" />
             <span className="plain-action-label">Choose Project</span>
           </button>
           <button className="plain-action" title="Settings" type="button" onClick={onOpenSettings}>
-            <span className="rail-glyph small">*</span>
+            <SettingsIcon aria-hidden="true" />
             <span className="plain-action-label">Settings</span>
           </button>
         </div>
@@ -386,38 +445,60 @@ function SessionSidebar({
   );
 }
 
-function SessionRow({ active, running, scope, session, onDeleteSession, onSelectSession }) {
+function SessionRow({
+  active,
+  scope,
+  session,
+  statusAcknowledged,
+  onAcknowledgeStatus,
+  onDeleteSession,
+  onSelectSession,
+}) {
+  const title = cleanSessionTitle(session.title) || session.session_id || "Untitled chat";
+  const statusKind = sessionStatusKind(session.last_case_run_status);
+  const showStatus = statusKind === "running" || !statusAcknowledged;
+  const canDelete = statusKind !== "running";
+
+  function selectSession() {
+    onAcknowledgeStatus(session);
+    onSelectSession(session.session_id, scope);
+  }
+
   return (
     <div
       className={active ? "session-row active" : "session-row"}
       role="button"
       tabIndex={0}
-      onClick={() => onSelectSession(session.session_id, scope)}
+      onClick={selectSession}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onSelectSession(session.session_id, scope);
+          selectSession();
         }
       }}
     >
       <div className="session-rail" />
       <div className="session-copy">
-        <div className="session-title">{session.title}</div>
-        <div className="session-meta">{sessionMeta(session)}</div>
+        <div className="session-title" title={title}>
+          {title}
+        </div>
       </div>
-      <span className={`status-dot ${statusTone(session.last_case_run_status)}`} />
-      <button
-        className="session-delete"
-        disabled={running}
-        title="Delete session"
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onDeleteSession(session.session_id, scope);
-        }}
-      >
-        x
-      </button>
+      <div className="session-row-actions">
+        {showStatus && <span className={`session-indicator ${statusKind}`} aria-label={sessionStatusLabel(statusKind)} />}
+        {canDelete && (
+          <button
+            className="session-delete"
+            title="Delete session"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDeleteSession(session.session_id, scope);
+            }}
+          >
+            <Trash2 aria-hidden="true" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -425,6 +506,7 @@ function SessionRow({ active, running, scope, session, onDeleteSession, onSelect
 function Workbench({
   activeSession,
   messages,
+  activityCollapseToken,
   settings,
   status,
   running,
@@ -438,6 +520,7 @@ function Workbench({
       <ChatPane
         activeSession={activeSession}
         messages={messages}
+        activityCollapseToken={activityCollapseToken}
         settings={settings}
         status={status}
         running={running}
@@ -454,7 +537,7 @@ function Workbench({
   );
 }
 
-function ChatPane({ activeSession, messages, settings, status, running, onSendMessage }) {
+function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, onSendMessage }) {
   const [draft, setDraft] = useState("");
 
   function submit() {
@@ -473,6 +556,8 @@ function ChatPane({ activeSession, messages, settings, status, running, onSendMe
           <h2>{activeSession?.title || "Select or create a chat session"}</h2>
           <p>
             {settings.agent || "default"} / {settings.model || "default model"} / max_steps {settings.max_steps}
+            {" / "}
+            context {formatContextWindow(settings.context_window)}
           </p>
         </div>
         <div className={`status-pill ${statusTone(status)}`}>{statusLabel(status)}</div>
@@ -486,7 +571,7 @@ function ChatPane({ activeSession, messages, settings, status, running, onSendMe
           </div>
         )}
         {messages.map((message) => (
-          <MessageRow key={message.id} message={message} />
+          <MessageRow key={message.id} message={message} activityCollapseToken={activityCollapseToken} />
         ))}
       </div>
 
@@ -504,6 +589,7 @@ function ChatPane({ activeSession, messages, settings, status, running, onSendMe
             }}
           />
           <button className="send" disabled={running || !draft.trim()} type="button" onClick={submit}>
+            <SendHorizontal aria-hidden="true" />
             {running ? "Running" : "Send"}
           </button>
         </div>
@@ -512,24 +598,216 @@ function ChatPane({ activeSession, messages, settings, status, running, onSendMe
   );
 }
 
-function MessageRow({ message }) {
-  if (message.role === "tool") {
-    return (
-      <div className="activity">
-        <div className="activity-head">
-          <span>{message.title || "Runtime activity"}</span>
-          <span className="activity-state">{message.status || "Done"}</span>
-        </div>
-        <pre className="activity-detail">{message.content}</pre>
-      </div>
-    );
+function MessageRow({ message, activityCollapseToken }) {
+  if (message.role === "activity") {
+    return <ActivityMessage message={message} collapseToken={activityCollapseToken} />;
+  }
+
+  if (message.role === "assistant" && !message.content) {
+    return null;
   }
 
   return (
     <article className={`message ${message.role}`}>
       {message.role !== "user" && <div className="avatar">L</div>}
-      <div className="bubble">{message.content || (message.role === "assistant" ? "Thinking..." : "")}</div>
+      <div className="bubble">
+        {message.role === "assistant" ? <MarkdownContent content={message.content} /> : message.content}
+      </div>
     </article>
+  );
+}
+
+function MarkdownContent({ content }) {
+  const blocks = useMemo(() => parseMarkdownBlocks(content), [content]);
+
+  return (
+    <div className="markdown-content">
+      {blocks.map((block, index) => (
+        <MarkdownBlock key={index} block={block} />
+      ))}
+    </div>
+  );
+}
+
+function MarkdownBlock({ block }) {
+  if (block.type === "heading") {
+    const HeadingTag = `h${block.level}`;
+    return <HeadingTag>{renderInlineMarkdown(block.text)}</HeadingTag>;
+  }
+
+  if (block.type === "code") {
+    return (
+      <pre className="markdown-code">
+        {block.language && <span className="markdown-code-language">{block.language}</span>}
+        <code>{block.text}</code>
+      </pre>
+    );
+  }
+
+  if (block.type === "quote") {
+    return <blockquote>{renderInlineMarkdown(block.text)}</blockquote>;
+  }
+
+  if (block.type === "list") {
+    const ListTag = block.ordered ? "ol" : "ul";
+    return (
+      <ListTag>
+        {block.items.map((item, index) => (
+          <li key={index}>{renderInlineMarkdown(item)}</li>
+        ))}
+      </ListTag>
+    );
+  }
+
+  if (block.type === "table") {
+    return (
+      <div className="markdown-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              {block.header.map((cell, index) => (
+                <th key={index} style={tableCellStyle(block.alignments[index])}>
+                  {renderInlineMarkdown(cell)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {block.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {row.map((cell, cellIndex) => (
+                  <td key={cellIndex} style={tableCellStyle(block.alignments[cellIndex])}>
+                    {renderInlineMarkdown(cell)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  if (block.type === "rule") {
+    return <hr />;
+  }
+
+  return <p>{renderInlineMarkdown(block.text)}</p>;
+}
+
+function tableCellStyle(alignment) {
+  return alignment ? { textAlign: alignment } : undefined;
+}
+
+function renderInlineMarkdown(text) {
+  return parseInlineMarkdown(text).map((segment, index) => renderInlineSegment(segment, index));
+}
+
+function renderInlineSegment(segment, key) {
+  if (segment.type === "strong") {
+    return <strong key={key}>{segment.children.map((child, index) => renderInlineSegment(child, index))}</strong>;
+  }
+  if (segment.type === "em") {
+    return <em key={key}>{segment.children.map((child, index) => renderInlineSegment(child, index))}</em>;
+  }
+  if (segment.type === "code") {
+    return <code key={key}>{segment.text}</code>;
+  }
+  if (segment.type === "link") {
+    return (
+      <a key={key} href={segment.href} target="_blank" rel="noreferrer">
+        {segment.children.map((child, index) => renderInlineSegment(child, index))}
+      </a>
+    );
+  }
+  return <React.Fragment key={key}>{segment.text}</React.Fragment>;
+}
+
+function ActivityMessage({ message, collapseToken }) {
+  const isRunning = message.status === "running";
+  const [expanded, setExpanded] = useState(isRunning);
+  const [now, setNow] = useState(Date.now());
+  const content = String(message.content || "");
+  const rows = activityRows(message);
+  const header = activityHeaderText(message, rows, now);
+
+  useEffect(() => {
+    setExpanded(message.status === "running");
+  }, [collapseToken, message.id, message.status]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isRunning]);
+
+  return (
+    <div className={expanded ? "activity expanded" : "activity"}>
+      <button
+        className="activity-head"
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span className="activity-title">
+          <span>{header}</span>
+          <span className="activity-toggle">{expanded ? "v" : ">"}</span>
+        </span>
+      </button>
+      <div className="activity-divider" aria-hidden="true" />
+      {expanded && (
+        <div className="activity-detail">
+          {rows.map((row, index) =>
+            row.type === "tools" ? (
+              <ToolGroup calls={row.calls || []} key={`tools-${index}`} />
+            ) : (
+              <pre className="activity-block" key={`thinking-${index}`}>
+                {row.content}
+              </pre>
+            ),
+          )}
+          {!rows.length && <pre className="activity-block">{content || message.title || "Thinking"}</pre>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolGroup({ calls }) {
+  const safeCalls = Array.isArray(calls) ? calls : [];
+  return (
+    <div className="tool-group">
+      {safeCalls.map((call, index) => (
+        <ToolCallRow call={call} key={call.id || `${call.name}-${index}`} />
+      ))}
+    </div>
+  );
+}
+
+function ToolCallRow({ call }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasResult = Boolean(call.result);
+  const tone = activityTone(call.status);
+  return (
+    <div className="tool-call-row">
+      <button
+        className="tool-call-toggle"
+        type="button"
+        disabled={!hasResult}
+        aria-expanded={hasResult ? expanded : undefined}
+        onClick={() => {
+          if (hasResult) {
+            setExpanded((value) => !value);
+          }
+        }}
+      >
+        <span className="tool-call-name">{toolActionLabel(call.name)}</span>
+        <span className={`tool-call-status ${tone}`}>{toolStatusLabel(call.status)}</span>
+      </button>
+      {expanded && hasResult && <pre className="tool-call-result">{call.result}</pre>}
+    </div>
   );
 }
 
@@ -553,7 +831,7 @@ function TracePanel({ collapsed, events, settings, activeSession, onToggle }) {
           type="button"
           onClick={onToggle}
         >
-          <span className="rail-glyph chevron">{collapsed ? "<" : ">"}</span>
+          {collapsed ? <PanelRightOpen aria-hidden="true" /> : <PanelRightClose aria-hidden="true" />}
         </button>
         <div className="vertical-label">TRACE</div>
       </header>
@@ -582,7 +860,7 @@ function TracePanel({ collapsed, events, settings, activeSession, onToggle }) {
             <div className="trace-event" key={`${event.type}-${event.id || index}`}>
               <div className={`status-dot ${eventTone(event)}`} />
               <div>
-                <strong>{event.type || "event"}</strong>
+                <strong>{eventTitle(event)}</strong>
                 <span>{eventSummary(event)}</span>
               </div>
             </div>
@@ -612,8 +890,8 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
             <h2>Settings</h2>
             <p>Save credentials and reload the local runtime.</p>
           </div>
-          <button className="icon-button" type="button" onClick={onClose}>
-            x
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close settings" title="Close settings">
+            <X aria-hidden="true" />
           </button>
         </header>
 
@@ -640,6 +918,16 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
               type="number"
               value={draft.maxSteps}
               onChange={(event) => setField("maxSteps", Number(event.target.value))}
+            />
+          </label>
+          <label>
+            <span>Context window</span>
+            <input
+              min="1"
+              placeholder="Unset"
+              type="number"
+              value={draft.contextWindow}
+              onChange={(event) => setField("contextWindow", event.target.value)}
             />
           </label>
           <div className="readonly-field">
@@ -676,29 +964,79 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
 }
 
 function historyToMessages(history) {
-  return history
-    .map((message, index) => {
-      const role = String(message.role || "assistant");
-      const content = cleanContent(String(message.content || ""));
-      if (!content) {
-        return null;
+  const rendered = [];
+  let index = 0;
+  while (index < history.length) {
+    const message = history[index] || {};
+    const role = String(message.role || "assistant");
+    if (role !== "user") {
+      rendered.push(...renderTurnSegment([message], `history-${index}`));
+      index += 1;
+      continue;
+    }
+    const content = cleanContent(String(message.content || ""));
+    if (content) {
+      rendered.push({ id: `history-${index}`, role: "user", content });
+    }
+    const segment = [];
+    index += 1;
+    while (index < history.length && String(history[index]?.role || "") !== "user") {
+      segment.push(history[index]);
+      index += 1;
+    }
+    rendered.push(...renderTurnSegment(segment, `history-${index}`));
+  }
+  return rendered.filter(Boolean);
+}
+
+function renderTurnSegment(segment, idPrefix) {
+  let finalAssistantIndex = -1;
+  segment.forEach((message, index) => {
+    if (String(message?.role || "") === "assistant" && cleanContent(String(message?.content || "")).trim()) {
+      finalAssistantIndex = index;
+    }
+  });
+
+  let rows = [];
+  let activityToneValue = "success";
+  const rendered = [];
+  segment.forEach((message, index) => {
+    const role = String(message?.role || "");
+    const content = cleanContent(String(message?.content || ""));
+    const toolCalls = toolCallsFromMessage(message);
+    if (role === "assistant") {
+      if (index === finalAssistantIndex && content) {
+        if (toolCalls.length > 0) {
+          rows = appendToolCallsToRows(rows, toolCalls.map(toolCallState));
+        }
+        rendered.push({ id: `${idPrefix}-assistant-${index}`, role: "assistant", content });
+        return;
       }
-      if (role === "tool") {
-        return {
-          id: `history-tool-${index}`,
-          role: "tool",
-          title: toolTitle(message),
-          content,
-          status: "Done",
-        };
+      if (content) {
+        rows = [...rows, { type: "thinking", content }];
       }
-      return {
-        id: `history-${index}`,
-        role: role === "user" ? "user" : "assistant",
-        content,
-      };
-    })
-    .filter(Boolean);
+      rows = appendToolCallsToRows(rows, toolCalls.map(toolCallState));
+      return;
+    }
+    if (role === "tool") {
+      const activity = toolResultActivity(message);
+      rows = applyToolResultToRows(rows, activity);
+      if (activity.status === "error") {
+        activityToneValue = "error";
+      }
+    }
+  });
+  if (rows.length > 0) {
+    rendered.unshift({
+      id: `${idPrefix}-activity`,
+      role: "activity",
+      title: "Processed for 0s",
+      content: activityContentFromRows(rows),
+      rows,
+      status: activityToneValue,
+    });
+  }
+  return rendered;
 }
 
 function apiEventToTraceEvent(event) {
@@ -707,13 +1045,103 @@ function apiEventToTraceEvent(event) {
     type: event.type || "runtime.event",
     timestamp: "",
     actor: "runtime",
-    payload: event.payload || {},
+    payload: tracePreviewPayload(event.payload || {}),
   };
 }
 
-function appendAssistantDelta(setMessages, assistantId, delta) {
+function tracePreviewPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return {};
+  }
+  const preview = { ...payload };
+  if (typeof preview.content === "string") {
+    preview.content = limitText(preview.content, TOOL_RESULT_PREVIEW_LIMIT);
+  }
+  if (preview.payload && typeof preview.payload === "object") {
+    preview.payload = { ...preview.payload };
+    if (typeof preview.payload.content === "string") {
+      preview.payload.content = limitText(preview.payload.content, TOOL_RESULT_PREVIEW_LIMIT);
+    }
+  }
+  return preview;
+}
+
+function appendAssistantDelta(setMessages, activityId, assistantId, delta) {
   setMessages((items) =>
-    items.map((item) => (item.id === assistantId ? { ...item, content: `${item.content}${delta}` } : item)),
+    items.map((item) => {
+      if (item.id === activityId) {
+        const content = `${item.content === "Thinking" ? "" : item.content || ""}${delta}`;
+        return { ...item, content, headerSource: thinkingHeaderSource(content) };
+      }
+      if (item.id === assistantId) {
+        return { ...item, content: `${item.content}${delta}` };
+      }
+      return item;
+    }),
+  );
+}
+
+function appendRuntimeActivity(setMessages, activityId, assistantId, event) {
+  const update = runtimeActivityUpdateFromEvent(event);
+  if (!update.thinking.length && !update.calls.length && !update.results.length) {
+    return;
+  }
+  setMessages((items) =>
+    items.map((item) => {
+      if (item.id === assistantId && event.payload?.role === "assistant") {
+        return { ...item, content: "" };
+      }
+      if (item.id !== activityId) {
+        return item;
+      }
+      const assistantThinking = items.find((candidate) => candidate.id === assistantId)?.content || "";
+      const thinkingDetail =
+        event.payload?.role === "assistant" && assistantThinking.trim() ? [`Thinking\n${assistantThinking}`] : [];
+      let rows = activityRows(item);
+      for (const value of [...thinkingDetail.map((item) => item.replace(/^Thinking\n/, "")), ...update.thinking]) {
+        if (value.trim()) {
+          rows = [...rows, { type: "thinking", content: value }];
+        }
+      }
+      rows = appendToolCallsToRows(rows, update.calls);
+      for (const result of update.results) {
+        rows = applyToolResultToRows(rows, result);
+      }
+      const flatToolCalls = rows.flatMap((row) => (row.type === "tools" ? row.calls || [] : []));
+      const content = activityContentFromRows(rows) || item.content;
+      const hasError = flatToolCalls.some((call) => call.status === "error") || item.status === "error";
+      const latestToolGroup = [...rows].reverse().find((row) => row.type === "tools" && row.calls?.length);
+      const nextTitle = latestToolGroup ? activityToolBatchTitle(latestToolGroup.calls || []) : item.title;
+      const headerSource =
+        update.calls.length > 0
+          ? toolHeaderSource(update.calls)
+          : thinkingDetail.length || update.thinking.length
+            ? thinkingHeaderSource([...thinkingDetail, ...update.thinking].at(-1))
+            : item.headerSource;
+      return {
+        ...item,
+        title: nextTitle || item.title,
+        content,
+        headerSource,
+        rows,
+        status: hasError ? "error" : "running",
+      };
+    }),
+  );
+}
+
+function finalizeRuntimeActivity(setMessages, activityId, status) {
+  setMessages((items) =>
+    items.map((item) => {
+      if (item.id !== activityId) {
+        return item;
+      }
+      return {
+        ...item,
+        title: `Processed for ${formatProcessedDuration((Date.now() - (item.startedAt || Date.now())) / 1000)}`,
+        status: activityTone(status) === "error" ? "error" : "success",
+      };
+    }),
   );
 }
 
@@ -723,7 +1151,7 @@ function replaceAssistantMessage(setMessages, assistantId, content) {
 
 function traceTabEvents(tab, events) {
   if (tab === "Tools") {
-    return events.filter((event) => String(event.type || "").startsWith("tool."));
+    return traceToolEvents(events);
   }
   if (tab === "Files") {
     return events.filter((event) => {
@@ -732,6 +1160,96 @@ function traceTabEvents(tab, events) {
     });
   }
   return events;
+}
+
+function traceToolEvents(events) {
+  const items = [];
+  const byCallId = new Map();
+
+  function upsert(callId, patch) {
+    const key = callId || `tool-${items.length}`;
+    let item = callId ? byCallId.get(callId) : null;
+    if (!item) {
+      item = {
+        id: key,
+        type: "tool.call",
+        payload: {
+          tool_call_id: callId,
+          tool_name: callId || "tool",
+          trace_tool: true,
+          has_call: false,
+          has_result: false,
+          status: "running",
+        },
+      };
+      items.push(item);
+      if (callId) {
+        byCallId.set(callId, item);
+      }
+    }
+    item.payload = { ...item.payload, ...patch };
+    return item;
+  }
+
+  for (const event of events) {
+    const type = String(event.type || "");
+    const payload = event.payload || {};
+
+    if (type === "tool.call") {
+      const callId = String(payload.tool_call_id || payload.id || event.id || "");
+      upsert(callId, {
+        tool_call_id: callId,
+        tool_name: String(payload.tool_name || payload.name || "tool"),
+        arguments: stringifyToolArgs(payload.args),
+        call_event: event,
+        has_call: true,
+        status: "running",
+      });
+      continue;
+    }
+
+    if (type === "tool.result") {
+      const callId = String(payload.tool_call_id || "");
+      const status = String(payload.status || "success") === "error" || payload.error ? "error" : "success";
+      upsert(callId, {
+        tool_call_id: callId,
+        result_event: event,
+        has_result: true,
+        result: stringifyDetail(payload.error || payload.result || payload.content || ""),
+        status,
+      });
+      continue;
+    }
+
+    if (type === "runtime.message") {
+      if (payload.role === "assistant") {
+        for (const call of toolCallsFromMessage(payload)) {
+          const state = toolCallState(call);
+          upsert(state.id, {
+            tool_call_id: state.id,
+            tool_name: state.name,
+            arguments: state.arguments,
+            call_event: event,
+            has_call: true,
+            status: "running",
+          });
+        }
+      } else if (payload.role === "tool") {
+        const result = toolResultActivity(payload);
+        if (result.toolCallId) {
+          upsert(result.toolCallId, {
+            tool_call_id: result.toolCallId,
+            result_event: event,
+            has_result: true,
+            result: result.content,
+            status: result.status === "error" ? "error" : "success",
+          });
+        }
+      }
+    }
+  }
+
+  return items;
 }
 
 function configRows(settings) {
@@ -744,6 +1262,8 @@ function configRows(settings) {
     ["api_key_source", settings.api_key_source],
     ["base_url", settings.base_url],
     ["max_steps", settings.max_steps],
+    ["context_window", settings.context_window],
+    ["compression_trigger", compressionTriggerLabel(settings.context_window)],
     ["user_lora_root", settings.user_lora_root],
   ];
 }
@@ -763,8 +1283,17 @@ function settingsToDraft(settings) {
     agent: settings.agent || "",
     model: settings.model || "",
     maxSteps: Number.isFinite(settings.max_steps) ? settings.max_steps : -1,
+    contextWindow: Number.isFinite(settings.context_window) ? String(settings.context_window) : "",
     apiKey: "",
   };
+}
+
+function formatContextWindow(value) {
+  return Number.isFinite(value) ? `${value} tokens` : "unset";
+}
+
+function compressionTriggerLabel(contextWindow) {
+  return Number.isFinite(contextWindow) ? `${Math.floor(contextWindow * 0.9)} tokens` : "disabled";
 }
 
 function cleanContent(content) {
@@ -772,12 +1301,318 @@ function cleanContent(content) {
   return (match ? match[1] : content).trim();
 }
 
-function toolTitle(message) {
-  return message.name || message.tool_name || message.tool_call_id || "Tool result";
+function cleanSessionTitle(title) {
+  return String(title || "").replace(/\s+/g, " ").trim();
+}
+
+function runtimeActivityUpdateFromEvent(event) {
+  const payload = event.payload || {};
+  if (payload.role === "assistant") {
+    return {
+      thinking: [],
+      calls: toolCallsFromMessage(payload).map(toolCallState),
+      results: [],
+    };
+  }
+  if (payload.role === "tool") {
+    return {
+      thinking: [],
+      calls: [],
+      results: [toolResultActivity(payload)],
+    };
+  }
+  return { thinking: [], calls: [], results: [] };
+}
+
+function toolCallsFromMessage(message) {
+  const payload = message?.payload && typeof message.payload === "object" ? message.payload : {};
+  const rawToolCalls = message?.tool_calls || payload.tool_calls || [];
+  return Array.isArray(rawToolCalls) ? rawToolCalls.filter((toolCall) => toolCall && typeof toolCall === "object") : [];
+}
+
+function toolResultActivity(message) {
+  const payload = message?.payload && typeof message.payload === "object" ? message.payload : {};
+  const parsed = parseJsonObject(message?.content);
+  const status = String(parsed.status || "result");
+  const toolCallId = String(message?.tool_call_id || payload.tool_call_id || parsed.tool_call_id || "tool");
+  let detail = Object.prototype.hasOwnProperty.call(parsed, "result") ? parsed.result : message?.content || "";
+  if (parsed.error) {
+    detail = parsed.error;
+  }
+  const tone = status === "error" || parsed.error ? "error" : "success";
+  return {
+    title: `Tool result: ${toolCallId}`,
+    toolCallId,
+    content: stringifyDetail(detail),
+    status: tone,
+  };
+}
+
+function toolCallState(toolCall) {
+  const id = toolCallId(toolCall);
+  const argumentsText = toolCallArguments(toolCall);
+  return {
+    id,
+    name: toolCallName(toolCall),
+    description: toolCallDescription(argumentsText),
+    arguments: argumentsText,
+    result: "",
+    status: "running",
+  };
+}
+
+function mergeToolCalls(current, nextCalls) {
+  const merged = Array.isArray(current) ? [...current] : [];
+  const safeNextCalls = Array.isArray(nextCalls) ? nextCalls : [];
+  for (const call of safeNextCalls) {
+    const index = call.id ? merged.findIndex((item) => item.id === call.id) : -1;
+    if (index >= 0) {
+      merged[index] = { ...merged[index], ...call, result: merged[index].result || call.result || "" };
+    } else {
+      merged.push(call);
+    }
+  }
+  return merged;
+}
+
+function applyToolResult(current, result) {
+  const merged = Array.isArray(current) ? [...current] : [];
+  const index = result.toolCallId ? merged.findIndex((item) => item.id === result.toolCallId) : -1;
+  const patch = {
+    result: result.content,
+    status: result.status,
+  };
+  if (index >= 0) {
+    merged[index] = { ...merged[index], ...patch };
+    return merged;
+  }
+  const fallbackIndex = findLastRunningToolCallIndex(merged);
+  if (fallbackIndex >= 0) {
+    merged[fallbackIndex] = { ...merged[fallbackIndex], ...patch };
+    return merged;
+  }
+  return merged;
+}
+
+function findLastRunningToolCallIndex(toolCalls) {
+  const safeToolCalls = Array.isArray(toolCalls) ? toolCalls : [];
+  for (let index = safeToolCalls.length - 1; index >= 0; index -= 1) {
+    if (safeToolCalls[index]?.status === "running") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function appendToolCallsToRows(rows, calls) {
+  const safeCalls = Array.isArray(calls) ? calls : [];
+  if (!safeCalls.length) {
+    return rows;
+  }
+  const nextRows = Array.isArray(rows) ? [...rows] : [];
+  const last = nextRows[nextRows.length - 1];
+  if (last?.type === "tools") {
+    nextRows[nextRows.length - 1] = { ...last, calls: mergeToolCalls(last.calls || [], safeCalls) };
+    return nextRows;
+  }
+  nextRows.push({ type: "tools", calls: safeCalls });
+  return nextRows;
+}
+
+function applyToolResultToRows(rows, result) {
+  if (!rows.length) {
+    return rows;
+  }
+  const nextRows = rows.map((row) =>
+    row.type === "tools" ? { ...row, calls: [...(row.calls || [])] } : row,
+  );
+  if (result.toolCallId) {
+    for (let rowIndex = nextRows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+      const row = nextRows[rowIndex];
+      if (row.type !== "tools") {
+        continue;
+      }
+      if ((row.calls || []).some((call) => call.id === result.toolCallId)) {
+        nextRows[rowIndex] = { ...row, calls: applyToolResult(row.calls || [], result) };
+        return nextRows;
+      }
+    }
+  }
+  for (let rowIndex = nextRows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+    const row = nextRows[rowIndex];
+    if (row.type !== "tools") {
+      continue;
+    }
+    if ((row.calls || []).some((call) => call.status === "running")) {
+      nextRows[rowIndex] = { ...row, calls: applyToolResult(row.calls || [], result) };
+      return nextRows;
+    }
+  }
+  return appendToolCallsToRows(nextRows, applyToolResult([], result));
+}
+
+function activityContentFromRows(rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  return safeRows
+    .map((row) => {
+      if (row.type === "thinking") {
+        return `Thinking\n${row.content}`;
+      }
+      const calls = Array.isArray(row.calls) ? row.calls : [];
+      return calls
+        .map((call) => {
+          const lines = [toolCallDetail(call)];
+          if (call.result) {
+            lines.push(`Tool result: ${call.id || call.name}\n${call.result}`);
+          }
+          return lines.join("\n");
+        })
+        .join("\n\n");
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function toolActionLabel(name) {
+  const normalized = String(name || "").trim().toLowerCase().replace(/-/g, "_");
+  const aliases = {
+    read: "Read",
+    write: "Write",
+    edit: "Edit",
+    bash: "Bash",
+    shell: "Bash",
+    grep: "Grep",
+    glob: "Glob",
+    delete: "Delete",
+  };
+  if (aliases[normalized]) {
+    return aliases[normalized];
+  }
+  return normalized ? normalized.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "Tool";
+}
+
+function toolStatusLabel(status) {
+  const normalized = String(status || "running").trim().toLowerCase();
+  if (normalized.includes("error") || normalized.includes("fail")) {
+    return "Error";
+  }
+  if (normalized.includes("success") || normalized.includes("done") || normalized.includes("pass")) {
+    return "Done";
+  }
+  return "Running";
+}
+
+function shortToolTarget(name, args) {
+  const parsed = parseJsonObject(args);
+  const normalized = String(name || "").trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "bash" || normalized === "shell") {
+    return compactText(String(parsed.command || parsed.cmd || ""));
+  }
+  if (normalized === "grep") {
+    return String(parsed.pattern || parsed.query || parsed.regex || "").trim();
+  }
+  if (normalized === "glob") {
+    return String(parsed.pattern || parsed.glob_pattern || parsed.glob || parsed.include || "").trim();
+  }
+  const path = String(parsed.path || parsed.file_path || parsed.file || parsed.target || parsed.filename || "").trim();
+  return path ? shortPathLabel(path) : "";
+}
+
+function compactText(value) {
+  const compact = String(value || "").replace(/\s+/g, " ").trim();
+  return compact.length <= 48 ? compact : `${compact.slice(0, 45)}...`;
+}
+
+function shortPathLabel(value) {
+  const parts = String(value || "").replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.length >= 2 ? parts.slice(-2).join("/") : parts[0] || value;
+}
+
+function toolCallId(toolCall) {
+  return String(toolCall?.id || toolCall?.tool_call_id || "");
+}
+
+function toolCallName(toolCall) {
+  const fn = toolCall?.function && typeof toolCall.function === "object" ? toolCall.function : {};
+  return String(fn.name || toolCall?.name || toolCall?.tool_name || "tool");
+}
+
+function toolCallArguments(toolCall) {
+  const fn = toolCall?.function && typeof toolCall.function === "object" ? toolCall.function : {};
+  const args = Object.prototype.hasOwnProperty.call(fn, "arguments") ? fn.arguments : toolCall?.arguments;
+  if (args === undefined || args === null) {
+    return "";
+  }
+  return limitText(typeof args === "string" ? args : safeJsonStringify(args), TOOL_ARGUMENT_PREVIEW_LIMIT);
+}
+
+function toolCallDetail(toolCall) {
+  return `Tool call: ${toolCallName(toolCall)}\n${toolCallArguments(toolCall)}`.trim();
+}
+
+function toolCallDescription(argumentsText) {
+  const parsed = parseJsonObject(argumentsText);
+  return String(parsed.description || "").trim();
+}
+
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(String(value || ""));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function stringifyDetail(value) {
+  return limitText(typeof value === "string" ? value : safeJsonStringify(value), TOOL_RESULT_PREVIEW_LIMIT);
+}
+
+function activityTone(status) {
+  const value = String(status || "").toLowerCase();
+  if (value.includes("error") || value.includes("fail")) {
+    return "error";
+  }
+  if (value.includes("run") || value.includes("live")) {
+    return "warning";
+  }
+  if (value.includes("success") || value.includes("done") || value.includes("pass")) {
+    return "success";
+  }
+  return "ready";
+}
+
+function activityToolBatchTitle(calls) {
+  const safeCalls = Array.isArray(calls) ? calls : [];
+  for (const call of safeCalls) {
+    if (call.description) {
+      return call.description;
+    }
+  }
+  return "Acting";
 }
 
 function eventSummary(event) {
   const payload = event.payload || {};
+  if (payload.trace_tool) {
+    const status = String(payload.status || "running");
+    const parts = [status];
+    if (payload.has_call) {
+      parts.push("Call");
+    }
+    if (payload.has_result) {
+      parts.push("Result");
+    }
+    const callId = shortId(payload.tool_call_id || "");
+    if (callId) {
+      parts.push(callId);
+    }
+    const target = shortToolTarget(payload.tool_name, payload.arguments);
+    if (target) {
+      parts.push(target);
+    }
+    return parts.join("  ");
+  }
   if (payload.delta) {
     return payload.delta;
   }
@@ -787,11 +1622,22 @@ function eventSummary(event) {
   if (payload.content) {
     return String(payload.content).slice(0, 180);
   }
-  return JSON.stringify(payload).slice(0, 180);
+  return limitText(safeJsonStringify(payload), 180);
+}
+
+function eventTitle(event) {
+  const payload = event.payload || {};
+  if (payload.trace_tool) {
+    return toolActionLabel(payload.tool_name);
+  }
+  return event.type || "event";
 }
 
 function eventTone(event) {
   const payload = event.payload || {};
+  if (payload.trace_tool) {
+    return activityTone(payload.status);
+  }
   if (payload.error || payload.status === "error") {
     return "error";
   }
@@ -820,10 +1666,33 @@ function statusLabel(status) {
   return value;
 }
 
-function sessionMeta(session) {
-  const stamp = session.updated_at || session.created_at || "";
-  const status = session.last_case_run_status || "ready";
-  return `${stamp.slice(0, 19)} / ${status}`;
+function sessionStatusLabel(status) {
+  const kind = sessionStatusKind(status);
+  if (kind === "running") {
+    return "Running";
+  }
+  if (kind === "error") {
+    return "Error";
+  }
+  return "Done";
+}
+
+function sessionStatusIdentity(session) {
+  return [
+    session.last_case_run_status || sessionStatusKind(session.last_case_run_status),
+    session.updated_at || session.created_at || "",
+  ].join(":");
+}
+
+function sessionStatusKind(status) {
+  const value = String(status || "").toLowerCase();
+  if (value.includes("run")) {
+    return "running";
+  }
+  if (value.includes("error") || value.includes("fail")) {
+    return "error";
+  }
+  return "success";
 }
 
 function shortPath(path) {
@@ -842,4 +1711,27 @@ function shortId(value) {
 
 function readableError(err) {
   return err instanceof Error ? err.message : String(err);
+}
+
+function stringifyToolArgs(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  return limitText(typeof value === "string" ? value : safeJsonStringify(value), TOOL_ARGUMENT_PREVIEW_LIMIT);
+}
+
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item), 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function limitText(value, limit) {
+  const text = String(value || "");
+  if (text.length <= limit) {
+    return text;
+  }
+  return `${text.slice(0, limit)}\n\n[truncated ${text.length - limit} chars]`;
 }

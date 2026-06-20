@@ -109,7 +109,7 @@ def build_session_scopes(state: GuiProjectState, *, active_workspace_root: str |
     scopes.append(
         SessionScope(
             scope_id="conversation",
-            label="Conversations",
+            label="Chat",
             tooltip="Conversations without a project path",
             workspace_root=None,
             runtime_workspace_root=str((conversation_root / "workspace").resolve()),

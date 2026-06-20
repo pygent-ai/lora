@@ -13,6 +13,8 @@ class ChatTurnRequest(BaseModel):
     session_id: str | None = None
     case_id: str = "chat"
     turn_id: str | None = None
+    resume_case_run_id: str | None = None
+    resume_from_event: int | None = None
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -21,4 +23,5 @@ class UpdateSettingsRequest(BaseModel):
     agent_alias: str | None = None
     model: str | None = None
     max_steps: int | None = None
+    context_window: int | None = None
     api_key: str | None = None

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +10,7 @@ from lora.core.io import validate_path_id
 from lora.core.io import write_json
 from lora.schema import AgentSession
 from lora.sessions import SessionManager
+from lora.tracing.events import EventStore
 
 from lora_api.dependencies import ApiContext
 from lora_api.models.responses import (
@@ -111,7 +114,7 @@ def _record_from_metadata(
     mode = str(metadata.get("mode") or "chat")
     created_at = str(metadata.get("created_at") or "")
     updated_at = str(metadata.get("updated_at") or created_at)
-    title = _clean_title(str(metadata.get("title") or "")) or _display_title(session_id)
+    title = _clean_title(str(metadata.get("title") or "")) or _first_user_message_title(session_dir) or _display_title(session_id)
     return SessionRecordResponse(
         session_id=session_id,
         session_dir=str(session_dir),
@@ -134,6 +137,83 @@ def _display_title(session_id: str) -> str:
     if session_id.startswith("chat-chat-"):
         return f"chat-{session_id.removeprefix('chat-chat-')}"
     return session_id
+
+
+def _first_user_message_title(session_dir: Path) -> str:
+    title = _first_user_message_from_events(session_dir)
+    if title:
+        return title
+    title = _first_user_message_from_history_log(session_dir)
+    if title:
+        return title
+    return _first_user_message_from_session_json(session_dir)
+
+
+def _first_user_message_from_events(session_dir: Path) -> str:
+    candidates: list[tuple[str, str]] = []
+    for events_path in (session_dir / "cases").glob("*/runs/*/events.jsonl"):
+        for row in EventStore.iter_jsonl(events_path):
+            if not isinstance(row, dict) or row.get("type") != "conversation.user_message":
+                continue
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            title = _title_from_user_payload(payload)
+            if title:
+                candidates.append((str(row.get("timestamp") or ""), title))
+    if not candidates:
+        return ""
+    return sorted(candidates, key=lambda item: item[0])[0][1]
+
+
+def _first_user_message_from_history_log(session_dir: Path) -> str:
+    history_path = session_dir / "context" / "history.jsonl"
+    for row in EventStore.iter_jsonl(history_path):
+        if not isinstance(row, dict) or row.get("role") != "user":
+            continue
+        title = _clean_title(_unwrap_user_message(str(row.get("content") or "")))
+        if title:
+            return title
+    return ""
+
+
+def _first_user_message_from_session_json(session_dir: Path) -> str:
+    try:
+        data = read_json(session_dir / "session.json")
+    except (OSError, json.JSONDecodeError):
+        return ""
+    for message in data.get("history") or []:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        title = _clean_title(_unwrap_user_message(str(message.get("content") or "")))
+        if title:
+            return title
+    return ""
+
+
+def _title_from_user_payload(payload: dict[str, Any]) -> str:
+    raw_content = payload.get("raw_content")
+    if isinstance(raw_content, str):
+        title = _clean_title(raw_content)
+        if title:
+            return title
+    content = payload.get("content")
+    if isinstance(content, str):
+        return _clean_title(_unwrap_user_message(content))
+    return ""
+
+
+def _unwrap_user_message(content: str) -> str:
+    start_token = "<user-message>"
+    end_token = "</user-message>"
+    start = content.find(start_token)
+    if start < 0:
+        return content
+    start += len(start_token)
+    end = content.find(end_token, start)
+    if end < 0:
+        return content
+    return unescape(content[start:end])
 
 
 def _clean_title(value: str) -> str:

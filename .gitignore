@@ -14,11 +14,16 @@ wheels/
 .env.local
 .env.*
 !.env.example
+/nul
 lora.local.yaml
 **/credentials.env
 .idea/
 
 # Local Lora runtime state
 .lora/sessions/
-sessions/
 .superpowers/
+
+# Frontend local dependencies and runtime output
+apps/desktop/node_modules/
+apps/desktop/.vite/
+apps/desktop/*.log
