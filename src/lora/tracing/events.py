@@ -270,7 +270,7 @@ class EventStore:
             raise ValueError(f"Unsupported event type: {event_type}")
 
 def _tool_call_record(event: ContextEvent) -> dict[str, Any]:
-    return {
+    record = {
         "event_id": event.id,
         "session_id": event.session_id,
         "case_id": event.case_id,
@@ -280,6 +280,9 @@ def _tool_call_record(event: ContextEvent) -> dict[str, Any]:
         "args": event.payload.get("args", {}),
         "created_at": event.timestamp,
     }
+    if event.payload.get("model_tool_call_id") is not None:
+        record["model_tool_call_id"] = event.payload.get("model_tool_call_id")
+    return record
 
 
 def _clone_event(event: ContextEvent) -> ContextEvent:
@@ -317,6 +320,8 @@ def _tool_result_record(event: ContextEvent) -> dict[str, Any]:
         record["error_type"] = event.payload.get("error_type")
     if event.payload.get("details") is not None:
         record["details"] = event.payload.get("details")
+    if event.payload.get("model_tool_call_id") is not None:
+        record["model_tool_call_id"] = event.payload.get("model_tool_call_id")
     return record
 
 

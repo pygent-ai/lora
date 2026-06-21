@@ -87,3 +87,13 @@ class TraceEventsResponse(BaseModel):
     session_id: str
     case_run_id: str
     events: list[dict[str, Any]]
+
+
+class ToolResultResponse(BaseModel):
+    tool_call_id: str
+    tool_name: str
+    status: str
+    result: Any = None
+    error: str | None = None
+    result_size: int
+    created_at: str | None = None

@@ -23,6 +23,7 @@ class RuntimeMessage:
     type: str | None = None
     payload: dict[str, Any] | None = None
     is_delta: bool = False
+    reasoning_content: str = ""
 
 
 class RuntimeContext:
@@ -71,6 +72,7 @@ class AgentRuntimeAdapter:
         case_run_ref: CaseRunRef,
         turn_id: str | None = None,
         on_assistant_delta: Callable[[str], Any] | None = None,
+        on_assistant_reasoning_delta: Callable[[str], Any] | None = None,
         on_runtime_message: Callable[[RuntimeMessage], Any] | None = None,
     ) -> dict[str, Any]:
         store = EventStore(case_run_ref)
@@ -120,6 +122,8 @@ class AgentRuntimeAdapter:
             async for raw_output in self._stream_agent(context, user_input):
                 runtime_message = _normalize_output(raw_output)
                 if runtime_message.is_delta:
+                    if runtime_message.role == "assistant" and runtime_message.reasoning_content:
+                        await _emit_assistant_delta(on_assistant_reasoning_delta, runtime_message.reasoning_content)
                     if runtime_message.role == "assistant" and runtime_message.content:
                         assistant_delta_parts.append(runtime_message.content)
                         await _emit_assistant_delta(on_assistant_delta, runtime_message.content)
@@ -497,17 +501,26 @@ def _normalize_output(output: Any) -> RuntimeMessage:
         content = _stringify(output.get("content") if "content" in output else output.get("result", ""))
         event_type = output.get("type")
         payload = dict(output.get("payload") or output)
+        reasoning_content = output.get("reasoning_content")
+        if reasoning_content is None:
+            reasoning_content = payload.get("reasoning_content", "")
         return RuntimeMessage(
             role=role,
             content=content,
             type=event_type,
             payload=payload,
             is_delta=_is_delta_output(output, payload, event_type),
+            reasoning_content=_stringify(reasoning_content),
         )
 
     payload = _message_payload(output)
     role = (payload or {}).get("role") or _value(getattr(output, "role", None)) or "assistant"
     content = (payload or {}).get("content") if payload and "content" in payload else _value(getattr(output, "content", None))
+    reasoning_content = (
+        (payload or {}).get("reasoning_content")
+        if payload and "reasoning_content" in payload
+        else _value(getattr(output, "reasoning_content", None))
+    )
     if content is None:
         content = str(output)
     if role == "tool":
@@ -519,6 +532,7 @@ def _normalize_output(output: Any) -> RuntimeMessage:
         type=event_type,
         payload=payload,
         is_delta=_is_delta_output(output, None, event_type),
+        reasoning_content=str(reasoning_content or ""),
     )
 
 

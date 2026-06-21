@@ -880,6 +880,20 @@ class LoraAgent(BaseAgent):
             history_len_before_request = _pygent_history_len(pygent_context)
             async for chunk in self.llm.stream_forward(pygent_context, tools=self.tools_param()):
                 content = _message_content(chunk)
+                reasoning_content = _message_reasoning_content(chunk)
+                if reasoning_content:
+                    yield {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": reasoning_content,
+                        "type": "conversation.assistant_delta",
+                        "payload": {
+                            "role": "assistant",
+                            "content": "",
+                            "reasoning_content": reasoning_content,
+                            "delta": "",
+                        },
+                    }
                 if content:
                     assistant_parts.append(content)
                     yield {
@@ -929,11 +943,18 @@ class LoraAgent(BaseAgent):
                         args=kwargs,
                         available_tools=list(self._tools),
                         turn_id=self.turn_id,
+                        model_tool_call_id=tool_call.tool_call_id.data,
                     )
                     new_cli_entries: list[dict[str, Any]] = []
                     new_skill_entries: list[dict[str, Any]] = []
                 else:
-                    result = interceptor.call_tool(name, kwargs, tool_context, self._tools[name].forward)
+                    result = interceptor.call_tool(
+                        name,
+                        kwargs,
+                        tool_context,
+                        self._tools[name].forward,
+                        model_tool_call_id=tool_call.tool_call_id.data,
+                    )
                     new_cli_entries = []
                     if name == "bash" and self.context_manager is not None:
                         new_cli_entries = _detect_new_bash_cli(
@@ -1472,6 +1493,12 @@ def _message_content(message: Any) -> str:
     return getattr(content, "data", content) or ""
 
 
+def _message_reasoning_content(message: Any) -> str:
+    content = getattr(message, "reasoning_content", "")
+    value = getattr(content, "data", content) or ""
+    return str(value)
+
+
 def _prompt_render_context_payload(ctx: PromptRenderContext) -> dict[str, Any]:
     return {
         "session_id": ctx.session_id,
@@ -1885,6 +1912,7 @@ def _record_unknown_tool_call(
     args: dict[str, Any],
     available_tools: list[str],
     turn_id: str | None,
+    model_tool_call_id: str | None = None,
 ) -> dict[str, Any]:
     message = (
         f"Unknown tool requested by model: {name}. "
@@ -1896,10 +1924,13 @@ def _record_unknown_tool_call(
         "arguments": args,
         "hint": "Call one of the available tools. For shell commands or installed CLIs, use the bash tool.",
     }
+    call_payload: dict[str, Any] = {"tool_name": name, "args": args}
+    if model_tool_call_id:
+        call_payload["model_tool_call_id"] = model_tool_call_id
     call_id = interceptor.store.append(
         "tool.call",
         actor="assistant",
-        payload={"tool_name": name, "args": args},
+        payload=call_payload,
         turn_id=turn_id,
     )
     interceptor.store.append(
@@ -1915,6 +1946,8 @@ def _record_unknown_tool_call(
         "error_type": "UnknownToolError",
         "details": details,
     }
+    if model_tool_call_id:
+        payload["model_tool_call_id"] = model_tool_call_id
     interceptor.store.append("tool.result", actor="tool", payload=payload, turn_id=turn_id)
     return payload
 

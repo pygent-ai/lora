@@ -61,6 +61,25 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))), 2)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))), 2)
 
+    def test_tool_interceptor_records_model_tool_call_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(EventStore(run))
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+
+            interceptor.call_tool(
+                "add",
+                {"a": 1, "b": 2},
+                ctx,
+                lambda a, b: a + b,
+                model_tool_call_id="call_model_add",
+            )
+
+            tool_call = next(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))
+            tool_result = next(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))
+            self.assertEqual(tool_call["model_tool_call_id"], "call_model_add")
+            self.assertEqual(tool_result["model_tool_call_id"], "call_model_add")
+
     def test_tool_interceptor_reports_unknown_arguments_before_calling_tool(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")

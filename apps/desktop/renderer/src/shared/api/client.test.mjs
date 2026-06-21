@@ -105,6 +105,26 @@ test("api client lists session groups for directory-scoped sidebar", async () =>
   });
 });
 
+test("api client fetches tool results by tool call id", async () => {
+  const calls = [];
+  const client = createApiClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ tool_call_id: "evt_1", result: "complete" }),
+      };
+    },
+  });
+
+  const response = await client.getToolResult("evt_1");
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8765/tool-results/evt_1");
+  assert.deepEqual(response, { tool_call_id: "evt_1", result: "complete" });
+});
+
 test("parseSseEvents decodes named events and JSON payloads", () => {
   const events = parseSseEvents(
     [

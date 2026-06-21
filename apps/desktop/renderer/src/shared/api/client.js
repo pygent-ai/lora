@@ -55,6 +55,8 @@ export function createApiClient(options = {}) {
         `/traces/${encodeURIComponent(sessionId)}/${encodeURIComponent(caseRunId)}`,
         options,
       ),
+    getToolResult: (toolCallId, options = {}) =>
+      jsonRequest(`/tool-results/${encodeURIComponent(toolCallId)}`, options),
     streamChat: (request, handlers = {}) =>
       streamChatTurn({
         baseUrl,

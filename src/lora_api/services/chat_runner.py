@@ -6,8 +6,10 @@ import json
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from lora.tracing import EventStore
 from lora.runtime import AgentRuntimeAdapter, RuntimeMessage
 from lora.schema import CaseRunRef
 
@@ -20,6 +22,7 @@ CHAT_DISCONNECT_GRACE_SECONDS = 60.0
 CHAT_COMPLETED_RESUME_TTL_SECONDS = 300.0
 CHAT_EVENT_BUFFER_LIMIT = 1_000
 CHAT_KEEPALIVE_SECONDS = 10.0
+TOOL_RESULT_PREVIEW_LIMIT = 1_000
 
 
 async def stream_chat_turn(
@@ -173,6 +176,7 @@ class ActiveChatRun:
                 case_run_ref=self.run_ref,
                 turn_id=self.request.turn_id,
                 on_assistant_delta=self._on_assistant_delta,
+                on_assistant_reasoning_delta=self._on_assistant_reasoning_delta,
                 on_runtime_message=self._on_runtime_message,
             )
             status = str(result.get("status") or "passed")
@@ -218,7 +222,28 @@ class ActiveChatRun:
             )
         )
 
+    async def _on_assistant_reasoning_delta(self, delta: str) -> None:
+        await self.publish(
+            ApiEvent(
+                type="assistant.reasoning_delta",
+                session_id=self.session_id,
+                case_run_id=self.case_run_id,
+                payload={"delta": delta},
+            )
+        )
+
     async def _on_runtime_message(self, message: RuntimeMessage) -> None:
+        payload = _tool_result_event_payload(message, run_dir=Path(self.run_ref.run_dir))
+        if payload is not None:
+            await self.publish(
+                ApiEvent(
+                    type="tool.result",
+                    session_id=self.session_id,
+                    case_run_id=self.case_run_id,
+                    payload=payload,
+                )
+            )
+            return
         await self.publish(
             ApiEvent(
                 type="runtime.message",
@@ -289,10 +314,72 @@ def _runtime_message_payload(message: RuntimeMessage) -> dict[str, Any]:
     return {
         "role": message.role,
         "content": message.content,
+        "reasoning_content": message.reasoning_content,
         "message_type": message.type,
         "payload": message.payload or {},
         "is_delta": message.is_delta,
     }
+
+
+def _tool_result_event_payload(message: RuntimeMessage, *, run_dir: Path) -> dict[str, Any] | None:
+    if message.role != "tool":
+        return None
+    parsed = _parse_json_object(message.content)
+    payload = message.payload or {}
+    tool_call_id = str(payload.get("tool_call_id") or parsed.get("tool_call_id") or "").strip()
+    if not tool_call_id:
+        return None
+    error = parsed.get("error")
+    result = parsed.get("result", parsed.get("content", message.content))
+    status = str(parsed.get("status") or ("error" if error else "success"))
+    result_source = error if error else result
+    result_text = _stringify(result_source)
+    preview = _preview_text(result_text)
+    result_size = _serialized_size(result_source)
+    return {
+        "tool_call_id": tool_call_id,
+        "tool_name": _tool_name_for_call(run_dir, tool_call_id),
+        "status": status,
+        "preview": preview,
+        "result_size": result_size,
+        "truncated": len(result_text) > TOOL_RESULT_PREVIEW_LIMIT,
+        "result_ref": f"/tool-results/{tool_call_id}",
+    }
+
+
+def _parse_json_object(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _preview_text(text: str) -> str:
+    return text if len(text) <= TOOL_RESULT_PREVIEW_LIMIT else f"{text[:TOOL_RESULT_PREVIEW_LIMIT]}..."
+
+
+def _serialized_size(value: Any) -> int:
+    return len(_stringify(value).encode("utf-8"))
+
+
+def _stringify(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _tool_name_for_call(run_dir: Path, tool_call_id: str) -> str:
+    for row in EventStore.iter_jsonl(run_dir / "tool_calls.jsonl") or []:
+        if tool_call_id in {
+            str(row.get("event_id") or ""),
+            str(row.get("tool_call_id") or ""),
+            str(row.get("model_tool_call_id") or ""),
+        }:
+            return str(row.get("tool_name") or "tool")
+    return "tool"
 
 
 def _case_run_status(status: str) -> str:

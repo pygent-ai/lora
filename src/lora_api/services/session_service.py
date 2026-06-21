@@ -8,7 +8,7 @@ from typing import Any
 from lora.core.io import read_json
 from lora.core.io import validate_path_id
 from lora.core.io import write_json
-from lora.schema import AgentSession
+from lora.schema import AgentSession, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing.events import EventStore
 
@@ -84,7 +84,7 @@ def session_groups_response(context: ApiContext) -> SessionGroupListResponse:
     collapsed_ids = set(context.project_state.collapsed_scope_ids or [])
     groups: list[SessionGroupResponse] = []
     for scope in build_session_scopes(context.project_state, active_workspace_root=config.workspace_root):
-        manager = SessionManager(context.config_for_scope(scope))
+        manager = SessionManager(_config_for_listing_scope(context, scope))
         records = SessionService(manager).list_chat_sessions(scope_id=scope.scope_id)
         groups.append(
             SessionGroupResponse(
@@ -101,6 +101,22 @@ def session_groups_response(context: ApiContext) -> SessionGroupListResponse:
             )
         )
     return SessionGroupListResponse(active_scope_id=active_scope_id, groups=groups)
+
+
+def _config_for_listing_scope(context: ApiContext, scope: Any) -> RunConfig:
+    try:
+        return context.config_for_scope(scope)
+    except ValueError as exc:
+        if "Agent alias" not in str(exc):
+            raise
+        return RunConfig(
+            workspace_root=scope.runtime_workspace_root,
+            lora_root=scope.lora_root,
+            agent_alias=context.agent_alias or "default",
+            model_name=context.model,
+            max_steps=context.max_steps if context.max_steps is not None else -1,
+            context_window=context.context_window,
+        )
 
 
 def _record_from_metadata(

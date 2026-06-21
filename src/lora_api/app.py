@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from lora_api.dependencies import ApiContext
-from lora_api.routers import chat, health, projects, sessions, settings, traces
+from lora_api.routers import chat, health, projects, sessions, settings, tool_results, traces
 
 
 def create_app(
@@ -34,6 +34,7 @@ def create_app(
     app.include_router(projects.router)
     app.include_router(sessions.router)
     app.include_router(chat.router)
+    app.include_router(tool_results.router)
     app.include_router(traces.router)
     app.include_router(settings.router)
     return app

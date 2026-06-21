@@ -590,11 +590,22 @@ class ToolInterceptor:
             else None
         )
 
-    def call_tool(self, name: str, args: dict[str, Any], ctx: ToolContext, tool: Callable[..., Any]) -> ToolResult:
+    def call_tool(
+        self,
+        name: str,
+        args: dict[str, Any],
+        ctx: ToolContext,
+        tool: Callable[..., Any],
+        *,
+        model_tool_call_id: str | None = None,
+    ) -> ToolResult:
+        call_payload: dict[str, Any] = {"tool_name": name, "args": args}
+        if model_tool_call_id:
+            call_payload["model_tool_call_id"] = model_tool_call_id
         call_id = self.store.append(
             "tool.call",
             actor="assistant",
-            payload={"tool_name": name, "args": args},
+            payload=call_payload,
             turn_id=ctx.turn_id,
         )
         argument_error = _unsupported_argument_error(name, args, tool)
@@ -605,6 +616,8 @@ class ToolInterceptor:
                 "error": argument_error,
                 "error_type": "ToolArgumentError",
             }
+            if model_tool_call_id:
+                payload["model_tool_call_id"] = model_tool_call_id
             self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
             return ToolResult(status="error", error=argument_error, tool_call_id=call_id)
         before: dict[str, FileSnapshot] | None = None
@@ -623,6 +636,8 @@ class ToolInterceptor:
                 turn_id=ctx.turn_id,
             )
             payload = {"tool_call_id": call_id, "status": "error", "error": str(exc), "error_type": type(exc).__name__}
+            if model_tool_call_id:
+                payload["model_tool_call_id"] = model_tool_call_id
             self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
             return ToolResult(status="error", error=str(exc), tool_call_id=call_id)
 
@@ -642,6 +657,8 @@ class ToolInterceptor:
                 "error": tool_error["error"],
                 "error_type": tool_error["error_type"],
             }
+            if model_tool_call_id:
+                payload["model_tool_call_id"] = model_tool_call_id
             if tool_error.get("details") is not None:
                 payload["details"] = tool_error["details"]
             self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
@@ -665,12 +682,10 @@ class ToolInterceptor:
             run_dir=self.store.run_dir,
             bash_full_output_allowlist=self.bash_full_output_allowlist,
         )
-        self.store.append(
-            "tool.result",
-            actor="tool",
-            payload={"tool_call_id": call_id, "status": status, "result": result},
-            turn_id=ctx.turn_id,
-        )
+        result_payload = {"tool_call_id": call_id, "status": status, "result": result}
+        if model_tool_call_id:
+            result_payload["model_tool_call_id"] = model_tool_call_id
+        self.store.append("tool.result", actor="tool", payload=result_payload, turn_id=ctx.turn_id)
         return ToolResult(status=status, result=result, tool_call_id=call_id)  # type: ignore[arg-type]
 
     def _append_file_effects_after_tool(

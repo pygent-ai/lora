@@ -9,7 +9,7 @@ This directory contains project-level documentation. Package-local README files 
 - [Guides](guides/development-guide.md): development workflow and operational guides.
 - [Architecture](architecture/repository-layout.md): active repository layout and runtime boundaries.
 - [Design](design/agent/agent-context-architecture-zh.md): design notes for agent context, prompt composition, runtime behavior, and self-optimization.
-- [Product](product/README.md): product notes for the Electron + React transition.
+- [Product](product/README.md): product notes for the Electron + React transition, including message display guidelines.
 - [Planning](planning/superpowers/): historical specs and implementation plans.
 - [Backlog](backlog/unimplemented/README.md): known unimplemented or deferred areas.
 

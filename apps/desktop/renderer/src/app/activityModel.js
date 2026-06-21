@@ -35,8 +35,24 @@ export function activityHeaderText(message, rows, now) {
   return `Thinking for ${formatProcessedDuration((now - (message.startedAt || now)) / 1000)}`;
 }
 
+export function activityFallbackDetailText(message) {
+  if (message.status === "running") {
+    return "";
+  }
+  return String(message.content || message.title || "Thinking").trim();
+}
+
+export function appendLiveThinkingContent(content, delta) {
+  const base = String(content || "") === "Thinking" ? "" : String(content || "");
+  return `${base}${delta}`;
+}
+
+export function activityLiveThinkingText(message) {
+  return visibleThinkingText(message?.content === "Thinking" ? "" : message?.content);
+}
+
 export function thinkingHeaderSource(text) {
-  const value = String(text || "").trim();
+  const value = visibleThinkingText(text);
   return value ? { type: "thinking", text: value } : { type: "timer" };
 }
 
@@ -75,6 +91,11 @@ export function latestVisibleToolDescription(calls) {
   return "";
 }
 
+export function visibleThinkingText(text) {
+  const value = String(text || "").trim();
+  return isRawToolCallTranscript(value) ? "" : value;
+}
+
 export function formatProcessedDuration(seconds) {
   const value = Math.max(0, Math.round(Number(seconds) || 0));
   if (value < 60) {
@@ -83,6 +104,10 @@ export function formatProcessedDuration(seconds) {
   const minutes = Math.floor(value / 60);
   const remainder = value % 60;
   return remainder > 0 ? `${minutes}min${remainder}s` : `${minutes}min`;
+}
+
+function isRawToolCallTranscript(value) {
+  return /^Tool call:\s*[^\n]*(?:\n[\s\S]*)?$/i.test(value);
 }
 
 function findLastIndex(items, predicate) {
