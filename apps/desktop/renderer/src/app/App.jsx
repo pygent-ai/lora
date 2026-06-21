@@ -53,6 +53,9 @@ export function App() {
   const [runningSessionIds, setRunningSessionIds] = useState({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const activeSessionIdRef = useRef("");
+  const messagesRef = useRef([]);
+  const runningSessionIdsRef = useRef({});
+  const pendingSessionMessagesRef = useRef(new Map());
   const sessionLoadTokenRef = useRef(0);
   const traceLoadTokenRef = useRef(0);
 
@@ -68,6 +71,17 @@ export function App() {
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+    if (activeSessionId && runningSessionIdsRef.current[activeSessionId]) {
+      pendingSessionMessagesRef.current.set(activeSessionId, messages);
+    }
+  }, [activeSessionId, messages]);
+
+  useEffect(() => {
+    runningSessionIdsRef.current = runningSessionIds;
+  }, [runningSessionIds]);
 
   const loadTrace = useCallback(
     async (session, token = traceLoadTokenRef.current) => {
@@ -95,7 +109,8 @@ export function App() {
         setActiveSession(previewSession);
       }
       setStatus("Loading");
-      setMessages([]);
+      const pendingMessages = pendingSessionMessagesRef.current.get(sessionId);
+      setMessages(pendingMessages || []);
       setTraceEvents([]);
       setLiveEvents([]);
       const detail = await api.getSession(sessionId);
@@ -106,8 +121,9 @@ export function App() {
       if (sessionToken !== sessionLoadTokenRef.current) {
         return;
       }
+      const latestPendingMessages = pendingSessionMessagesRef.current.get(sessionId);
       setActiveSession(detail.session);
-      setMessages(nextMessages);
+      setMessages(latestPendingMessages || nextMessages);
       setActivityCollapseToken((value) => value + 1);
       setStatus("Ready");
       window.setTimeout(() => {
@@ -234,25 +250,42 @@ export function App() {
         return currentSessionId === streamSessionId || (startedWithoutSession && !currentSessionId);
       };
 
+      const updateCachedMessages = (updater) => {
+        if (!streamSessionId) {
+          return;
+        }
+        const current = pendingSessionMessagesRef.current.get(streamSessionId) || messagesRef.current;
+        const next = updater(current);
+        pendingSessionMessagesRef.current.set(streamSessionId, next);
+      };
+
       const updateVisibleMessages = (updater) => {
+        updateCachedMessages(updater);
         if (isStreamSessionVisible()) {
           setMessages(updater);
         }
       };
 
-      setMessages((items) => [
-        ...items,
-        { id: `user-${Date.now()}`, role: "user", content: message },
-        {
-          id: assistantId,
-          role: "assistant",
-          content: "",
-          status: "running",
-          startedAt: Date.now(),
-          endedAt: null,
-          sections: [],
-        },
-      ]);
+      setMessages((items) => {
+        const nextMessages = [
+          ...items,
+          { id: `user-${Date.now()}`, role: "user", content: message },
+          {
+            id: assistantId,
+            role: "assistant",
+            content: "",
+            status: "running",
+            startedAt: Date.now(),
+            endedAt: null,
+            sections: [],
+          },
+        ];
+        if (initialSessionId) {
+          pendingSessionMessagesRef.current.set(initialSessionId, nextMessages);
+        }
+        messagesRef.current = nextMessages;
+        return nextMessages;
+      });
 
       try {
         await api.streamChat(
@@ -264,6 +297,7 @@ export function App() {
               if (eventSessionId && !streamSessionId) {
                 streamSessionId = eventSessionId;
                 setRunningSessionIds((items) => ({ ...items, [eventSessionId]: true }));
+                pendingSessionMessagesRef.current.set(eventSessionId, messagesRef.current);
               }
               if (isStreamSessionVisible()) {
                 setLiveEvents((items) => [...items, apiEventToTraceEvent(data)]);
@@ -308,6 +342,7 @@ export function App() {
         );
         const currentSessionId = activeSessionIdRef.current;
         if (streamSessionId) {
+          pendingSessionMessagesRef.current.delete(streamSessionId);
           await refreshWorkbench({
             selectSessionId: currentSessionId === streamSessionId || !currentSessionId ? streamSessionId : "",
             preserveSessionId: currentSessionId && currentSessionId !== streamSessionId ? currentSessionId : "",
@@ -1384,37 +1419,45 @@ function activityLiveStatus(message) {
     return "";
   }
   const sections = Array.isArray(message.sections) ? message.sections : [];
-  const toolDescription = latestToolDescriptionFromSections(sections);
-  if (toolDescription) {
-    return toolDescription;
+  const liveSection = latestLiveStatusSection(sections);
+  if (!liveSection) {
+    return hasVisibleAssistantContent(message) ? "" : "Thinking";
   }
-  const thinking = latestThinkingText(sections);
-  return thinking || "Thinking";
-}
-
-function latestThinkingText(sections) {
-  for (let index = sections.length - 1; index >= 0; index -= 1) {
-    const section = sections[index];
-    if (section?.type === "text" && section.title === "Thinking") {
-      return cleanContent(String(section.content || ""));
-    }
+  if (liveSection.type === "tools") {
+    return latestToolDescriptionFromSection(liveSection);
+  }
+  if (liveSection.type === "text" && liveSection.title === "Thinking") {
+    return cleanContent(String(liveSection.content || "")) || "Thinking";
   }
   return "";
 }
 
-function latestToolDescriptionFromSections(sections) {
+function latestLiveStatusSection(sections) {
   for (let index = sections.length - 1; index >= 0; index -= 1) {
     const section = sections[index];
-    if (section?.type !== "tools") {
+    if (!section) {
       continue;
     }
-    const calls = Array.isArray(section.calls) ? section.calls : [];
-    for (let callIndex = calls.length - 1; callIndex >= 0; callIndex -= 1) {
-      const call = calls[callIndex];
-      const description = String(call.description || "").trim() || toolCallDisplayLabel(call);
-      if (description) {
-        return description;
-      }
+    if (section.type === "text" && section.title === "Thinking") {
+      return section;
+    }
+    if (section.type === "tools" && section.status === "running") {
+      return section;
+    }
+    if (section.type === "text" && section.title === "Assistant content") {
+      return section;
+    }
+  }
+  return null;
+}
+
+function latestToolDescriptionFromSection(section) {
+  const calls = Array.isArray(section?.calls) ? section.calls : [];
+  for (let callIndex = calls.length - 1; callIndex >= 0; callIndex -= 1) {
+    const call = calls[callIndex];
+    const description = String(call.description || "").trim() || toolCallDisplayLabel(call);
+    if (description) {
+      return description;
     }
   }
   return "";
