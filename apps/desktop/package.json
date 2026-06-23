@@ -3,11 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "main": "electron/main/main.mjs",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "lint": "node --test renderer/src/**/*.test.mjs",
-    "test": "node --test renderer/src/**/*.test.mjs",
+    "start": "electron .",
+    "package:python": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-python-api.ps1",
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-desktop.ps1 -Target nsis",
+    "package:dir": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-desktop.ps1 -Target dir",
+    "dist": "npm run package:win",
+    "lint": "node --test renderer/src/**/*.test.mjs electron/main/*.test.mjs",
+    "test": "node --test renderer/src/**/*.test.mjs electron/main/*.test.mjs",
     "typecheck": "vite build"
   },
   "dependencies": {
@@ -16,5 +22,39 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "vite": "^7.2.7"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7",
+    "electron-builder": "^26.2.1"
+  },
+  "build": {
+    "appId": "com.lora.desktop",
+    "productName": "Lora Desktop",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../build/package/lora-api",
+        "to": "backend/lora-api"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName}-${version}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "installer/cli-path.nsh"
+    }
   }
 }
