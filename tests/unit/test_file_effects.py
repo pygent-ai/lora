@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from lora.runtime.file_effects import (
+    DeferredFileEffectBatch,
+    DeferredFileEffectJob,
+    FileEffectBaselineStore,
+    FileEffectPendingStore,
+    pending_file_effect_batches,
+)
+from lora.runtime.tools import FileSnapshot
+from lora.schema import CaseRunRef
+
+
+class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
+    def test_pending_store_tracks_batch_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            run_dir = session_dir / "cases" / "chat" / "runs" / "r1"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.json").write_text("{}", encoding="utf-8")
+            run_dir.mkdir(parents=True)
+            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir)
+            store = FileEffectPendingStore(session_dir)
+
+            store.mark_queued(
+                batch_id="batch-1",
+                case_run_ref=run,
+                turn_id="turn-0001",
+                tool_call_ids=["tool-1"],
+            )
+            store.mark_running("batch-1")
+            store.mark_completed("batch-1")
+
+            state = store.read()
+            self.assertEqual(state["batches"]["batch-1"]["status"], "completed")
+            self.assertEqual(state["batches"]["batch-1"]["case_run_id"], "r1")
+            self.assertEqual(pending_file_effect_batches(run, scope="run"), [])
+
+    def test_pending_query_filters_run_session_and_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            first_run_dir = session_dir / "cases" / "chat" / "runs" / "r1"
+            second_run_dir = session_dir / "cases" / "chat" / "runs" / "r2"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.json").write_text("{}", encoding="utf-8")
+            first_run_dir.mkdir(parents=True)
+            second_run_dir.mkdir(parents=True)
+            first = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=first_run_dir)
+            second = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r2", run_dir=second_run_dir)
+            store = FileEffectPendingStore(session_dir)
+
+            store.mark_queued(batch_id="first", case_run_ref=first, turn_id="turn-0001", tool_call_ids=["tool-1"])
+            store.mark_queued(batch_id="second", case_run_ref=second, turn_id="turn-0002", tool_call_ids=["tool-2"])
+
+            self.assertEqual([row["batch_id"] for row in pending_file_effect_batches(first, scope="run")], ["first"])
+            self.assertEqual(
+                [row["batch_id"] for row in pending_file_effect_batches(first, scope="turn", turn_id="turn-0001")],
+                ["first"],
+            )
+            self.assertEqual(
+                [row["batch_id"] for row in pending_file_effect_batches(first, scope="session")],
+                ["first", "second"],
+            )
+
+    def test_baseline_store_round_trips_file_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            store = FileEffectBaselineStore(session_dir)
+            snapshot = FileSnapshot(
+                path=str((Path(tmp) / "workspace" / "demo.txt").resolve()),
+                exists=True,
+                kind="file",
+                size=4,
+                mtime_ns=123,
+                content_hash="hash-1",
+                content="demo",
+                content_available=True,
+            )
+
+            store.save({snapshot.path: snapshot})
+
+            loaded = store.load()
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded[snapshot.path].content_hash, "hash-1")
+            self.assertEqual(loaded[snapshot.path].content, "demo")
+
+    def test_batch_create_records_tool_call_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=Path(tmp) / "run")
+            job = DeferredFileEffectJob(
+                tool_call_id="tool-1",
+                tool_name="bash",
+                args={"command": "echo hi"},
+                turn_id="turn-0001",
+                declared=[],
+            )
+
+            batch = DeferredFileEffectBatch.create(case_run_ref=run, workspace_root=Path(tmp), jobs=[job])
+
+            self.assertEqual(batch.case_run_ref.case_run_id, "r1")
+            self.assertEqual(batch.turn_id, "turn-0001")
+            self.assertEqual(batch.tool_call_ids, ["tool-1"])
+
+
+if __name__ == "__main__":
+    unittest.main()
