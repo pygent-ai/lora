@@ -15,6 +15,10 @@ from lora.runtime.tools import FileSnapshot
 from lora.schema import CaseRunRef
 
 
+async def _raise_snapshot_failure(tracker):
+    raise RuntimeError("snapshot exploded")
+
+
 class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
     def test_pending_store_tracks_batch_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,6 +108,74 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(batch.case_run_ref.case_run_id, "r1")
             self.assertEqual(batch.turn_id, "turn-0001")
             self.assertEqual(batch.tool_call_ids, ["tool-1"])
+
+    async def test_worker_processes_batch_and_records_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            run_dir = session_dir / "cases" / "chat" / "runs" / "r1"
+            workspace = Path(tmp) / "workspace"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.json").write_text("{}", encoding="utf-8")
+            workspace.mkdir()
+            path = workspace / "demo.txt"
+            path.write_text("old\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir)
+
+            from lora.runtime.file_effects import FileEffectBackgroundWorker
+            from lora.runtime.tools import FileEffectTracker
+            from lora.tracing import EventStore
+
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            FileEffectBaselineStore(session_dir).save(tracker.snapshot_workspace())
+            path.write_text("new\n", encoding="utf-8")
+            worker = FileEffectBackgroundWorker(session_dir=session_dir, workspace_root=workspace)
+            job = DeferredFileEffectJob(
+                tool_call_id="tool-bash",
+                tool_name="bash",
+                args={"command": "rewrite demo"},
+                turn_id="turn-0001",
+                declared=[],
+            )
+
+            worker.enqueue(DeferredFileEffectBatch.create(case_run_ref=run, workspace_root=workspace, jobs=[job]))
+            await worker.wait_idle()
+
+            file_events = list(EventStore.iter_jsonl(run_dir / "file_events.jsonl"))
+            diff_events = list(EventStore.iter_jsonl(run_dir / "diffs" / "diff_events.jsonl"))
+            self.assertEqual([event["type"] for event in file_events], ["file.edit"])
+            self.assertEqual(file_events[0]["payload"]["tool_call_id"], "tool-bash")
+            self.assertEqual(diff_events[0]["change_type"], "edit")
+            self.assertEqual(pending_file_effect_batches(run, scope="run"), [])
+
+    async def test_worker_marks_failure_without_raising_to_caller(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            run_dir = session_dir / "cases" / "chat" / "runs" / "r1"
+            workspace = Path(tmp) / "workspace"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.json").write_text("{}", encoding="utf-8")
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir)
+
+            from lora.runtime.file_effects import FileEffectBackgroundWorker
+
+            worker = FileEffectBackgroundWorker(session_dir=session_dir, workspace_root=workspace, snapshot_timeout_seconds=0.001)
+            worker._snapshot_workspace = _raise_snapshot_failure
+            job = DeferredFileEffectJob(
+                tool_call_id="tool-bash",
+                tool_name="bash",
+                args={"command": "fail tracking"},
+                turn_id="turn-0001",
+                declared=[],
+            )
+
+            worker.enqueue(DeferredFileEffectBatch.create(case_run_ref=run, workspace_root=workspace, jobs=[job]))
+            await worker.wait_idle()
+
+            state = FileEffectPendingStore(session_dir).read()
+            row = next(iter(state["batches"].values()))
+            self.assertEqual(row["status"], "failed")
+            self.assertIn("snapshot exploded", row["error"])
 
 
 if __name__ == "__main__":
