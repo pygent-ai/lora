@@ -237,7 +237,7 @@ class FileStateTracker:
         return json.loads(path.read_text(encoding="utf-8"))
 
 class FileEffectTracker:
-    IGNORED_DIRS = frozenset({".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions", "node_modules"})
+    IGNORED_DIRS = frozenset({".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"})
     PATH_ARG_NAMES = ("file_path", "path", "relative_path")
     WRITE_TYPES = frozenset({"file.write", "file.edit", "file.delete"})
 

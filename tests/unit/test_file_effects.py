@@ -203,6 +203,56 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
             asyncio.run(worker.wait_idle())
             self.assertEqual(pending_file_effect_batches(run, scope="run"), [])
 
+    def test_process_mode_persists_snapshot_batch_for_detached_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            run_dir = session_dir / "cases" / "chat" / "runs" / "r1"
+            workspace = Path(tmp) / "workspace"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.json").write_text("{}", encoding="utf-8")
+            workspace.mkdir()
+            path = workspace / "demo.txt"
+            path.write_text("old\n", encoding="utf-8")
+            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir)
+
+            from lora.runtime.file_effects import FileEffectBackgroundWorker, FileEffectBaselineStore
+            from lora.runtime.file_effects import process_file_effect_batch_file
+            from lora.runtime.tools import FileEffectTracker
+            from lora.tracing import EventStore
+
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            FileEffectBaselineStore(session_dir).save(tracker.snapshot_workspace())
+            path.write_text("new\n", encoding="utf-8")
+            launched: list[Path] = []
+            worker = FileEffectBackgroundWorker(
+                session_dir=session_dir,
+                workspace_root=workspace,
+                execution_mode="process",
+                process_launcher=lambda batch_file: launched.append(batch_file),
+            )
+            job = DeferredFileEffectJob(
+                tool_call_id="tool-bash",
+                tool_name="bash",
+                args={"command": "rewrite demo"},
+                turn_id="turn-0001",
+                declared=[],
+            )
+
+            worker.enqueue(DeferredFileEffectBatch.create(case_run_ref=run, workspace_root=workspace, jobs=[job]))
+
+            self.assertEqual(len(launched), 1)
+            self.assertTrue(launched[0].exists())
+            self.assertEqual(pending_file_effect_batches(run, scope="run")[0]["status"], "queued")
+
+            process_file_effect_batch_file(launched[0])
+
+            file_events = list(EventStore.iter_jsonl(run_dir / "file_events.jsonl"))
+            diff_events = list(EventStore.iter_jsonl(run_dir / "diffs" / "diff_events.jsonl"))
+            self.assertEqual([event["type"] for event in file_events], ["file.edit"])
+            self.assertEqual(diff_events[0]["change_type"], "edit")
+            self.assertEqual(pending_file_effect_batches(run, scope="run"), [])
+            self.assertFalse(launched[0].exists())
+
     def test_worker_completes_declared_only_batch_inline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             session_dir = Path(tmp) / ".lora" / "sessions" / "s1"

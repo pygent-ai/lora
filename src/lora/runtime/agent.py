@@ -1046,6 +1046,7 @@ class LoraAgent(BaseAgent):
         get_file_effect_worker(
             session_dir=self.context_manager.session_dir,
             workspace_root=self.workspace_root,
+            execution_mode="process",
         ).enqueue(batch)
 
     def _register_tool(self, tool: BaseTool) -> None:

@@ -557,7 +557,7 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(effects), 1)
                     self.assertEqual(effects[0].path, str(path.resolve()))
 
-    def test_file_effect_tracker_ignores_runtime_and_dependency_directories(self) -> None:
+    def test_file_effect_tracker_ignores_runtime_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             FileEffectTracker = _file_effect_tracker_class()
             workspace = Path(tmp) / "workspace"
@@ -566,13 +566,34 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
             tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
             before = tracker.snapshot_workspace()
 
-            for ignored in [".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions", "node_modules"]:
+            for ignored in [".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"]:
                 ignored_dir = workspace / ignored
                 ignored_dir.mkdir()
                 (ignored_dir / "generated.txt").write_text("noise\n", encoding="utf-8")
             after = tracker.snapshot_workspace()
 
             self.assertEqual(tracker.observed_effects(before, after, tool_name="bash", tool_call_id="evt_tool"), [])
+
+    def test_file_effect_tracker_tracks_node_modules_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
+            before = tracker.snapshot_workspace()
+
+            package_dir = workspace / "node_modules" / "pkg"
+            package_dir.mkdir(parents=True)
+            package_file = package_dir / "index.js"
+            package_file.write_text("module.exports = 1;\n", encoding="utf-8")
+            after = tracker.snapshot_workspace()
+
+            effects = tracker.observed_effects(before, after, tool_name="bash", tool_call_id="evt_tool")
+
+            self.assertEqual(len(effects), 1)
+            self.assertEqual(effects[0].type, "file.write")
+            self.assertEqual(effects[0].path, str(package_file.resolve()))
 
     def test_file_effect_tracker_rejects_declared_paths_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
