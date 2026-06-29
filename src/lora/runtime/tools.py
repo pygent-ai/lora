@@ -15,6 +15,7 @@ from lora.core.io import utc_now, write_json
 from lora.core.redaction import redact_secrets
 from lora.schema import CaseRunRef
 from lora.tracing import EventStore
+from .file_effects import DeferredFileEffectJob
 
 MAX_BASH_RESULT_CHARS = 20_000
 MAX_BASH_RESULT_LINES = 200
@@ -573,11 +574,14 @@ class ToolInterceptor:
         *,
         workspace_root: str | Path | None = None,
         track_file_effects: bool = False,
+        defer_file_effects: bool = False,
         allow_read_outside_workspace: bool = True,
         bash_full_output_allowlist: list[str] | None = None,
     ):
         self.store = store
         self.bash_full_output_allowlist = list(bash_full_output_allowlist or [])
+        self.defer_file_effects = defer_file_effects
+        self._file_effect_jobs: list[DeferredFileEffectJob] = []
         if track_file_effects and workspace_root is None:
             raise ValueError("workspace_root is required when track_file_effects=True")
         self.file_effect_tracker = (
@@ -590,7 +594,12 @@ class ToolInterceptor:
             else None
         )
 
-    def call_tool(
+    def drain_file_effect_jobs(self) -> list[DeferredFileEffectJob]:
+        jobs = list(self._file_effect_jobs)
+        self._file_effect_jobs.clear()
+        return jobs
+
+    async def call_tool(
         self,
         name: str,
         args: dict[str, Any],
@@ -623,18 +632,32 @@ class ToolInterceptor:
         before: dict[str, FileSnapshot] | None = None
         declared: list[FileEffect] = []
         if self.file_effect_tracker is not None:
-            before = self.file_effect_tracker.snapshot_workspace()
             declared = self.file_effect_tracker.declared_effects(name, args, call_id)
+            if not self.defer_file_effects:
+                before = self.file_effect_tracker.snapshot_workspace()
         try:
             result = tool(**args)
+            if inspect.isawaitable(result):
+                result = await result
         except Exception as exc:  # noqa: BLE001 - tool boundary records all failures.
-            self._append_file_effects_after_tool(
-                before,
-                declared,
-                tool_name=name,
-                tool_call_id=call_id,
-                turn_id=ctx.turn_id,
-            )
+            if self.defer_file_effects:
+                self._file_effect_jobs.append(
+                    DeferredFileEffectJob(
+                        tool_call_id=call_id,
+                        tool_name=name,
+                        args=dict(args),
+                        turn_id=ctx.turn_id,
+                        declared=declared,
+                    )
+                )
+            else:
+                self._append_file_effects_after_tool(
+                    before,
+                    declared,
+                    tool_name=name,
+                    tool_call_id=call_id,
+                    turn_id=ctx.turn_id,
+                )
             payload = {"tool_call_id": call_id, "status": "error", "error": str(exc), "error_type": type(exc).__name__}
             if model_tool_call_id:
                 payload["model_tool_call_id"] = model_tool_call_id
@@ -643,14 +666,26 @@ class ToolInterceptor:
 
         tool_error = _structured_tool_error_payload(result)
         if tool_error is not None:
-            self._append_file_effects_after_tool(
-                before,
-                declared,
-                tool_name=name,
-                tool_call_id=call_id,
-                turn_id=ctx.turn_id,
-                include_declared=False,
-            )
+            if self.defer_file_effects:
+                self._file_effect_jobs.append(
+                    DeferredFileEffectJob(
+                        tool_call_id=call_id,
+                        tool_name=name,
+                        args=dict(args),
+                        turn_id=ctx.turn_id,
+                        declared=declared,
+                        include_declared=False,
+                    )
+                )
+            else:
+                self._append_file_effects_after_tool(
+                    before,
+                    declared,
+                    tool_name=name,
+                    tool_call_id=call_id,
+                    turn_id=ctx.turn_id,
+                    include_declared=False,
+                )
             payload = {
                 "tool_call_id": call_id,
                 "status": "error",
@@ -664,13 +699,24 @@ class ToolInterceptor:
             self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
             return ToolResult(status="error", error=tool_error["error"], tool_call_id=call_id)
 
-        self._append_file_effects_after_tool(
-            before,
-            declared,
-            tool_name=name,
-            tool_call_id=call_id,
-            turn_id=ctx.turn_id,
-        )
+        if self.defer_file_effects:
+            self._file_effect_jobs.append(
+                DeferredFileEffectJob(
+                    tool_call_id=call_id,
+                    tool_name=name,
+                    args=dict(args),
+                    turn_id=ctx.turn_id,
+                    declared=declared,
+                )
+            )
+        else:
+            self._append_file_effects_after_tool(
+                before,
+                declared,
+                tool_name=name,
+                tool_call_id=call_id,
+                turn_id=ctx.turn_id,
+            )
         status = "success"
         if isinstance(result, dict) and result.get("status") in {"stubbed", "partial"}:
             status = result["status"]
