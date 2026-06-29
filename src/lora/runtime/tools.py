@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import shlex
 import uuid
 from dataclasses import asdict, dataclass
@@ -236,7 +237,7 @@ class FileStateTracker:
         return json.loads(path.read_text(encoding="utf-8"))
 
 class FileEffectTracker:
-    IGNORED_DIRS = frozenset({".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"})
+    IGNORED_DIRS = frozenset({".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions", "node_modules"})
     PATH_ARG_NAMES = ("file_path", "path", "relative_path")
     WRITE_TYPES = frozenset({"file.write", "file.edit", "file.delete"})
 
@@ -599,6 +600,31 @@ class ToolInterceptor:
         self._file_effect_jobs.clear()
         return jobs
 
+    def _append_deferred_file_effect_job(
+        self,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        turn_id: str | None,
+        declared: list[FileEffect],
+        include_declared: bool = True,
+    ) -> None:
+        requires_snapshot = _tool_requires_deferred_snapshot(tool_name, args)
+        if not requires_snapshot and (not include_declared or not declared):
+            return
+        self._file_effect_jobs.append(
+            DeferredFileEffectJob(
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                args=dict(args),
+                turn_id=turn_id,
+                declared=declared,
+                include_declared=include_declared,
+                requires_snapshot=requires_snapshot,
+            )
+        )
+
     async def call_tool(
         self,
         name: str,
@@ -641,14 +667,12 @@ class ToolInterceptor:
                 result = await result
         except Exception as exc:  # noqa: BLE001 - tool boundary records all failures.
             if self.defer_file_effects:
-                self._file_effect_jobs.append(
-                    DeferredFileEffectJob(
-                        tool_call_id=call_id,
-                        tool_name=name,
-                        args=dict(args),
-                        turn_id=ctx.turn_id,
-                        declared=declared,
-                    )
+                self._append_deferred_file_effect_job(
+                    tool_call_id=call_id,
+                    tool_name=name,
+                    args=args,
+                    turn_id=ctx.turn_id,
+                    declared=declared,
                 )
             else:
                 self._append_file_effects_after_tool(
@@ -667,15 +691,13 @@ class ToolInterceptor:
         tool_error = _structured_tool_error_payload(result)
         if tool_error is not None:
             if self.defer_file_effects:
-                self._file_effect_jobs.append(
-                    DeferredFileEffectJob(
-                        tool_call_id=call_id,
-                        tool_name=name,
-                        args=dict(args),
-                        turn_id=ctx.turn_id,
-                        declared=declared,
-                        include_declared=False,
-                    )
+                self._append_deferred_file_effect_job(
+                    tool_call_id=call_id,
+                    tool_name=name,
+                    args=args,
+                    turn_id=ctx.turn_id,
+                    declared=declared,
+                    include_declared=False,
                 )
             else:
                 self._append_file_effects_after_tool(
@@ -700,14 +722,12 @@ class ToolInterceptor:
             return ToolResult(status="error", error=tool_error["error"], tool_call_id=call_id)
 
         if self.defer_file_effects:
-            self._file_effect_jobs.append(
-                DeferredFileEffectJob(
-                    tool_call_id=call_id,
-                    tool_name=name,
-                    args=dict(args),
-                    turn_id=ctx.turn_id,
-                    declared=declared,
-                )
+            self._append_deferred_file_effect_job(
+                tool_call_id=call_id,
+                tool_name=name,
+                args=args,
+                turn_id=ctx.turn_id,
+                declared=declared,
             )
         else:
             self._append_file_effects_after_tool(
@@ -804,6 +824,28 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _tool_requires_deferred_snapshot(tool_name: str, args: dict[str, Any]) -> bool:
+    if tool_name in {"write", "edit"}:
+        return True
+    if tool_name != "bash":
+        return False
+    command = args.get("command") or args.get("cmd")
+    return isinstance(command, str) and _bash_command_may_write(command)
+
+
+def _bash_command_may_write(command: str) -> bool:
+    lowered = command.lower()
+    if re.search(r"(^|[^0-9])>{1,2}(?!&)", command):
+        return True
+    if re.search(r"\b(cat\s+>|tee|touch|mkdir|rm|rmdir|del|move|mv|copy|cp)\b", lowered):
+        return True
+    if re.search(r"\bsed\b[^;&|]*\s-i\b", lowered):
+        return True
+    if re.search(r"\b(?:npm|pnpm|yarn)\s+(?:install|add)\b", lowered):
+        return not re.search(r"(?:^|\s)(?:-g|--global)(?:\s|$)", lowered)
+    return False
 
 
 def _merge_detected_by(

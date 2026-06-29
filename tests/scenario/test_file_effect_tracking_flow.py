@@ -135,7 +135,7 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
 
             result = await interceptor.call_tool(
                 "bash",
-                {"command": "simulate edit"},
+                {"command": "echo new > edited.txt"},
                 ctx,
                 lambda command: edited.write_text("new\n", encoding="utf-8"),
             )

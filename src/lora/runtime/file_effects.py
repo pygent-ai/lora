@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import queue
+import threading
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,6 +27,7 @@ class DeferredFileEffectJob:
     turn_id: str | None
     declared: list[Any]
     include_declared: bool = True
+    requires_snapshot: bool = True
 
 
 @dataclass(slots=True)
@@ -205,8 +209,9 @@ class FileEffectBackgroundWorker:
         self.snapshot_timeout_seconds = snapshot_timeout_seconds
         self.pending_store = FileEffectPendingStore(self.session_dir)
         self.baseline_store = FileEffectBaselineStore(self.session_dir)
-        self._queue: asyncio.Queue[DeferredFileEffectBatch] = asyncio.Queue()
-        self._task: asyncio.Task[None] | None = None
+        self._queue: queue.Queue[DeferredFileEffectBatch] = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
 
     def enqueue(self, batch: DeferredFileEffectBatch) -> None:
         if not batch.jobs:
@@ -217,36 +222,61 @@ class FileEffectBackgroundWorker:
             turn_id=batch.turn_id,
             tool_call_ids=batch.tool_call_ids,
         )
-        self._queue.put_nowait(batch)
-        if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run())
+        if not any(job.requires_snapshot for job in batch.jobs):
+            self._process_batch(batch)
+            return
+        self._queue.put(batch)
+        self._ensure_thread()
 
     async def wait_idle(self) -> None:
-        await self._queue.join()
-        if self._task is not None:
-            await self._task
+        await asyncio.to_thread(self._queue.join)
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            await asyncio.to_thread(thread.join, 0.1)
 
-    async def _run(self) -> None:
+    def _ensure_thread(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._thread = threading.Thread(
+                target=self._run,
+                name="lora-file-effect-worker",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def _run(self) -> None:
         while True:
             try:
-                batch = self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                return
+                batch = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                with self._lock:
+                    if self._queue.empty():
+                        self._thread = None
+                        return
+                continue
             try:
-                await self._process_batch(batch)
+                self._process_batch(batch)
             finally:
                 self._queue.task_done()
 
-    async def _process_batch(self, batch: DeferredFileEffectBatch) -> None:
+    def _process_batch(self, batch: DeferredFileEffectBatch) -> None:
         self.pending_store.mark_running(batch.batch_id)
         try:
             from .tools import FileEffectTracker
 
             store = EventStore(batch.case_run_ref)
             tracker = FileEffectTracker(workspace_root=self.workspace_root, store=store)
-            baseline = self.baseline_store.load()
-            current = await self._snapshot_workspace(tracker)
             declared = [effect for job in batch.jobs if job.include_declared for effect in job.declared]
+            if not any(job.requires_snapshot for job in batch.jobs):
+                tracker.append_effects(declared, turn_id=batch.turn_id)
+                self.pending_store.mark_completed(batch.batch_id)
+                return
+
+            baseline = self.baseline_store.load()
+            current = self._snapshot_workspace(tracker)
+            if inspect.isawaitable(current):
+                current = asyncio.run(current)
             if baseline is None:
                 tracker.append_effects(declared, turn_id=batch.turn_id)
                 self.baseline_store.save(current)
@@ -266,16 +296,16 @@ class FileEffectBackgroundWorker:
         except Exception as exc:  # noqa: BLE001 - background tracking must not fail agent execution.
             self.pending_store.mark_failed(batch.batch_id, str(exc))
 
-    async def _snapshot_workspace(self, tracker: Any) -> dict[str, Any]:
-        return await asyncio.wait_for(
-            asyncio.to_thread(tracker.snapshot_workspace),
-            timeout=max(0.001, self.snapshot_timeout_seconds),
-        )
+    def _snapshot_workspace(self, tracker: Any) -> dict[str, Any]:
+        return tracker.snapshot_workspace()
 
     @staticmethod
     def _primary_job(batch: DeferredFileEffectBatch) -> DeferredFileEffectJob:
         for job in reversed(batch.jobs):
-            if job.tool_name != "read":
+            if job.requires_snapshot and job.tool_name != "read":
+                return job
+        for job in reversed(batch.jobs):
+            if job.requires_snapshot:
                 return job
         return batch.jobs[-1]
 

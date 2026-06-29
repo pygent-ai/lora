@@ -310,6 +310,28 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(jobs[0].declared[0].type, "file.write")
             self.assertEqual(interceptor.drain_file_effect_jobs(), [])
 
+    async def test_tool_interceptor_deferred_mode_skips_read_only_bash_snapshot_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            interceptor = ToolInterceptor(
+                EventStore(run),
+                workspace_root=workspace,
+                track_file_effects=True,
+                defer_file_effects=True,
+            )
+            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+
+            await interceptor.call_tool(
+                "bash",
+                {"command": "rg -n \"DiffTool\" src/lora"},
+                ctx,
+                lambda command: "src/lora/tracing/diffing.py:135:class DiffTool",
+            )
+
+            self.assertEqual(interceptor.drain_file_effect_jobs(), [])
+
     def test_file_read_event_keeps_returned_content_for_replay(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "demo.txt"
@@ -544,7 +566,7 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
             tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
             before = tracker.snapshot_workspace()
 
-            for ignored in [".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"]:
+            for ignored in [".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions", "node_modules"]:
                 ignored_dir = workspace / ignored
                 ignored_dir.mkdir()
                 (ignored_dir / "generated.txt").write_text("noise\n", encoding="utf-8")

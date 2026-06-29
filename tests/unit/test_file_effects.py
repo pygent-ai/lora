@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import asyncio
 from pathlib import Path
 
 from lora.runtime.file_effects import (
@@ -176,6 +177,59 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
             row = next(iter(state["batches"].values()))
             self.assertEqual(row["status"], "failed")
             self.assertIn("snapshot exploded", row["error"])
+
+    def test_worker_enqueue_does_not_require_running_event_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            run_dir = session_dir / "cases" / "chat" / "runs" / "r1"
+            workspace = Path(tmp) / "workspace"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.json").write_text("{}", encoding="utf-8")
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir)
+
+            from lora.runtime.file_effects import FileEffectBackgroundWorker
+
+            worker = FileEffectBackgroundWorker(session_dir=session_dir, workspace_root=workspace)
+            job = DeferredFileEffectJob(
+                tool_call_id="tool-bash",
+                tool_name="bash",
+                args={"command": "echo hi"},
+                turn_id="turn-0001",
+                declared=[],
+            )
+
+            worker.enqueue(DeferredFileEffectBatch.create(case_run_ref=run, workspace_root=workspace, jobs=[job]))
+            asyncio.run(worker.wait_idle())
+            self.assertEqual(pending_file_effect_batches(run, scope="run"), [])
+
+    def test_worker_completes_declared_only_batch_inline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            run_dir = session_dir / "cases" / "chat" / "runs" / "r1"
+            workspace = Path(tmp) / "workspace"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.json").write_text("{}", encoding="utf-8")
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir)
+
+            from lora.runtime.file_effects import FileEffectBackgroundWorker
+
+            worker = FileEffectBackgroundWorker(session_dir=session_dir, workspace_root=workspace)
+            job = DeferredFileEffectJob(
+                tool_call_id="tool-read",
+                tool_name="read",
+                args={"file_path": "README.md"},
+                turn_id="turn-0001",
+                declared=[],
+                requires_snapshot=False,
+            )
+
+            worker.enqueue(DeferredFileEffectBatch.create(case_run_ref=run, workspace_root=workspace, jobs=[job]))
+
+            state = FileEffectPendingStore(session_dir).read()
+            row = next(iter(state["batches"].values()))
+            self.assertEqual(row["status"], "completed")
 
     async def test_diff_tool_reports_pending_file_effects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

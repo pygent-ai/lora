@@ -688,7 +688,11 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
             run = manager.start_case_run(ref.session_id, "chat")
             session = manager.load(ref.session_id)
             agent = FakeBashLoraAgent(config)
-            agent.llm = BashThenAnswerLLM()
+            agent.llm = BashCreateNamedSkillThenAnswerLLM(
+                workspace / ".lora" / "skills",
+                name="write-probe",
+                description="Probe deferred file-effect worker.",
+            )
             recording_worker = _RecordingFileEffectWorker()
 
             with patch("lora.runtime.agent.get_file_effect_worker", return_value=recording_worker):
@@ -701,7 +705,7 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                     )
                 )
 
-            self.assertEqual(result["final_answer"], "noticed")
+            self.assertEqual(result["final_answer"], "noticed project skill")
             self.assertEqual(len(recording_worker.batches), 1)
             self.assertEqual(recording_worker.batches[0].jobs[0].tool_name, "bash")
             self.assertEqual(recording_worker.batches[0].turn_id, "turn-0001")
