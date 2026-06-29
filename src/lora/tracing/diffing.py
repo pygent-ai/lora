@@ -139,10 +139,12 @@ class DiffTool(BaseTool):
         case_run_ref: CaseRunRef,
         workspace_root: str | Path,
         turn_id: str | None = None,
+        pending_wait_seconds: float = 0.5,
     ):
         self.case_run_ref = case_run_ref
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.turn_id = turn_id
+        self.pending_wait_seconds = pending_wait_seconds
         self.store = EventStore(case_run_ref)
         super().__init__(
             name="diff",
@@ -196,7 +198,7 @@ class DiffTool(BaseTool):
             }
         )
 
-    def forward(
+    async def forward(
         self,
         scope: Literal["turn", "run", "session"] = "run",
         path: str | None = None,
@@ -204,6 +206,14 @@ class DiffTool(BaseTool):
         format: Literal["summary", "patch", "json"] = "summary",
         limit: int = 20,
     ) -> dict[str, Any]:
+        from lora.runtime.file_effects import wait_for_pending_file_effects
+
+        pending_batches = await wait_for_pending_file_effects(
+            self.case_run_ref,
+            scope=scope,
+            turn_id=self.turn_id if scope == "turn" else None,
+            timeout_seconds=self.pending_wait_seconds,
+        )
         records = self._records(scope)
         if scope == "turn":
             records = [record for record in records if record.get("turn_id") == self.turn_id]
@@ -219,25 +229,28 @@ class DiffTool(BaseTool):
         records = records[: max(0, int(limit))]
 
         if format == "json":
-            return {"scope": scope, "count": len(records), "diffs": records}
+            return self._with_pending({"scope": scope, "count": len(records), "diffs": records}, pending_batches)
         if format == "patch":
-            return self._patch_result(scope, records)
-        return {
-            "scope": scope,
-            "count": len(records),
-            "diffs": [
-                {
-                    "diff_id": record.get("diff_id"),
-                    "change_type": record.get("change_type"),
-                    "path": record.get("relative_path") or record.get("path"),
-                    "tool_name": record.get("tool_name"),
-                    "tool_call_id": record.get("tool_call_id"),
-                    "patch_available": record.get("patch_available"),
-                    "patch_path": record.get("patch_path"),
-                }
-                for record in records
-            ],
-        }
+            return self._with_pending(self._patch_result(scope, records), pending_batches)
+        return self._with_pending(
+            {
+                "scope": scope,
+                "count": len(records),
+                "diffs": [
+                    {
+                        "diff_id": record.get("diff_id"),
+                        "change_type": record.get("change_type"),
+                        "path": record.get("relative_path") or record.get("path"),
+                        "tool_name": record.get("tool_name"),
+                        "tool_call_id": record.get("tool_call_id"),
+                        "patch_available": record.get("patch_available"),
+                        "patch_path": record.get("patch_path"),
+                    }
+                    for record in records
+                ],
+            },
+            pending_batches,
+        )
 
     def _records(self, scope: str) -> list[dict[str, Any]]:
         if scope in {"turn", "run"}:
@@ -281,6 +294,14 @@ class DiffTool(BaseTool):
                 }
             )
             result.pop("patch", None)
+        return result
+
+    @staticmethod
+    def _with_pending(result: dict[str, Any], pending_batches: list[dict[str, Any]]) -> dict[str, Any]:
+        result["pending"] = bool(pending_batches)
+        if pending_batches:
+            result["pending_batches"] = pending_batches
+            result["message"] = "File effect tracking is still running; diff results may be incomplete."
         return result
 
 

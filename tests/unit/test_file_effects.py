@@ -177,6 +177,34 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row["status"], "failed")
             self.assertIn("snapshot exploded", row["error"])
 
+    async def test_diff_tool_reports_pending_file_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
+            run_dir = session_dir / "cases" / "chat" / "runs" / "r1"
+            workspace = Path(tmp) / "workspace"
+            session_dir.mkdir(parents=True)
+            (session_dir / "session.json").write_text("{}", encoding="utf-8")
+            workspace.mkdir()
+            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir)
+            FileEffectPendingStore(session_dir).mark_queued(
+                batch_id="batch-pending",
+                case_run_ref=run,
+                turn_id="turn-0001",
+                tool_call_ids=["tool-1"],
+            )
+
+            from lora.tracing import DiffTool
+
+            result = await DiffTool(
+                case_run_ref=run,
+                workspace_root=workspace,
+                turn_id="turn-0001",
+                pending_wait_seconds=0,
+            ).forward(scope="turn", format="summary")
+
+            self.assertEqual(result["pending"], True)
+            self.assertEqual(result["pending_batches"][0]["batch_id"], "batch-pending")
+
 
 if __name__ == "__main__":
     unittest.main()
