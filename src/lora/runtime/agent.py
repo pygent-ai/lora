@@ -25,6 +25,7 @@ from .context_compression import ContextCompressionModelResult, ContextCompressi
 from lora.tracing.diffing import DiffTool
 from lora.core.io import plain_data
 from .adapter import RuntimeContext
+from .file_effects import DeferredFileEffectBatch, get_file_effect_worker
 from lora.schema import BashCliPreset, CaseRunRef, ResolvedAgentConfig, RunConfig
 from .tools import FileStateTracker, ToolContext, ToolInterceptor
 from lora.tracing import EventStore
@@ -845,6 +846,7 @@ class LoraAgent(BaseAgent):
             EventStore(self.case_run_ref),
             workspace_root=self.workspace_root,
             track_file_effects=True,
+            defer_file_effects=True,
             allow_read_outside_workspace=self.config.allow_read_outside_workspace,
             bash_full_output_allowlist=self.config.bash_full_output_allowlist,
         )
@@ -930,6 +932,7 @@ class LoraAgent(BaseAgent):
                 }
 
             if not tool_calls:
+                self._enqueue_deferred_file_effects(interceptor)
                 return
 
             awaiting_tool_followup = True
@@ -948,7 +951,7 @@ class LoraAgent(BaseAgent):
                     new_cli_entries: list[dict[str, Any]] = []
                     new_skill_entries: list[dict[str, Any]] = []
                 else:
-                    result = interceptor.call_tool(
+                    result = await interceptor.call_tool(
                         name,
                         kwargs,
                         tool_context,
@@ -1001,6 +1004,7 @@ class LoraAgent(BaseAgent):
                     },
                 }
 
+        self._enqueue_deferred_file_effects(interceptor)
         raise RuntimeError(f"Agent stopped after max_steps={max_steps}")
 
     async def _call_context_compression_model(
@@ -1027,6 +1031,22 @@ class LoraAgent(BaseAgent):
         has_tool_call = bool(list(_message_tool_calls(assistant_message)))
         text = "".join(parts) or _message_content(assistant_message)
         return ContextCompressionModelResult(text=text, has_tool_call=has_tool_call)
+
+    def _enqueue_deferred_file_effects(self, interceptor: ToolInterceptor) -> None:
+        if self.context_manager is None or self.case_run_ref is None:
+            return
+        jobs = interceptor.drain_file_effect_jobs()
+        if not jobs:
+            return
+        batch = DeferredFileEffectBatch.create(
+            case_run_ref=self.case_run_ref,
+            workspace_root=self.workspace_root,
+            jobs=jobs,
+        )
+        get_file_effect_worker(
+            session_dir=self.context_manager.session_dir,
+            workspace_root=self.workspace_root,
+        ).enqueue(batch)
 
     def _register_tool(self, tool: BaseTool) -> None:
         self.tool_manager.register_tool(tool)

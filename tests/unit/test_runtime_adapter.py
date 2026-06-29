@@ -322,7 +322,7 @@ class AddNumbersTool(BaseTool):
         self.parameters.data["a"]["description"] = "First number."
         self.parameters.data["b"]["description"] = "Second number."
 
-    def forward(self, a: float, b: float) -> float:
+    async def forward(self, a: float, b: float) -> float:
         return a + b
 
 
@@ -341,7 +341,7 @@ class FakeBashTool(BaseTool):
         )
         self.parameters.data["command"]["description"] = "Command to run."
 
-    def forward(self, command: str) -> dict[str, Any]:
+    async def forward(self, command: str) -> dict[str, Any]:
         marker = "cat > "
         if marker in command and "<<'EOF'" in command:
             target = command.split(marker, 1)[1].split(" <<'EOF'", 1)[0].strip()
@@ -356,6 +356,14 @@ class FakeBashLoraAgent(LoraAgent):
     def start_run(self, case_run_ref: Any, turn_id: str | None) -> None:
         super().start_run(case_run_ref, turn_id)
         self._tools["bash"] = FakeBashTool()
+
+
+class _RecordingFileEffectWorker:
+    def __init__(self) -> None:
+        self.batches: list[Any] = []
+
+    def enqueue(self, batch: Any) -> None:
+        self.batches.append(batch)
 
 
 class ToolSchemaTests(unittest.TestCase):
@@ -670,6 +678,33 @@ class AgentRuntimeAdapterTests(unittest.TestCase):
                 [message["content"] for message in loaded.history[:-1]],
                 [message["content"] for message in llm.request_messages[-1][1:]],
             )
+
+    def test_lora_agent_enqueues_file_effect_jobs_after_final_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            config = RunConfig(workspace_root=workspace, lora_root=workspace / ".lora", max_steps=3)
+            manager = SessionManager(config)
+            ref = manager.create("chat", mode="chat")
+            run = manager.start_case_run(ref.session_id, "chat")
+            session = manager.load(ref.session_id)
+            agent = FakeBashLoraAgent(config)
+            agent.llm = BashThenAnswerLLM()
+            recording_worker = _RecordingFileEffectWorker()
+
+            with patch("lora.runtime.agent.get_file_effect_worker", return_value=recording_worker):
+                result = asyncio.run(
+                    AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
+                        session=session,
+                        user_input="run bash",
+                        case_run_ref=run,
+                        turn_id="turn-0001",
+                    )
+                )
+
+            self.assertEqual(result["final_answer"], "noticed")
+            self.assertEqual(len(recording_worker.batches), 1)
+            self.assertEqual(recording_worker.batches[0].jobs[0].tool_name, "bash")
+            self.assertEqual(recording_worker.batches[0].turn_id, "turn-0001")
 
     def test_lora_agent_records_unknown_tool_as_tool_error_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
