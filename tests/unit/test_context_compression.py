@@ -8,9 +8,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from pygent.message import AssistantMessage, AssistantMessageChunk
-
 from lora.config import load_run_config
+from lora.core.io import append_jsonl
 from lora.runtime import (
     ContextCompressionModelResult,
     ContextCompressionRunner,
@@ -18,12 +17,7 @@ from lora.runtime import (
     parse_summary,
     render_file_read_block,
 )
-from lora.core.io import append_jsonl
-from lora.runtime import LoraAgent
-from lora.runtime import AgentRuntimeAdapter
 from lora.schema import AgentSession, RunConfig
-from lora.sessions import SessionManager
-
 
 SUMMARY_WITH_TRANSCRIPT = (
     "If you need specific details from before compaction (like exact code snippets, error messages, or content you "
@@ -127,8 +121,13 @@ class ContextCompressionPureTests(unittest.TestCase):
                         "agents:",
                         "  - alias: dev",
                         "    model_request:",
-                        "      model_name: profile-model",
                         "      context_window: 32000",
+                        "      routes:",
+                        "        - id: primary",
+                        "          provider: openai",
+                        "          model_name: profile-model",
+                        "          base_url: https://example.test/v1",
+                        "          api_key_env: DEV_API_KEY",
                         "context_compression:",
                         "  enabled: true",
                         "  trigger_ratio: 0.75",
@@ -325,93 +324,6 @@ class ContextCompressionRunnerTests(unittest.TestCase):
             self.assertEqual(statuses, ["compacted", "compacted"])
             self.assertEqual(call_count, 1)
             self.assertEqual(len(_read_jsonl(Path(tmp) / "compactions.jsonl")), 1)
-
-
-class ContextCompressionStreamIntegrationTests(unittest.TestCase):
-    def test_lora_agent_compacts_before_next_model_request_and_keeps_gui_history(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            config = RunConfig(
-                workspace_root=tmp,
-                lora_root=Path(tmp) / ".lora",
-                max_steps=1,
-                context_window=1000,
-            )
-            manager = SessionManager(config)
-            ref = manager.create("chat", mode="chat")
-            session = manager.load(ref.session_id)
-            session.history = [
-                {"role": "user", "content": "<system-reminder>\nR\n</system-reminder>\nold user"},
-                {
-                    "role": "assistant",
-                    "content": "old assistant that must not remain model-visible",
-                    "usage": {"prompt_tokens": 800, "completion_tokens": 100, "total_tokens": 900},
-                },
-            ]
-            session.token_usage = {
-                "latest_input_tokens": 800,
-                "latest_output_tokens": 100,
-                "latest_context_tokens": 900,
-            }
-            manager.save(session)
-            run = manager.start_case_run(ref.session_id, "chat")
-            agent = LoraAgent(config)
-            llm = CompressionThenAnswerLLM()
-            agent.llm = llm
-
-            result = asyncio.run(
-                AgentRuntimeAdapter(agent=agent, config=config, session_manager=manager).run_turn(
-                    session=manager.load(ref.session_id),
-                    user_input="continue",
-                    case_run_ref=run,
-                    turn_id="turn-0001",
-                )
-            )
-
-            loaded = manager.load(ref.session_id)
-            model_context = json.loads((Path(ref.session_dir) / "model_context.json").read_text(encoding="utf-8"))
-
-            self.assertEqual(result["status"], "passed")
-            self.assertEqual(loaded.status, "compacted")
-            self.assertEqual([message["role"] for message in model_context["messages"]], ["system", "user"])
-            self.assertIn("<session-context>", model_context["messages"][1]["content"])
-            latest_reminder = _extract_system_reminder(loaded.history[2]["content"])
-            self.assertIn(latest_reminder, model_context["messages"][1]["content"])
-            self.assertIn("compressed summary", model_context["messages"][1]["content"])
-            self.assertEqual(len(llm.requests), 2)
-            self.assertTrue(llm.requests[0]["tools_enabled"])
-            self.assertIn("CRITICAL: Respond with TEXT ONLY", llm.requests[0]["messages"][-1]["content"])
-            self.assertEqual([message["role"] for message in llm.requests[1]["messages"]], ["system", "user"])
-            self.assertIn("<session-context>", llm.requests[1]["messages"][1]["content"])
-            self.assertNotIn("old assistant that must not remain model-visible", llm.requests[1]["messages"][1]["content"])
-            self.assertGreaterEqual(len(loaded.history), 4)
-            self.assertIn("old assistant that must not remain model-visible", loaded.history[1]["content"])
-
-
-class CompressionThenAnswerLLM:
-    def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
-
-    async def stream_forward(self, context: Any, **kwargs: Any):
-        messages = [message.to_dict() for message in context.history.data]
-        self.requests.append(
-            {
-                "messages": messages,
-                "system_prompt": str(context.system_prompt),
-                "tools_enabled": bool(kwargs.get("tools")),
-            }
-        )
-        if len(self.requests) == 1:
-            text = "<analysis>x</analysis><summary>compressed summary</summary>"
-            yield AssistantMessageChunk(content=text)
-            context.add_message(AssistantMessage(content=text))
-            return
-        yield AssistantMessageChunk(content="continued")
-        context.add_message(
-            AssistantMessage(
-                content="continued",
-                usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
-            )
-        )
 
 
 def _session(tmp: str, *, token_usage: dict[str, int]) -> AgentSession:

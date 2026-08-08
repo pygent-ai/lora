@@ -37,11 +37,11 @@ class ConfigParserRegressionFindingTests(unittest.TestCase):
     def test_relative_config_file_is_resolved_from_workspace_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "lora.yaml").write_text("runtime:\n  model: workspace-model\n", encoding="utf-8")
+            (root / "lora.yaml").write_text("agents:\n  - alias: default\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: workspace-model\n          base_url: https://example.test/v1\n          api_key_env: TEST_KEY\n", encoding="utf-8")
 
             config = load_run_config(workspace_root=root, config_file="lora.yaml")
 
-        self.assertEqual(config.model, "workspace-model")
+        self.assertEqual(config.resolved_agent.routes[0].model_name, "workspace-model")  # type: ignore[union-attr]
 
     def test_yaml_parser_preserves_hash_inside_quoted_scalar(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -21,11 +21,9 @@ const EMPTY_SETTINGS = {
   workspace_root: "",
   lora_root: "",
   agent: "default",
-  model: "",
-  api_key_env: "DEEPSEEK_API_KEY",
-  api_key_source: "missing",
+  profile: "default",
+  routes: [],
   user_lora_root: "",
-  base_url: "",
   max_steps: -1,
   context_window: null,
 };
@@ -51,6 +49,7 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [runningSessionIds, setRunningSessionIds] = useState({});
+  const [approvals, setApprovals] = useState([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const activeSessionIdRef = useRef("");
   const messagesRef = useRef([]);
@@ -292,8 +291,9 @@ export function App() {
           { message, sessionId: streamSessionId, caseId: "chat" },
           {
             onEvent: ({ data }) => {
-              const eventType = data.type || "";
-              const eventSessionId = data.session_id || data.payload?.session_id || "";
+              const eventKind = data.kind || "";
+              const eventData = data.data || {};
+              const eventSessionId = eventKind === "lora.chat.started" ? String(eventData.session_id || "") : "";
               if (eventSessionId && !streamSessionId) {
                 streamSessionId = eventSessionId;
                 setRunningSessionIds((items) => ({ ...items, [eventSessionId]: true }));
@@ -302,30 +302,31 @@ export function App() {
               if (isStreamSessionVisible()) {
                 setLiveEvents((items) => [...items, apiEventToTraceEvent(data)]);
               }
-              if (eventType === "assistant.reasoning_delta") {
-                appendReasoningDelta(updateVisibleMessages, activityId, String(data.payload?.delta || ""));
-              } else if (eventType === "assistant.delta") {
-                appendAssistantDelta(updateVisibleMessages, assistantId, String(data.payload?.delta || ""));
-              } else if (eventType === "runtime.message" || eventType === "tool.result") {
+              if (eventKind === "model.reasoning.delta") {
+                appendReasoningDelta(updateVisibleMessages, activityId, String(eventData.text || ""));
+              } else if (eventKind === "model.text.delta") {
+                appendAssistantDelta(updateVisibleMessages, assistantId, String(eventData.text || ""));
+              } else if (eventKind === "lora.runtime.message") {
                 applyRuntimeEvent(updateVisibleMessages, activityId, assistantId, data);
-              } else if (eventType === "chat.completed") {
-                finalStatus = String(data.payload?.status || "Done");
+              } else if (eventKind === "lora.approval.requested") {
+                setApprovals((items) => [
+                  ...items.filter((item) => item.approval_id !== eventData.approval_id),
+                  { ...eventData, session_id: eventSessionId || streamSessionId },
+                ]);
+              } else if (eventKind === "execution.completed") {
+                finalStatus = "Done";
                 finalizeRuntimeActivity(updateVisibleMessages, activityId, finalStatus);
                 if (isStreamSessionVisible()) {
                   setActivityCollapseToken((value) => value + 1);
                 }
-                const finalAnswer = data.payload?.final_answer;
-                if (typeof finalAnswer === "string" && finalAnswer.trim()) {
-                  replaceAssistantMessage(updateVisibleMessages, assistantId, finalAnswer);
-                }
-              } else if (eventType === "chat.error") {
+              } else if (eventKind === "lora.transport.error" || eventKind === "execution.failed" || eventKind === "execution.deadline_exceeded") {
                 finalStatus = "Error";
                 finalizeRuntimeActivity(updateVisibleMessages, activityId, finalStatus);
                 if (isStreamSessionVisible()) {
                   setActivityCollapseToken((value) => value + 1);
                 }
-                replaceAssistantMessage(updateVisibleMessages, assistantId, `Error: ${data.payload?.error || "chat failed"}`);
-              } else if (eventType === "chat.cancelled") {
+                replaceAssistantMessage(updateVisibleMessages, assistantId, `Error: ${eventData.error || eventData.message || "chat failed"}`);
+              } else if (eventKind === "execution.cancelled") {
                 finalStatus = "Skipped";
                 finalizeRuntimeActivity(updateVisibleMessages, activityId, finalStatus);
                 if (isStreamSessionVisible()) {
@@ -403,6 +404,19 @@ export function App() {
     .filter(Boolean)
     .join(" ");
 
+  async function handleApproval(approval, approved) {
+    try {
+      await api.deliverApproval(
+        approval.approval_id,
+        approved,
+        approved ? "Approved in Lora Desktop" : "Rejected in Lora Desktop",
+      );
+      setApprovals((items) => items.filter((item) => item.approval_id !== approval.approval_id));
+    } catch (approvalError) {
+      setError(String(approvalError?.message || approvalError));
+    }
+  }
+
   return (
     <main className={appClassName}>
       <SessionSidebar
@@ -426,10 +440,12 @@ export function App() {
         settings={settings}
         status={status}
         running={running}
+        approvals={approvals.filter((item) => item.session_id === activeSessionId)}
         traceCollapsed={layout.traceCollapsed}
         traceEvents={visibleTraceEvents}
         api={api}
         onSendMessage={handleSendMessage}
+        onApproval={handleApproval}
         onToggleTrace={() => setLayout(toggleTrace)}
       />
       {(error || notice) && (
@@ -457,6 +473,7 @@ function SessionSidebar({
   activeScopeId,
   activeSessionId,
   running,
+  approvals,
   onCreateSession,
   onDeleteSession,
   onSelectSession,
@@ -549,7 +566,7 @@ function SessionSidebar({
         <div className="history-bottom">
           <div className="runtime-card">
             <strong>{settings.agent || "default"}</strong>
-            <span>{settings.model || "default model"}</span>
+            <span>{primaryModel(settings)}</span>
             <span>{projects.length ? `${projects.length} workspace` : "active workspace only"}</span>
           </div>
           <button className="plain-action" title="Switch workspace" type="button" onClick={onOpenSettings}>
@@ -635,6 +652,7 @@ function Workbench({
   traceEvents,
   api,
   onSendMessage,
+  onApproval,
   onToggleTrace,
 }) {
   return (
@@ -646,8 +664,10 @@ function Workbench({
         settings={settings}
         status={status}
         running={running}
+        approvals={approvals}
         api={api}
         onSendMessage={onSendMessage}
+        onApproval={onApproval}
       />
       <TracePanel
         collapsed={traceCollapsed}
@@ -660,7 +680,7 @@ function Workbench({
   );
 }
 
-function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, api, onSendMessage }) {
+function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, approvals, api, onSendMessage, onApproval }) {
   const [draft, setDraft] = useState("");
 
   function submit() {
@@ -678,7 +698,7 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
         <div className="chat-title">
           <h2>{activeSession?.title || "Select or create a chat session"}</h2>
           <p>
-            {settings.agent || "default"} / {settings.model || "default model"} / max_steps {settings.max_steps}
+            {settings.agent || "default"} / {primaryModel(settings)} / max_steps {settings.max_steps}
             {" / "}
             context {formatContextWindow(settings.context_window)}
           </p>
@@ -697,6 +717,20 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
           <MessageRow key={message.id} message={message} activityCollapseToken={activityCollapseToken} api={api} />
         ))}
       </div>
+
+      {approvals.map((approval) => (
+        <aside className="approval-card" key={approval.approval_id} aria-live="assertive">
+          <div>
+            <span className="approval-kicker">Execution paused</span>
+            <strong>{approval.tool_name}</strong>
+            <code>{safeJsonStringify(approval.arguments || {})}</code>
+          </div>
+          <div className="approval-actions">
+            <button className="plain-action" type="button" onClick={() => onApproval(approval, false)}>Reject</button>
+            <button className="send" type="button" onClick={() => onApproval(approval, true)}>Approve once</button>
+          </div>
+        </aside>
+      ))}
 
       <footer className="composer">
         <div className="composer-box">
@@ -1127,10 +1161,6 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
             <input value={draft.agent} onChange={(event) => setField("agent", event.target.value)} />
           </label>
           <label>
-            <span>Model</span>
-            <input value={draft.model} onChange={(event) => setField("model", event.target.value)} />
-          </label>
-          <label>
             <span>Max steps</span>
             <input
               type="number"
@@ -1150,11 +1180,11 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
           </label>
           <div className="readonly-field">
             <span>API key env</span>
-            <strong>{settings.api_key_env || "DEEPSEEK_API_KEY"}</strong>
+            <strong>{settings.routes?.[0]?.api_key_env || "unconfigured"}</strong>
           </div>
           <div className="readonly-field">
             <span>API key status</span>
-            <strong>{settings.api_key_source === "missing" ? "Not configured" : `Configured (${settings.api_key_source})`}</strong>
+            <strong>{settings.routes?.[0]?.api_key_source === "missing" ? "Not configured" : `Configured (${settings.routes?.[0]?.api_key_source || "unknown"})`}</strong>
           </div>
           <label>
             <span>API key</span>
@@ -1267,11 +1297,11 @@ function renderTurnSegment(segment, idPrefix) {
 
 function apiEventToTraceEvent(event) {
   return {
-    id: `${event.type}-${Date.now()}-${Math.random()}`,
-    type: event.type || "runtime.event",
+    id: `${event.execution_id || "execution"}-${event.sequence || 0}`,
+    type: event.kind || "runtime.event",
     timestamp: "",
     actor: "runtime",
-    payload: tracePreviewPayload(event.payload || {}),
+    payload: tracePreviewPayload(event.data || {}),
   };
 }
 
@@ -1315,23 +1345,8 @@ function appendReasoningDelta(setMessages, activityId, delta) {
 }
 
 function applyRuntimeEvent(setMessages, activityId, assistantId, event) {
-  const payload = event.payload || {};
-  if (event.type === "tool.result") {
-    const result = toolResultActivityFromPayload(payload);
-    setMessages((items) =>
-      items.map((item) =>
-        item.id === activityId
-          ? {
-              ...item,
-              sections: applyToolResultToSections(item.sections || [], result),
-              status: result.status === "error" ? "error" : item.status,
-            }
-          : item,
-      ),
-    );
-    return;
-  }
-  if (event.type !== "runtime.message") {
+  const payload = event.data || {};
+  if (event.kind !== "lora.runtime.message") {
     return;
   }
   if (payload.role === "assistant") {
@@ -1738,10 +1753,8 @@ function configRows(settings) {
     ["workspace", settings.workspace_root],
     ["lora_root", settings.lora_root],
     ["agent", settings.agent],
-    ["model", settings.model],
-    ["api_key_env", settings.api_key_env],
-    ["api_key_source", settings.api_key_source],
-    ["base_url", settings.base_url],
+    ["profile", settings.profile],
+    ["routes", settings.routes],
     ["max_steps", settings.max_steps],
     ["context_window", settings.context_window],
     ["compression_trigger", compressionTriggerLabel(settings.context_window)],
@@ -1789,11 +1802,14 @@ function settingsToDraft(settings) {
     workspaceRoot: settings.workspace_root || "",
     configPath: "",
     agent: settings.agent || "",
-    model: settings.model || "",
     maxSteps: Number.isFinite(settings.max_steps) ? settings.max_steps : -1,
     contextWindow: Number.isFinite(settings.context_window) ? String(settings.context_window) : "",
     apiKey: "",
   };
+}
+
+function primaryModel(settings) {
+  return settings.routes?.[0]?.model_name || "unconfigured model";
 }
 
 function formatContextWindow(value) {

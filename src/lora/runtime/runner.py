@@ -8,9 +8,9 @@ from typing import Any
 from lora.evaluation.case import CaseManager
 from lora.evaluation.evaluator import Evaluator
 from lora.core.io import write_json
-from .adapter import AgentRuntimeAdapter
-from lora.schema import CaseDefinition, RunConfig, SessionSpec
+from lora.schema import CaseDefinition, CaseRunResult, RunConfig, SessionSpec
 from lora.sessions import SessionManager
+from .service import LoraRuntimeService
 
 
 def execute_case_run(
@@ -21,7 +21,6 @@ def execute_case_run(
     case_file: str | Path,
     session_id: str | None = None,
     session_mode: str | None = None,
-    runtime_adapter: AgentRuntimeAdapter | None = None,
     evaluator: Evaluator | None = None,
 ) -> dict[str, Any]:
     case = case_manager.load(case_file)
@@ -34,14 +33,22 @@ def execute_case_run(
     shutil.copy2(case_file, run_dir / "case.yaml")
     case_manager.prepare_workspace(case, ref)
 
-    adapter = runtime_adapter or AgentRuntimeAdapter(config=config, session_manager=manager)
-    result = asyncio.run(
-        adapter.run_case(
-            session=session,
-            case=case,
-            case_run_ref=ref,
-        )
-    )
+    async def managed_case() -> CaseRunResult:
+        runtime = LoraRuntimeService(config)
+        try:
+            payload = await runtime.execute_case(
+                manager=manager,
+                session=session,
+                case=case,
+                run_ref=ref,
+            )
+            payload.pop("runtime_execution_id", None)
+            payload.pop("turn_id", None)
+            return CaseRunResult.from_dict(payload)
+        finally:
+            await runtime.close(cancel=True)
+
+    result = asyncio.run(managed_case())
     evaluation = (evaluator or Evaluator()).evaluate(case, ref)
     if result.status != "error":
         result.status = evaluation.status  # type: ignore[assignment]
@@ -71,15 +78,10 @@ def load_case_session(manager: SessionManager, case: CaseDefinition, cli_session
     if mode == "new":
         return manager.load(manager.create(case.id, mode=case.type).session_id)
     if mode in {"resume", "shared"}:
-        session_id = case_session.get("session_id") or case_session.get("id")
+        session_id = case_session.get("session_id")
         return manager.load_or_create(SessionSpec(case_id=case.id, mode=mode, session_id=session_id))
 
-    source_session_id = (
-        case_session.get("source_session_id")
-        or case_session.get("source")
-        or case_session.get("session_id")
-        or case_session.get("id")
-    )
+    source_session_id = case_session.get("source_session_id")
     return manager.load_or_create(
         SessionSpec(case_id=case.id, mode="fork", source_session_id=source_session_id)
     )

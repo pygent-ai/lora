@@ -4,10 +4,48 @@ agent:
 agents:
   - alias: dev
     model_request:
-      api_key_env: DEEPSEEK_API_KEY
-      model_name: deepseek-v4-flash
-      base_url: https://api.deepseek.com
+      profile: default
+      routes:
+        - id: primary
+          provider: openai
+          api_key_env: DEEPSEEK_API_KEY
+          model_name: deepseek-v4-flash
+          base_url: https://api.deepseek.com
+      fallback: [primary]
+      retry:
+        max_attempts_per_route: 2
+        attempt_timeout_seconds: 60
+        backoff_initial: 0.5
+        backoff_maximum: 4
+        backoff_multiplier: 2
   - alias: fast-check
     model_request:
-      api_key_env: DEEPSEEK_API_KEY
-      model_name: deepseek-v4-flash
+      profile: fast-check
+      routes:
+        - id: primary
+          provider: openai
+          api_key_env: DEEPSEEK_API_KEY
+          model_name: deepseek-v4-flash
+          base_url: https://api.deepseek.com
+      fallback: [primary]
+
+runtime:
+  durability:
+    mode: preferred
+    history_path: .lora/runtime/executions.sqlite3
+  capacity:
+    scope: runtime_instance
+    coordinator_path: .lora/runtime/capacity.sqlite3
+  approvals:
+    enabled: true
+    timeout_seconds: 300
+    preauthorized_tools: []
+
+mcp:
+  servers: []
+
+delegation:
+  allowed_agents: []
+  max_depth: 4
+  max_parallel: 4
+  background_enabled: true

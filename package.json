@@ -1,0 +1,14 @@
+{
+  "name": "lora-workspace",
+  "private": true,
+  "scripts": {
+    "desktop": "npm --prefix apps/desktop run dev",
+    "desktop:package": "npm --prefix apps/desktop run package:win",
+    "desktop:package:dir": "npm --prefix apps/desktop run package:dir",
+    "lint": "npm --workspaces --if-present run lint",
+    "typecheck": "npm --workspaces --if-present run typecheck"
+  },
+  "workspaces": [
+    "apps/*"
+  ]
+}

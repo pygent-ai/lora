@@ -14,11 +14,9 @@ class RuntimeConfigResponse(BaseModel):
     workspace_root: str
     lora_root: str
     agent: str
-    model: str | None
-    api_key_env: str
-    api_key_source: str
+    profile: str
+    routes: list[dict[str, Any]]
     user_lora_root: str
-    base_url: str | None
     max_steps: int
     context_window: int | None
 

@@ -1047,6 +1047,43 @@ input:disabled {
   background: rgba(232, 238, 243, 0.88);
 }
 
+.approval-card {
+  margin: 0 22px 14px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d6a84b) 52%, var(--border));
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 88%, #d6a84b 12%);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 16%);
+}
+
+.approval-card > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.approval-card strong { font-size: 14px; }
+.approval-card code {
+  max-width: min(60vw, 720px);
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.approval-kicker {
+  color: var(--warning, #d6a84b);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.approval-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+
 .composer-box {
   display: grid;
   grid-template-columns: 1fr auto;

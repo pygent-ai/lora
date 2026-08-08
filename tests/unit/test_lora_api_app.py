@@ -18,6 +18,13 @@ def test_create_app_allows_desktop_renderer_cors_requests() -> None:
     assert CORSMiddleware in middleware_types
 
 
+def test_create_app_exposes_runtime_approval_and_task_contracts() -> None:
+    schema = create_app(workspace_root=".").openapi()
+
+    assert "post" in schema["paths"]["/chat/approvals/{approval_id}"]
+    assert {"get", "delete"} <= set(schema["paths"]["/runtime/tasks/{task_id}"])
+
+
 def test_get_tool_result_returns_persisted_result(tmp_path) -> None:
     context = ApiContext(workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json"))
     session = context.manager.create(case_id="chat", mode="chat")

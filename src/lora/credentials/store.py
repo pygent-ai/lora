@@ -3,7 +3,6 @@ from __future__ import annotations
 import getpass
 import os
 import sys
-import warnings
 from pathlib import Path
 
 from lora.core.io import load_env_file
@@ -16,7 +15,6 @@ except ImportError:  # pragma: no cover - optional dependency
 KEYRING_SERVICE = "lora"
 USER_CREDENTIALS_FILENAME = "credentials.env"
 DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY"
-DEPRECATED_WORKSPACE_ENV = ".env"
 
 
 def user_credentials_path(user_lora_root: str | Path) -> Path:
@@ -43,17 +41,6 @@ def load_credentials(*, user_lora_root: str | Path, workspace_root: str | Path) 
     if _load_env_file_quiet(local_path):
         loaded.append(f"file:{local_path}")
 
-    legacy_path = workspace / DEPRECATED_WORKSPACE_ENV
-    if _load_env_file_quiet(legacy_path):
-        loaded.append(f"file:{legacy_path}")
-        warnings.warn(
-            (
-                f"Loading workspace {DEPRECATED_WORKSPACE_ENV} is deprecated. "
-                f"Move secrets to {user_path} or {local_path.name}."
-            ),
-            DeprecationWarning,
-            stacklevel=2,
-        )
     return loaded
 
 
@@ -165,15 +152,6 @@ def prompt_for_secret(prompt: str) -> str:
     if not value.strip():
         raise ValueError("credential value must not be empty")
     return value.strip()
-
-
-def warn_plaintext_api_key() -> None:
-    warnings.warn(
-        "model_request.api_key in lora.yaml is deprecated. "
-        f"Use api_key_env and store the secret in {USER_CREDENTIALS_FILENAME} or an environment variable.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
 
 
 def _load_env_file_quiet(path: Path) -> bool:

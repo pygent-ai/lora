@@ -4,11 +4,13 @@ import difflib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pygent.module.tool import BaseTool
+from pygent import IdempotencyPolicy, ToolSideEffect, tool
+from pydantic import Field
 
 from lora.schema import CaseRunRef
+
 from .events import EventStore
 
 MAX_DIFF_SNAPSHOT_BYTES = 1_000_000
@@ -132,88 +134,38 @@ class DiffRecorder:
         return str(target.resolve())
 
 
-class DiffTool(BaseTool):
+class DiffTool:
     def __init__(
         self,
         *,
         case_run_ref: CaseRunRef,
         workspace_root: str | Path,
         turn_id: str | None = None,
-        pending_wait_seconds: float = 0.5,
     ):
         self.case_run_ref = case_run_ref
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.turn_id = turn_id
-        self.pending_wait_seconds = pending_wait_seconds
         self.store = EventStore(case_run_ref)
-        super().__init__(
-            name="diff",
-            description=(
-                "Show persisted file diffs for the current Lora session or run. "
-                "Uses recorded file effects and stored snapshots, so results survive chat restarts."
-            ),
-            include_call_description_parameter=False,
-            parameters_additional_properties=False,
-        )
-        self.parameters.data.update(
-            {
-                "scope": {
-                    "name": "scope",
-                    "type": "string",
-                    "description": "Which persisted changes to inspect. Defaults to run.",
-                    "required": False,
-                    "default": "run",
-                    "enum": ["turn", "run", "session"],
-                },
-                "path": {
-                    "name": "path",
-                    "type": "string",
-                    "description": "Optional workspace-relative or absolute file path filter.",
-                    "required": False,
-                    "default": None,
-                },
-                "tool_call_id": {
-                    "name": "tool_call_id",
-                    "type": "string",
-                    "description": "Optional tool call id to inspect a single tool's file changes.",
-                    "required": False,
-                    "default": None,
-                },
-                "format": {
-                    "name": "format",
-                    "type": "string",
-                    "description": "Output format. summary lists changed files; patch returns unified diff; json returns structured records.",
-                    "required": False,
-                    "default": "summary",
-                    "enum": ["summary", "patch", "json"],
-                },
-                "limit": {
-                    "name": "limit",
-                    "type": "integer",
-                    "description": "Maximum number of diff records or patch files to return.",
-                    "required": False,
-                    "default": 20,
-                    "min_value": 1,
-                },
-            }
-        )
 
+    @tool(
+        tool_id="lora.diff",
+        version="1.0.0",
+        side_effect=ToolSideEffect.READ,
+        idempotency=IdempotencyPolicy.INHERENT,
+        name="diff",
+        description="Show persisted file diffs for the current Lora session or run.",
+        timeout=30,
+        resource_key="lora-diffs",
+        required_permissions=("filesystem:read",),
+    )
     async def forward(
         self,
         scope: Literal["turn", "run", "session"] = "run",
         path: str | None = None,
         tool_call_id: str | None = None,
         format: Literal["summary", "patch", "json"] = "summary",
-        limit: int = 20,
+        limit: Annotated[int, Field(ge=1)] = 20,
     ) -> dict[str, Any]:
-        from lora.runtime.file_effects import wait_for_pending_file_effects
-
-        pending_batches = await wait_for_pending_file_effects(
-            self.case_run_ref,
-            scope=scope,
-            turn_id=self.turn_id if scope == "turn" else None,
-            timeout_seconds=self.pending_wait_seconds,
-        )
         records = self._records(scope)
         if scope == "turn":
             records = [record for record in records if record.get("turn_id") == self.turn_id]
@@ -229,28 +181,25 @@ class DiffTool(BaseTool):
         records = records[: max(0, int(limit))]
 
         if format == "json":
-            return self._with_pending({"scope": scope, "count": len(records), "diffs": records}, pending_batches)
+            return {"scope": scope, "count": len(records), "diffs": records}
         if format == "patch":
-            return self._with_pending(self._patch_result(scope, records), pending_batches)
-        return self._with_pending(
-            {
-                "scope": scope,
-                "count": len(records),
-                "diffs": [
-                    {
-                        "diff_id": record.get("diff_id"),
-                        "change_type": record.get("change_type"),
-                        "path": record.get("relative_path") or record.get("path"),
-                        "tool_name": record.get("tool_name"),
-                        "tool_call_id": record.get("tool_call_id"),
-                        "patch_available": record.get("patch_available"),
-                        "patch_path": record.get("patch_path"),
-                    }
-                    for record in records
-                ],
-            },
-            pending_batches,
-        )
+            return self._patch_result(scope, records)
+        return {
+            "scope": scope,
+            "count": len(records),
+            "diffs": [
+                {
+                    "diff_id": record.get("diff_id"),
+                    "change_type": record.get("change_type"),
+                    "path": record.get("relative_path"),
+                    "tool_name": record.get("tool_name"),
+                    "tool_call_id": record.get("tool_call_id"),
+                    "patch_available": record.get("patch_available"),
+                    "patch_path": record.get("patch_path"),
+                }
+                for record in records
+            ],
+        }
 
     def _records(self, scope: str) -> list[dict[str, Any]]:
         if scope in {"turn", "run"}:
@@ -272,7 +221,7 @@ class DiffTool(BaseTool):
                 warnings.append(
                     {
                         "diff_id": record.get("diff_id"),
-                        "path": record.get("relative_path") or record.get("path"),
+                        "path": record.get("relative_path"),
                         "reason": record.get("patch_unavailable_reason") or "patch artifact is unavailable",
                     }
                 )
@@ -295,15 +244,6 @@ class DiffTool(BaseTool):
             )
             result.pop("patch", None)
         return result
-
-    @staticmethod
-    def _with_pending(result: dict[str, Any], pending_batches: list[dict[str, Any]]) -> dict[str, Any]:
-        result["pending"] = bool(pending_batches)
-        if pending_batches:
-            result["pending_batches"] = pending_batches
-            result["message"] = "File effect tracking is still running; diff results may be incomplete."
-        return result
-
 
 def read_snapshot_content(path: Path) -> DiffSnapshotContent:
     try:

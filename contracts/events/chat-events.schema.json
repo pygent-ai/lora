@@ -1,16 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lora.local/schemas/chat-events.schema.json",
-  "title": "Lora Chat Event Envelope",
+  "$id": "https://lora.local/contracts/execution-event.schema.json",
+  "title": "Lora Pygent Execution Event",
   "type": "object",
-  "required": ["type", "payload"],
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "execution_id", "trace_id", "span_id", "parent_span_id", "sequence", "timestamp_unix_ns", "module_path", "kind", "data"],
   "properties": {
-    "type": {
-      "type": "string"
-    },
-    "payload": {
-      "type": "object"
-    }
-  },
-  "additionalProperties": true
+    "schema_version": {"type": "string"},
+    "event_id": {"type": "string"},
+    "execution_id": {"type": "string"},
+    "trace_id": {"type": "string"},
+    "span_id": {"type": "string"},
+    "parent_span_id": {"type": ["string", "null"]},
+    "sequence": {"type": "integer", "minimum": 0},
+    "timestamp_unix_ns": {"type": "integer", "minimum": 0},
+    "kind": {"type": "string", "minLength": 1},
+    "module_path": {"type": "string"},
+    "data": {"type": "object"}
+  }
 }

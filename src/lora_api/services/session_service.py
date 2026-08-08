@@ -104,19 +104,7 @@ def session_groups_response(context: ApiContext) -> SessionGroupListResponse:
 
 
 def _config_for_listing_scope(context: ApiContext, scope: Any) -> RunConfig:
-    try:
-        return context.config_for_scope(scope)
-    except ValueError as exc:
-        if "Agent alias" not in str(exc):
-            raise
-        return RunConfig(
-            workspace_root=scope.runtime_workspace_root,
-            lora_root=scope.lora_root,
-            agent_alias=context.agent_alias or "default",
-            model_name=context.model,
-            max_steps=context.max_steps if context.max_steps is not None else -1,
-            context_window=context.context_window,
-        )
+    return context.config_for_scope(scope)
 
 
 def _record_from_metadata(

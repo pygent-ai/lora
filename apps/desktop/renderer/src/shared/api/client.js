@@ -57,6 +57,12 @@ export function createApiClient(options = {}) {
       ),
     getToolResult: (toolCallId, options = {}) =>
       jsonRequest(`/tool-results/${encodeURIComponent(toolCallId)}`, options),
+    deliverApproval: (approvalId, approved, comment = "", options = {}) =>
+      jsonRequest(`/chat/approvals/${encodeURIComponent(approvalId)}`, {
+        ...options,
+        method: "POST",
+        body: { approved, comment },
+      }),
     streamChat: (request, handlers = {}) =>
       streamChatTurn({
         baseUrl,
@@ -74,7 +80,6 @@ export function settingsPayload(settings) {
     workspace_root: settingsString(settings.workspaceRoot),
     config_path: settingsString(settings.configPath),
     agent_alias: settingsString(settings.agent),
-    model: settingsString(settings.model),
     max_steps: Number.isFinite(settings.maxSteps) ? settings.maxSteps : undefined,
     context_window: contextWindow !== undefined ? contextWindow : null,
     api_key: cleanString(settings.apiKey),
@@ -93,8 +98,8 @@ export function parseSseEvents(text) {
 }
 
 async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, signal }) {
-  let resumeCaseRunId = request.resumeCaseRunId || null;
-  let resumeFromEvent = Number.isFinite(request.resumeFromEvent) ? request.resumeFromEvent : null;
+  let executionId = request.executionId || null;
+  let afterSequence = Number.isFinite(request.afterSequence) ? request.afterSequence : null;
   const startedAt = Date.now();
   let attempt = 0;
 
@@ -103,14 +108,14 @@ async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, signal }) 
       await streamChatAttempt({
         baseUrl,
         fetchImpl,
-        request: { ...request, resumeCaseRunId, resumeFromEvent },
+        request: { ...request, executionId, afterSequence },
         onEvent: (event) => {
           const data = event?.data || {};
-          if (data.case_run_id) {
-            resumeCaseRunId = data.case_run_id;
+          if (data.execution_id) {
+            executionId = data.execution_id;
           }
           if (Number.isFinite(data.sequence)) {
-            resumeFromEvent = data.sequence;
+            afterSequence = data.sequence;
           }
           emitStreamEvent(event, onEvent);
         },
@@ -118,7 +123,7 @@ async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, signal }) 
       });
       return;
     } catch (err) {
-      if (signal?.aborted || isAbortError(err) || !resumeCaseRunId) {
+      if (signal?.aborted || isAbortError(err) || !executionId) {
         throw err;
       }
       if (Date.now() - startedAt >= STREAM_RESUME_TIMEOUT_MS) {
@@ -135,12 +140,12 @@ async function streamChatAttempt({ baseUrl, fetchImpl, request, onEvent, signal 
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      message: request.message,
+      message: request.executionId ? null : request.message,
       session_id: request.sessionId || null,
       case_id: request.caseId || "chat",
       turn_id: request.turnId || null,
-      resume_case_run_id: request.resumeCaseRunId || null,
-      resume_from_event: Number.isFinite(request.resumeFromEvent) ? request.resumeFromEvent : null,
+      execution_id: request.executionId || null,
+      after_sequence: Number.isFinite(request.afterSequence) ? request.afterSequence : null,
     }),
     signal,
   });

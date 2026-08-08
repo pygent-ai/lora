@@ -1,4 +1,3 @@
 from __future__ import annotations
 
-from .loader import *
-
+from .loader import *  # noqa: F403

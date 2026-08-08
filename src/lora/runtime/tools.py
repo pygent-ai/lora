@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
-import json
 import os
 import re
 import shlex
-import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
+from pygent import ToolResult as PygentToolResult, thaw_json
+
+from lora.core.io import plain_data
 from lora.tracing import DiffRecorder, read_snapshot_content
-from lora.core.io import utc_now, write_json
 from lora.core.redaction import redact_secrets
-from lora.schema import CaseRunRef
 from lora.tracing import EventStore
 from .file_effects import DeferredFileEffectJob
 
@@ -23,65 +21,6 @@ MAX_BASH_RESULT_LINES = 200
 BASH_RESULT_PREVIEW_LINES = 120
 BASH_RESULT_PREVIEW_CHARS = 12_000
 SPOOLED_TEXT_TOOL_NAMES = frozenset({"bash", "grep"})
-
-FILE_UNCHANGED_STUB = (
-    "File unchanged since last read. The content from the earlier read tool_result in this conversation "
-    "is still current. Refer to that instead of re-reading."
-)
-FILE_RANGE_CONTAINED_STUB = (
-    "Requested range is contained in an earlier read tool_result for the same file version. "
-    "Refer to the earlier result instead of re-reading."
-)
-FILE_RANGE_OVERLAP_STUB = (
-    "Requested range partially overlaps an earlier read tool_result for the same file version. "
-    "Returning only the unread portion."
-)
-
-
-@dataclass(slots=True)
-class ReadRange:
-    unit: Literal["line", "full"] = "full"
-    start: int = 1
-    end: int | Literal["EOF"] = "EOF"
-
-    def covers(self, other: "ReadRange") -> bool:
-        if self.unit == "full":
-            return True
-        if other.unit == "full" or self.unit != other.unit:
-            return False
-        return self.start <= other.start and _end_value(self.end) >= _end_value(other.end)
-
-    def overlaps(self, other: "ReadRange") -> bool:
-        if self.unit == "full" or other.unit == "full":
-            return True
-        if self.unit != other.unit:
-            return False
-        return self.start <= _end_value(other.end) and other.start <= _end_value(self.end)
-
-
-@dataclass(slots=True)
-class ReadDedupDecision:
-    action: Literal["read", "stub", "partial"]
-    reason: Literal["none", "exact", "contained", "overlap"]
-    content: str | None = None
-    previous_event_id: str | None = None
-
-
-@dataclass(slots=True)
-class ToolContext:
-    case_run_ref: CaseRunRef
-    turn_id: str | None = None
-
-
-@dataclass(slots=True)
-class ToolResult:
-    status: Literal["success", "error", "stubbed", "partial"]
-    result: Any = None
-    error: str | None = None
-    tool_call_id: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(slots=True)
@@ -128,117 +67,11 @@ class FileEffect:
         )
 
 
-class FileStateTracker:
-    def __init__(self, session_state_dir: str | Path):
-        self.state_dir = Path(session_state_dir)
-        self.file_state_path = self.state_dir / "file_state.json"
-        self.read_state_path = self.state_dir / "read_state.json"
-
-    def record_read(self, path: str | Path, content_hash: str, read_range: ReadRange, event_id: str) -> None:
-        normalized = _normalize(path)
-        read_state = self._read_json(self.read_state_path)
-        ranges = [
-            row
-            for row in read_state.get(normalized, [])
-            if row.get("content_hash") == content_hash
-        ]
-        ranges.append(
-            {
-                "event_id": event_id,
-                "content_hash": content_hash,
-                "unit": read_range.unit,
-                "start": read_range.start,
-                "end": read_range.end,
-                "read_at": utc_now(),
-            }
-        )
-        read_state[normalized] = ranges
-        write_json(self.read_state_path, read_state)
-
-        file_state = self._read_json(self.file_state_path)
-        file_state[normalized] = {
-            "path": normalized,
-            "exists": True,
-            "content_hash": content_hash,
-            "last_read_event_id": event_id,
-            "read_ranges": ranges,
-            "last_known_at": utc_now(),
-        }
-        write_json(self.file_state_path, file_state)
-
-    def should_stub_read(
-        self,
-        path: str | Path,
-        content_hash: str,
-        read_range: ReadRange,
-        dedup_level: Literal["exact", "contained", "overlap"] = "contained",
-    ) -> ReadDedupDecision:
-        ranges = self._read_json(self.read_state_path).get(_normalize(path), [])
-        for row in ranges:
-            if row.get("content_hash") != content_hash:
-                continue
-            previous = ReadRange(unit=row["unit"], start=int(row["start"]), end=row["end"])
-            if previous.unit == read_range.unit and previous.start == read_range.start and previous.end == read_range.end:
-                return ReadDedupDecision("stub", "exact", FILE_UNCHANGED_STUB, row.get("event_id"))
-            if dedup_level in {"contained", "overlap"} and previous.covers(read_range):
-                return ReadDedupDecision("stub", "contained", FILE_RANGE_CONTAINED_STUB, row.get("event_id"))
-            if dedup_level == "overlap" and previous.overlaps(read_range):
-                return ReadDedupDecision("partial", "overlap", FILE_RANGE_OVERLAP_STUB, row.get("event_id"))
-        return ReadDedupDecision("read", "none")
-
-    def read_text_file(
-        self,
-        path: str | Path,
-        *,
-        offset: int | None = None,
-        limit: int | None = None,
-        dedup_level: Literal["exact", "contained", "overlap"] = "contained",
-        event_store: EventStore | None = None,
-        turn_id: str | None = None,
-    ) -> dict[str, Any]:
-        target = Path(path).expanduser().resolve()
-        content = target.read_text(encoding="utf-8")
-        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        read_range = _line_range(content, offset, limit)
-        decision = self.should_stub_read(target, content_hash, read_range, dedup_level)
-        if decision.action == "stub":
-            return {"status": "stubbed", "content": decision.content, "dedup": decision.reason}
-
-        selected = _select_lines(content, read_range)
-        if decision.action == "partial":
-            selected = f"{decision.content}\n\n{selected}"
-        returned_range = asdict(read_range)
-        event_payload = {
-            "path": str(target),
-            "content_hash": content_hash,
-            "size": len(content.encode("utf-8")),
-            "requested_range": asdict(read_range),
-            "returned_range": returned_range,
-            "dedup": decision.reason,
-            "returned_content": selected,
-        }
-        event_id = (
-            event_store.append("file.read", actor="tool", payload=event_payload, turn_id=turn_id)
-            if event_store is not None
-            else f"read_{uuid.uuid4().hex}"
-        )
-        self.record_read(target, content_hash, read_range, event_id)
-        return {
-            "status": "partial" if decision.action == "partial" else "success",
-            "content": selected,
-            "content_hash": content_hash,
-            "range": asdict(read_range),
-        }
-
-    @staticmethod
-    def _read_json(path: Path) -> dict[str, Any]:
-        if not path.exists():
-            return {}
-        return json.loads(path.read_text(encoding="utf-8"))
-
 class FileEffectTracker:
-    IGNORED_DIRS = frozenset({".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"})
-    PATH_ARG_NAMES = ("file_path", "path", "relative_path")
+    IGNORED_DIRS = frozenset(
+        {".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"}
+    )
+    PATH_ARG_NAMES = ("file_path",)
     WRITE_TYPES = frozenset({"file.write", "file.edit", "file.delete"})
 
     def __init__(
@@ -402,7 +235,9 @@ class FileEffectTracker:
                         after_content_unavailable_reason=after_snapshot.content_unavailable_reason,
                     )
                 )
-        return sorted(effects, key=lambda effect: (_effect_type_order(effect.type), effect.path))
+        return sorted(
+            effects, key=lambda effect: (_effect_type_order(effect.type), effect.path)
+        )
 
     def merge_effects(
         self,
@@ -427,7 +262,9 @@ class FileEffectTracker:
                 merged.append(observed_effect)
                 continue
 
-            detected_by = _merge_detected_by(declared_effect.detected_by, observed_effect.detected_by)
+            detected_by = _merge_detected_by(
+                declared_effect.detected_by, observed_effect.detected_by
+            )
             merged.append(
                 FileEffect(
                     type=observed_effect.type,
@@ -457,7 +294,9 @@ class FileEffectTracker:
                     continue
                 write_seen.add(effect.path)
             deduped.append(effect)
-        return sorted(deduped, key=lambda effect: (_effect_type_order(effect.type), effect.path))
+        return sorted(
+            deduped, key=lambda effect: (_effect_type_order(effect.type), effect.path)
+        )
 
     def append_effects(
         self,
@@ -490,14 +329,20 @@ class FileEffectTracker:
             )
             diff_recorder.record_effect(effect, turn_id=turn_id)
 
-    def _path_from_args(self, args: dict[str, Any], *, allow_outside_workspace: bool = False) -> str | None:
+    def _path_from_args(
+        self, args: dict[str, Any], *, allow_outside_workspace: bool = False
+    ) -> str | None:
         for name in self.PATH_ARG_NAMES:
             value = args.get(name)
             if isinstance(value, str) and value:
-                return self._resolve_workspace_path(value, allow_outside_workspace=allow_outside_workspace)
+                return self._resolve_workspace_path(
+                    value, allow_outside_workspace=allow_outside_workspace
+                )
         return None
 
-    def _resolve_workspace_path(self, path: str | Path, *, allow_outside_workspace: bool = False) -> str:
+    def _resolve_workspace_path(
+        self, path: str | Path, *, allow_outside_workspace: bool = False
+    ) -> str:
         candidate = Path(_normalize_user_path(path)).expanduser()
         if not candidate.is_absolute():
             candidate = self.workspace_root / candidate
@@ -515,8 +360,10 @@ class FileEffectTracker:
             return True
         return any(part in self.IGNORED_DIRS for part in relative.parts)
 
-    def _bash_read_effects(self, args: dict[str, Any], tool_call_id: str) -> list[FileEffect]:
-        command = args.get("command") or args.get("cmd")
+    def _bash_read_effects(
+        self, args: dict[str, Any], tool_call_id: str
+    ) -> list[FileEffect]:
+        command = args.get("command")
         if not isinstance(command, str) or not command.strip():
             return []
         paths = self._parse_bash_read_paths(command)
@@ -568,7 +415,7 @@ class FileEffectTracker:
         return paths
 
 
-class ToolInterceptor:
+class ToolObserver:
     def __init__(
         self,
         store: EventStore,
@@ -600,6 +447,71 @@ class ToolInterceptor:
         self._file_effect_jobs.clear()
         return jobs
 
+    def record_framework_result(
+        self,
+        name: str,
+        args: dict[str, Any],
+        turn_id: str | None,
+        result: PygentToolResult,
+        *,
+        available_tools: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Persist Lora audit facts after Pygent has executed a tool."""
+
+        call_id = self.store.append(
+            "tool.call",
+            actor="assistant",
+            payload={
+                "tool_name": name,
+                "args": args,
+                "model_tool_call_id": result.call_id,
+            },
+            turn_id=turn_id,
+        )
+        declared = (
+            self.file_effect_tracker.declared_effects(name, args, call_id)
+            if self.file_effect_tracker is not None
+            else []
+        )
+        if self.defer_file_effects:
+            self._append_deferred_file_effect_job(
+                tool_call_id=call_id,
+                tool_name=name,
+                args=args,
+                turn_id=turn_id,
+                declared=declared,
+                include_declared=result.status == "succeeded",
+            )
+
+        if result.status == "succeeded":
+            value = plain_data(thaw_json(result.output))
+            value = _spool_large_tool_result(
+                tool_name=name,
+                args=args,
+                result=value,
+                tool_call_id=call_id,
+                run_dir=self.store.run_dir,
+                bash_full_output_allowlist=self.bash_full_output_allowlist,
+            )
+            payload = {"tool_call_id": call_id, "status": "success", "result": value}
+        else:
+            payload = {
+                "tool_call_id": call_id,
+                "status": "error",
+                "error": result.error or f"tool {result.status}",
+                "error_type": result.error_kind or "ToolError",
+                "details": {
+                    "framework_status": result.status,
+                    "error_code": result.error_code,
+                    "retryable": result.retryable,
+                    "side_effect_committed": result.side_effect_committed,
+                    "available_tools": list(available_tools),
+                },
+            }
+        payload["model_tool_call_id"] = result.call_id
+        self.store.append("tool.result", actor="tool", payload=payload, turn_id=turn_id)
+        return payload
+
     def _append_deferred_file_effect_job(
         self,
         *,
@@ -623,161 +535,6 @@ class ToolInterceptor:
                 include_declared=include_declared,
                 requires_snapshot=requires_snapshot,
             )
-        )
-
-    async def call_tool(
-        self,
-        name: str,
-        args: dict[str, Any],
-        ctx: ToolContext,
-        tool: Callable[..., Any],
-        *,
-        model_tool_call_id: str | None = None,
-    ) -> ToolResult:
-        call_payload: dict[str, Any] = {"tool_name": name, "args": args}
-        if model_tool_call_id:
-            call_payload["model_tool_call_id"] = model_tool_call_id
-        call_id = self.store.append(
-            "tool.call",
-            actor="assistant",
-            payload=call_payload,
-            turn_id=ctx.turn_id,
-        )
-        argument_error = _unsupported_argument_error(name, args, tool)
-        if argument_error is not None:
-            payload = {
-                "tool_call_id": call_id,
-                "status": "error",
-                "error": argument_error,
-                "error_type": "ToolArgumentError",
-            }
-            if model_tool_call_id:
-                payload["model_tool_call_id"] = model_tool_call_id
-            self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
-            return ToolResult(status="error", error=argument_error, tool_call_id=call_id)
-        before: dict[str, FileSnapshot] | None = None
-        declared: list[FileEffect] = []
-        if self.file_effect_tracker is not None:
-            declared = self.file_effect_tracker.declared_effects(name, args, call_id)
-            if not self.defer_file_effects:
-                before = self.file_effect_tracker.snapshot_workspace()
-        try:
-            result = tool(**args)
-            if inspect.isawaitable(result):
-                result = await result
-        except Exception as exc:  # noqa: BLE001 - tool boundary records all failures.
-            if self.defer_file_effects:
-                self._append_deferred_file_effect_job(
-                    tool_call_id=call_id,
-                    tool_name=name,
-                    args=args,
-                    turn_id=ctx.turn_id,
-                    declared=declared,
-                )
-            else:
-                self._append_file_effects_after_tool(
-                    before,
-                    declared,
-                    tool_name=name,
-                    tool_call_id=call_id,
-                    turn_id=ctx.turn_id,
-                )
-            payload = {"tool_call_id": call_id, "status": "error", "error": str(exc), "error_type": type(exc).__name__}
-            if model_tool_call_id:
-                payload["model_tool_call_id"] = model_tool_call_id
-            self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
-            return ToolResult(status="error", error=str(exc), tool_call_id=call_id)
-
-        tool_error = _structured_tool_error_payload(result)
-        if tool_error is not None:
-            if self.defer_file_effects:
-                self._append_deferred_file_effect_job(
-                    tool_call_id=call_id,
-                    tool_name=name,
-                    args=args,
-                    turn_id=ctx.turn_id,
-                    declared=declared,
-                    include_declared=False,
-                )
-            else:
-                self._append_file_effects_after_tool(
-                    before,
-                    declared,
-                    tool_name=name,
-                    tool_call_id=call_id,
-                    turn_id=ctx.turn_id,
-                    include_declared=False,
-                )
-            payload = {
-                "tool_call_id": call_id,
-                "status": "error",
-                "error": tool_error["error"],
-                "error_type": tool_error["error_type"],
-            }
-            if model_tool_call_id:
-                payload["model_tool_call_id"] = model_tool_call_id
-            if tool_error.get("details") is not None:
-                payload["details"] = tool_error["details"]
-            self.store.append("tool.result", actor="tool", payload=payload, turn_id=ctx.turn_id)
-            return ToolResult(status="error", error=tool_error["error"], tool_call_id=call_id)
-
-        if self.defer_file_effects:
-            self._append_deferred_file_effect_job(
-                tool_call_id=call_id,
-                tool_name=name,
-                args=args,
-                turn_id=ctx.turn_id,
-                declared=declared,
-            )
-        else:
-            self._append_file_effects_after_tool(
-                before,
-                declared,
-                tool_name=name,
-                tool_call_id=call_id,
-                turn_id=ctx.turn_id,
-            )
-        status = "success"
-        if isinstance(result, dict) and result.get("status") in {"stubbed", "partial"}:
-            status = result["status"]
-        result = _spool_large_tool_result(
-            tool_name=name,
-            args=args,
-            result=result,
-            tool_call_id=call_id,
-            run_dir=self.store.run_dir,
-            bash_full_output_allowlist=self.bash_full_output_allowlist,
-        )
-        result_payload = {"tool_call_id": call_id, "status": status, "result": result}
-        if model_tool_call_id:
-            result_payload["model_tool_call_id"] = model_tool_call_id
-        self.store.append("tool.result", actor="tool", payload=result_payload, turn_id=ctx.turn_id)
-        return ToolResult(status=status, result=result, tool_call_id=call_id)  # type: ignore[arg-type]
-
-    def _append_file_effects_after_tool(
-        self,
-        before: dict[str, FileSnapshot] | None,
-        declared: list[FileEffect],
-        *,
-        tool_name: str,
-        tool_call_id: str,
-        turn_id: str | None,
-        include_declared: bool = True,
-    ) -> None:
-        if self.file_effect_tracker is None or before is None:
-            return
-        after = self.file_effect_tracker.snapshot_workspace()
-        observed = self.file_effect_tracker.observed_effects(
-            before,
-            after,
-            tool_name=tool_name,
-            tool_call_id=tool_call_id,
-        )
-        if not include_declared:
-            declared = []
-        self.file_effect_tracker.append_effects(
-            self.file_effect_tracker.merge_effects(declared, observed),
-            turn_id=turn_id,
         )
 
 
@@ -831,7 +588,7 @@ def _tool_requires_deferred_snapshot(tool_name: str, args: dict[str, Any]) -> bo
         return True
     if tool_name != "bash":
         return False
-    command = args.get("command") or args.get("cmd")
+    command = args.get("command")
     return isinstance(command, str) and _bash_command_may_write(command)
 
 
@@ -839,7 +596,9 @@ def _bash_command_may_write(command: str) -> bool:
     lowered = command.lower()
     if re.search(r"(^|[^0-9])>{1,2}(?!&)", command):
         return True
-    if re.search(r"\b(cat\s+>|tee|touch|mkdir|rm|rmdir|del|move|mv|copy|cp)\b", lowered):
+    if re.search(
+        r"\b(cat\s+>|tee|touch|mkdir|rm|rmdir|del|move|mv|copy|cp)\b", lowered
+    ):
         return True
     if re.search(r"\bsed\b[^;&|]*\s-i\b", lowered):
         return True
@@ -862,7 +621,9 @@ def _merge_detected_by(
 
 
 def _effect_type_order(effect_type: str) -> int:
-    return {"file.write": 0, "file.edit": 1, "file.delete": 2, "file.read": 3}.get(effect_type, 99)
+    return {"file.write": 0, "file.edit": 1, "file.delete": 2, "file.read": 3}.get(
+        effect_type, 99
+    )
 
 
 def _non_option_tokens(tokens: list[str]) -> list[str]:
@@ -887,74 +648,6 @@ def _powershell_path_args(tokens: list[str]) -> list[str]:
     return paths
 
 
-def _line_range(content: str, offset: int | None, limit: int | None) -> ReadRange:
-    if offset is None and limit is None:
-        return ReadRange()
-    line_count = max(1, len(content.splitlines()))
-    start = max(1, int(offset or 1))
-    end: int | Literal["EOF"]
-    if limit is None:
-        end = "EOF"
-    else:
-        end = min(line_count, start + max(0, int(limit)) - 1)
-    return ReadRange(unit="line", start=start, end=end)
-
-
-def _select_lines(content: str, read_range: ReadRange) -> str:
-    if read_range.unit == "full":
-        return content
-    lines = content.splitlines()
-    end = len(lines) if read_range.end == "EOF" else int(read_range.end)
-    return "\n".join(lines[read_range.start - 1 : end])
-
-
-def _unsupported_argument_error(name: str, args: dict[str, Any], tool: Callable[..., Any]) -> str | None:
-    try:
-        signature = inspect.signature(tool)
-    except (TypeError, ValueError):
-        return None
-    parameters = signature.parameters
-    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
-        return None
-    allowed = {
-        parameter_name
-        for parameter_name, parameter in parameters.items()
-        if parameter.kind
-        in {
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        }
-    }
-    unknown = sorted(set(args) - allowed)
-    if not unknown:
-        return None
-    allowed_text = ", ".join(sorted(allowed)) or "none"
-    unknown_text = ", ".join(unknown)
-    return f"Tool {name!r} received unsupported argument(s): {unknown_text}. Supported arguments: {allowed_text}."
-
-
-def _structured_tool_error_payload(result: Any) -> dict[str, Any] | None:
-    error_type = getattr(result, "error_type", None)
-    details = getattr(result, "details", None)
-    if isinstance(error_type, str) and error_type:
-        return {
-            "error": str(result),
-            "error_type": error_type,
-            "details": details if isinstance(details, dict) else None,
-        }
-    if isinstance(result, dict) and result.get("ok") is False:
-        error = result.get("error")
-        if isinstance(error, dict):
-            message = str(error.get("message") or error.get("error") or result)
-            return {
-                "error": message,
-                "error_type": str(error.get("type") or error.get("error_type") or "ToolError"),
-                "details": error.get("details") if isinstance(error.get("details"), dict) else None,
-            }
-        return {"error": str(error or result), "error_type": "ToolError", "details": None}
-    return None
-
-
 def _spool_large_tool_result(
     *,
     tool_name: str,
@@ -967,8 +660,10 @@ def _spool_large_tool_result(
     if tool_name not in SPOOLED_TEXT_TOOL_NAMES or not isinstance(result, str):
         return result
     if tool_name == "bash":
-        command = args.get("command") or args.get("cmd")
-        if isinstance(command, str) and _bash_command_matches_allowlist(command, bash_full_output_allowlist):
+        command = args.get("command")
+        if isinstance(command, str) and _bash_command_matches_allowlist(
+            command, bash_full_output_allowlist
+        ):
             return result
     lines = result.splitlines()
     if len(result) <= MAX_BASH_RESULT_CHARS and len(lines) <= MAX_BASH_RESULT_LINES:
@@ -1012,7 +707,3 @@ def _bash_command_matches_allowlist(command: str, allowlist: list[str]) -> bool:
         if command == entry or command.startswith(f"{entry} "):
             return True
     return False
-
-
-def _end_value(value: int | Literal["EOF"]) -> int:
-    return 2**31 - 1 if value == "EOF" else int(value)

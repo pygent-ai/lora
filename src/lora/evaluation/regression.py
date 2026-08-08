@@ -10,7 +10,6 @@ from .case import CaseManager
 from lora.config import load_mapping_file
 from .evaluator import Evaluator
 from lora.core.io import append_jsonl, write_json
-from lora.runtime.adapter import AgentRuntimeAdapter
 from lora.runtime.runner import execute_case_run
 from lora.schema import CaseRunRef, RunConfig
 from lora.sessions import SessionManager
@@ -86,13 +85,11 @@ class RegressionRunner:
         config: RunConfig,
         session_manager: SessionManager,
         case_manager: CaseManager,
-        runtime_adapter: AgentRuntimeAdapter | None = None,
         evaluator: Evaluator | None = None,
     ) -> None:
         self.config = config
         self.session_manager = session_manager
         self.case_manager = case_manager
-        self.runtime_adapter = runtime_adapter
         self.evaluator = evaluator
         self.regressions_root = Path(config.lora_root) / "regressions"
 
@@ -159,7 +156,6 @@ class RegressionRunner:
                 case_manager=self.case_manager,
                 case_file=case_path,
                 session_mode=case_spec.session_mode,
-                runtime_adapter=self.runtime_adapter,
                 evaluator=self.evaluator,
             )
             return _case_summary(case_spec, case_path, payload)

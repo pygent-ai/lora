@@ -7,8 +7,10 @@ This directory contains project-level documentation. Package-local README files 
 - [API](api/README.md): local FastAPI service routes, SSE events, and generated OpenAPI contract.
 - [CLI](cli/lora-chat.md): command-line chat usage.
 - [Guides](guides/development-guide.md): development workflow and operational guides.
+- [Pygent Runtime Evaluation](guides/pygent-0.2.2-agent-runtime-evaluation.md): managed Agent concurrency architecture, benchmarks, and development-cost assessment.
+- [Pygent 0.2.2 Feedback](design/runtime/pygent-0.2.2-feedback.md): concrete API and Runtime recommendations discovered during migration.
 - [Architecture](architecture/repository-layout.md): active repository layout and runtime boundaries.
-- [Design](design/agent/agent-context-architecture-zh.md): design notes for agent context, prompt composition, runtime behavior, and self-optimization.
+- [Design](design/agent/agent-context-architecture-zh.md): design notes for agent context, prompt composition, runtime behavior, self-optimization, and pygent runtime requirements.
 - [Product](product/README.md): product notes for the Electron + React transition, including message display guidelines.
 - [Planning](planning/superpowers/): historical specs and implementation plans.
 - [Backlog](backlog/unimplemented/README.md): known unimplemented or deferred areas.

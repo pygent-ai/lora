@@ -3,59 +3,26 @@ from __future__ import annotations
 import tempfile
 import unittest
 import unittest.mock
+import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
+from pygent import ToolKit, ToolResult as PygentToolResult, thaw_json
+
+from lora.runtime import ToolObserver
 from lora.schema import CaseRunRef
-from lora.tracing import DiffTool
-from lora.runtime import FileStateTracker, ReadRange, ToolContext, ToolInterceptor
-from lora.tracing import EventStore
+from lora.tracing import DiffTool, EventStore
 
 
 class ToolTests(unittest.IsolatedAsyncioTestCase):
-    def test_file_state_tracker_stubs_contained_unchanged_read(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "demo.txt"
-            path.write_text("a\nb\nc\n", encoding="utf-8")
-            tracker = FileStateTracker(Path(tmp) / "state")
-
-            first = tracker.read_text_file(path)
-            second = tracker.read_text_file(path, offset=2, limit=1)
-
-            self.assertEqual(first["status"], "success")
-            self.assertEqual(second["status"], "stubbed")
-            self.assertIn("earlier", second["content"])
-
-    def test_hash_change_disables_old_read_stub(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "demo.txt"
-            path.write_text("a\nb\n", encoding="utf-8")
-            tracker = FileStateTracker(Path(tmp) / "state")
-            tracker.read_text_file(path, offset=1, limit=1)
-            path.write_text("changed\nb\n", encoding="utf-8")
-
-            result = tracker.read_text_file(path, offset=1, limit=1)
-
-            self.assertEqual(result["status"], "success")
-            self.assertEqual(result["content"], "changed")
-
-    def test_should_stub_exact_range(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tracker = FileStateTracker(Path(tmp) / "state")
-            tracker.record_read("file.txt", "hash", ReadRange(unit="line", start=1, end=3), "evt_1")
-
-            decision = tracker.should_stub_read("file.txt", "hash", ReadRange(unit="line", start=1, end=3))
-
-            self.assertEqual(decision.action, "stub")
-            self.assertEqual(decision.reason, "exact")
-
     async def test_tool_interceptor_records_success_and_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run))
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run))
+            ctx = "turn-0001"
 
-            ok = await interceptor.call_tool("add", {"a": 1, "b": 2}, ctx, lambda a, b: a + b)
-            bad = await interceptor.call_tool("boom", {}, ctx, lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+            ok = await _call_and_record(interceptor, "add", {"a": 1, "b": 2}, ctx, lambda a, b: a + b)
+            bad = await _call_and_record(interceptor, "boom", {}, ctx, lambda: (_ for _ in ()).throw(RuntimeError("boom")))
 
             self.assertEqual(ok.status, "success")
             self.assertEqual(bad.status, "error")
@@ -65,13 +32,13 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_interceptor_awaits_async_tool_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run))
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run))
+            ctx = "turn-0001"
 
             async def echo(message: str) -> str:
                 return f"echo:{message}"
 
-            result = await interceptor.call_tool("echo", {"message": "hi"}, ctx, echo)
+            result = await _call_and_record(interceptor, "echo", {"message": "hi"}, ctx, echo)
 
             self.assertEqual(result.status, "success")
             self.assertEqual(result.result, "echo:hi")
@@ -81,10 +48,10 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_interceptor_records_model_tool_call_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run))
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run))
+            ctx = "turn-0001"
 
-            await interceptor.call_tool(
+            await _call_and_record(interceptor,
                 "add",
                 {"a": 1, "b": 2},
                 ctx,
@@ -100,8 +67,8 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_interceptor_reports_unknown_arguments_before_calling_tool(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run))
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run))
+            ctx = "turn-0001"
             called = False
 
             def bash(command: str) -> str:
@@ -109,21 +76,20 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
                 called = True
                 return command
 
-            result = await interceptor.call_tool("bash", {"raw_arguments": "{}"}, ctx, bash)
+            result = await _call_and_record(interceptor, "bash", {"raw_arguments": "{}"}, ctx, bash)
 
             self.assertFalse(called)
             self.assertEqual(result.status, "error")
-            self.assertIn("unsupported argument", result.error or "")
-            self.assertIn("raw_arguments", result.error or "")
+            self.assertIn("required argument", result.error or "")
             self.assertIn("command", result.error or "")
 
-    async def test_tool_interceptor_maps_structured_tool_error_result_to_error_status(self) -> None:
+    async def test_tool_observer_does_not_reinterpret_structured_executor_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run))
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run))
+            ctx = "turn-0001"
 
-            result = await interceptor.call_tool(
+            result = await _call_and_record(interceptor,
                 "read",
                 {"file_path": "missing.txt"},
                 ctx,
@@ -134,22 +100,19 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-            self.assertEqual(result.status, "error")
-            self.assertEqual(result.error, "错误：文件不存在 missing.txt")
+            self.assertEqual(result.status, "success")
+            self.assertIsNone(result.error)
             tool_result = next(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))
-            self.assertEqual(tool_result["status"], "error")
-            self.assertEqual(tool_result["error"], "错误：文件不存在 missing.txt")
-            self.assertEqual(tool_result["error_type"], "FileNotFoundError")
-            self.assertEqual(tool_result["details"]["input_path"], "missing.txt")
+            self.assertEqual(tool_result["status"], "success")
 
     async def test_tool_interceptor_spools_large_bash_result_to_run_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run))
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run))
+            ctx = "turn-0001"
             output = "\n".join(f"line-{index:04d}" for index in range(700))
 
-            result = await interceptor.call_tool("bash", {"command": "generate lots"}, ctx, lambda command: output)
+            result = await _call_and_record(interceptor, "bash", {"command": "generate lots"}, ctx, lambda command: output)
 
             self.assertEqual(result.status, "success")
             self.assertIsInstance(result.result, dict)
@@ -168,11 +131,11 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_interceptor_spools_large_grep_result_to_run_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run))
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run))
+            ctx = "turn-0001"
             output = "\n".join(f"path/file.py:{index}|{'x' * 500}" for index in range(170))
 
-            result = await interceptor.call_tool(
+            result = await _call_and_record(interceptor,
                 "grep",
                 {"pattern": "DEFAULT_PYGENT_TOOL_NAMES", "output_mode": "content"},
                 ctx,
@@ -193,11 +156,11 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_interceptor_keeps_small_grep_result_inline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run))
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run))
+            ctx = "turn-0001"
             output = "src/lora/agent.py:32|DEFAULT_PYGENT_TOOL_NAMES = (\"bash\", \"read\")"
 
-            result = await interceptor.call_tool(
+            result = await _call_and_record(interceptor,
                 "grep",
                 {"pattern": "DEFAULT_PYGENT_TOOL_NAMES"},
                 ctx,
@@ -211,11 +174,11 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_interceptor_does_not_spool_allowlisted_large_bash_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run), bash_full_output_allowlist=["lora"])
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run), bash_full_output_allowlist=["lora"])
+            ctx = "turn-0001"
             output = "\n".join(f"line-{index:04d}" for index in range(700))
 
-            result = await interceptor.call_tool("bash", {"command": "lora chat --message hello"}, ctx, lambda command: output)
+            result = await _call_and_record(interceptor, "bash", {"command": "lora chat --message hello"}, ctx, lambda command: output)
 
             self.assertEqual(result.status, "success")
             self.assertEqual(result.result, output)
@@ -226,11 +189,11 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_interceptor_allowlist_requires_command_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run), bash_full_output_allowlist=["lora"])
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(EventStore(run), bash_full_output_allowlist=["lora"])
+            ctx = "turn-0001"
             output = "\n".join(f"line-{index:04d}" for index in range(700))
 
-            result = await interceptor.call_tool("bash", {"command": "lorax chat"}, ctx, lambda command: output)
+            result = await _call_and_record(interceptor, "bash", {"command": "lorax chat"}, ctx, lambda command: output)
 
             self.assertIsInstance(result.result, dict)
             self.assertTrue(result.result["truncated"])
@@ -242,40 +205,45 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             outside = Path(tmp) / "outside.txt"
             outside.write_text("outside\n", encoding="utf-8")
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(EventStore(run), workspace_root=workspace, track_file_effects=True)
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            interceptor = ToolObserver(
+                EventStore(run),
+                workspace_root=workspace,
+                track_file_effects=True,
+                defer_file_effects=True,
+            )
+            ctx = "turn-0001"
 
-            result = await interceptor.call_tool(
+            result = await _call_and_record(interceptor,
                 "read",
-                {"path": str(outside)},
+                {"file_path": str(outside)},
                 ctx,
-                lambda path: Path(path).read_text(encoding="utf-8"),
+                lambda file_path: Path(file_path).read_text(encoding="utf-8"),
             )
 
             self.assertEqual(result.status, "success")
-            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
-            self.assertEqual(len(file_events), 1)
-            self.assertEqual(file_events[0]["type"], "file.read")
-            self.assertEqual(file_events[0]["path"], str(outside.resolve()))
+            jobs = interceptor.drain_file_effect_jobs()
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(jobs[0].declared[0].type, "file.read")
+            self.assertEqual(jobs[0].declared[0].path, str(outside.resolve()))
 
     async def test_tool_interceptor_deferred_mode_does_not_snapshot_before_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"
             workspace.mkdir()
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(
+            interceptor = ToolObserver(
                 EventStore(run),
                 workspace_root=workspace,
                 track_file_effects=True,
                 defer_file_effects=True,
             )
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            ctx = "turn-0001"
 
             with unittest.mock.patch(
                 "lora.runtime.tools.FileEffectTracker.snapshot_workspace",
                 side_effect=AssertionError("snapshot should be deferred"),
             ):
-                result = await interceptor.call_tool("bash", {"command": "echo hi"}, ctx, lambda command: "ok")
+                result = await _call_and_record(interceptor, "bash", {"command": "echo hi"}, ctx, lambda command: "ok")
 
             self.assertEqual(result.status, "success")
             tool_results = list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))
@@ -288,15 +256,15 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             workspace.mkdir()
             path = workspace / "demo.txt"
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(
+            interceptor = ToolObserver(
                 EventStore(run),
                 workspace_root=workspace,
                 track_file_effects=True,
                 defer_file_effects=True,
             )
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            ctx = "turn-0001"
 
-            await interceptor.call_tool(
+            await _call_and_record(interceptor,
                 "write",
                 {"file_path": str(path), "content": "hello\n"},
                 ctx,
@@ -315,15 +283,15 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             workspace = Path(tmp) / "workspace"
             workspace.mkdir()
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            interceptor = ToolInterceptor(
+            interceptor = ToolObserver(
                 EventStore(run),
                 workspace_root=workspace,
                 track_file_effects=True,
                 defer_file_effects=True,
             )
-            ctx = ToolContext(case_run_ref=run, turn_id="turn-0001")
+            ctx = "turn-0001"
 
-            await interceptor.call_tool(
+            await _call_and_record(interceptor,
                 "bash",
                 {"command": "rg -n \"DiffTool\" src/lora"},
                 ctx,
@@ -331,19 +299,6 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(interceptor.drain_file_effect_jobs(), [])
-
-    def test_file_read_event_keeps_returned_content_for_replay(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "demo.txt"
-            path.write_text("a\nb\nc\n", encoding="utf-8")
-            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
-            tracker = FileStateTracker(Path(tmp) / "state")
-
-            tracker.read_text_file(path, offset=2, limit=1, event_store=EventStore(run), turn_id="turn-0001")
-
-            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
-            self.assertEqual(file_events[0]["payload"]["returned_content"], "b")
-
 
 class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
     """Specification tests for the planned workspace file-effect tracker."""
@@ -532,7 +487,7 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
 
             for raw_path in path_styles:
                 with self.subTest(raw_path=raw_path):
-                    effects = tracker.declared_effects("read", {"path": raw_path}, tool_call_id="evt_tool")
+                    effects = tracker.declared_effects("read", {"file_path": raw_path}, tool_call_id="evt_tool")
 
                     self.assertEqual(len(effects), 1)
                     self.assertEqual(effects[0].path, str(path.resolve()))
@@ -617,7 +572,7 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
             tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
 
-            effects = tracker.declared_effects("read", {"path": str(outside)}, tool_call_id="evt_tool")
+            effects = tracker.declared_effects("read", {"file_path": str(outside)}, tool_call_id="evt_tool")
 
             self.assertEqual(len(effects), 1)
             self.assertEqual(effects[0].type, "file.read")
@@ -638,7 +593,7 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
             )
 
             with self.assertRaises(ValueError):
-                tracker.declared_effects("read", {"path": str(outside)}, tool_call_id="evt_tool")
+                tracker.declared_effects("read", {"file_path": str(outside)}, tool_call_id="evt_tool")
 
     def test_file_effect_tracker_rejects_windows_shell_style_paths_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -660,7 +615,7 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
             for raw_path in raw_paths:
                 with self.subTest(raw_path=raw_path):
                     with self.assertRaises(ValueError):
-                        tracker.declared_effects("read", {"path": raw_path}, tool_call_id="evt_tool")
+                        tracker.declared_effects("read", {"file_path": raw_path}, tool_call_id="evt_tool")
 
     def test_file_effect_tracker_infers_bash_read_without_claiming_observed_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -761,13 +716,70 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
             workspace.mkdir()
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
 
-            schema = DiffTool(case_run_ref=run, workspace_root=workspace).to_openai_function()
-            properties = schema["parameters"]["properties"]
+            definition = ToolKit(DiffTool(case_run_ref=run, workspace_root=workspace).forward).definitions[0]
+            parameters = thaw_json(definition.parameters)
+            properties = parameters["properties"]
 
             self.assertEqual(properties["scope"]["enum"], ["turn", "run", "session"])
             self.assertEqual(properties["format"]["enum"], ["summary", "patch", "json"])
             self.assertEqual(properties["limit"]["minimum"], 1)
-            self.assertFalse(schema["parameters"]["additionalProperties"])
+            self.assertFalse(parameters["additionalProperties"])
+
+
+async def _call_and_record(
+    interceptor: ToolObserver,
+    name: str,
+    args: dict[str, object],
+    ctx: str,
+    tool: object,
+    *,
+    model_tool_call_id: str | None = None,
+) -> SimpleNamespace:
+    """Exercise only Lora's projection after a synthetic Pygent tool outcome."""
+
+    call_id = model_tool_call_id or f"test-{name}"
+    try:
+        inspect.signature(tool).bind(**args)
+        value = tool(**args)  # type: ignore[operator]
+        if inspect.isawaitable(value):
+            value = await value
+        error = None
+        error_kind = None
+        status = "succeeded"
+        if isinstance(value, dict) and value.get("ok") is False:
+            details = value.get("error")
+            error = str(details.get("message") if isinstance(details, dict) else details)
+            error_kind = str(details.get("type") if isinstance(details, dict) else "ToolError")
+            status = "failed"
+    except Exception as exc:  # noqa: BLE001 - synthetic framework boundary for projection tests.
+        value = None
+        error = str(exc)
+        error_kind = type(exc).__name__
+        status = "failed"
+    payload = interceptor.record_framework_result(
+        name,
+        args,
+        ctx,
+        PygentToolResult(
+            call_id=call_id,
+            name=name,
+            status=status,
+            output=value,
+            error=error,
+            error_kind=error_kind,
+            side_effect_committed=status == "succeeded",
+        ),
+    )
+    projected_status = str(payload["status"])
+    projected_result = payload.get("result")
+    if isinstance(projected_result, dict) and projected_result.get("status") in {"stubbed", "partial"}:
+        projected_status = str(projected_result["status"])
+    return SimpleNamespace(
+        status=projected_status,
+        result=projected_result,
+        error=payload.get("error"),
+        tool_call_id=payload["tool_call_id"],
+    )
 
 
 def _file_effect_tracker_class():

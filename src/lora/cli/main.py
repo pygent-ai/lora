@@ -15,7 +15,8 @@ from lora.evaluation import Evaluator
 from lora.evaluation import RegressionRunner
 from lora.repair import RepairWorkflow
 from lora.runtime import execute_case_run
-from lora.runtime import AgentRuntimeAdapter, RuntimeMessage
+from lora.runtime.service import LoraRuntimeService
+from pygent import thaw_json
 from lora.sessions import SessionManager
 from lora.evaluation import RegressionRegistrar, TestGenerator
 from lora.tracing import EventStore
@@ -51,7 +52,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace-root", default=None, help="Workspace root. Defaults to cwd or LORA_WORKSPACE_ROOT.")
     parser.add_argument("--config", default=None, help="Path to lora.yaml.")
     parser.add_argument("--agent", dest="agent_alias", default=None, help="Agent profile alias.")
-    parser.add_argument("--model", default=None, help="Model override.")
     parser.add_argument("--max-steps", type=int, default=None, help="Maximum agent steps; -1 means unlimited.")
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -151,7 +151,6 @@ def _case_run(args: argparse.Namespace) -> dict[str, Any]:
         config_file=args.config,
         session_id=getattr(args, "session_id", None),
         case_file=args.case_file,
-        model=args.model,
         agent_alias=args.agent_alias,
         max_steps=args.max_steps,
     )
@@ -249,11 +248,14 @@ def _optimize(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
+    return asyncio.run(_chat_async(args))
+
+
+async def _chat_async(args: argparse.Namespace) -> dict[str, Any] | None:
     config = load_run_config(
         workspace_root=args.workspace_root,
         config_file=args.config,
         session_id=getattr(args, "session_id", None),
-        model=args.model,
         agent_alias=args.agent_alias,
         max_steps=args.max_steps,
     )
@@ -262,23 +264,25 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
     if session_id is None:
         session_id = manager.create("chat", mode="chat").session_id
 
-    session = manager.load(session_id)
     run_ref = manager.start_case_run(session_id, "chat", run_config=config)
     store = EventStore(run_ref)
     store.append("chat.started", actor="system", payload={"interactive": args.message is None}, turn_id=None)
-    adapter = AgentRuntimeAdapter(config=config, session_manager=manager)
+    runtime = LoraRuntimeService(config)
+    await runtime.initialize()
     status = "passed"
 
     try:
         if args.message is not None:
-            result = asyncio.run(
-                adapter.run_turn(
-                    session=session,
-                    user_input=args.message,
-                    case_run_ref=run_ref,
-                    turn_id="turn-0001",
-                )
+            handle = await runtime.start_turn(
+                manager=manager,
+                message=args.message,
+                run_ref=run_ref,
+                turn_id="turn-0001",
+                interactive_approvals=False,
             )
+            output, _ = await handle.result()
+            result = dict(thaw_json(output.data).get("result") or {})
+            result["runtime_execution_id"] = handle.execution_id
             status = result["status"]
             return _chat_message_payload(run_ref, result)
 
@@ -297,35 +301,34 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
             streamed = False
             pending_delta_text = ""
 
-            def print_chunk(chunk: str) -> None:
-                nonlocal pending_delta_text, streamed
-                streamed = True
-                pending_delta_text += chunk
-                print(chunk, end="", flush=True)
-
-            def print_runtime_message(message: RuntimeMessage) -> None:
-                nonlocal pending_delta_text, streamed
-                lines = _format_runtime_message_for_chat(message, pending_delta_text=pending_delta_text)
-                if message.role == "assistant":
-                    pending_delta_text = ""
-                if not lines:
-                    return
-                if streamed:
-                    print()
-                for line in lines:
-                    print(line)
-                streamed = True
-
-            result = asyncio.run(
-                adapter.run_turn(
-                    session=session,
-                    user_input=user_input,
-                    case_run_ref=run_ref,
-                    turn_id=f"turn-{turn_index:04d}",
-                    on_assistant_delta=print_chunk,
-                    on_runtime_message=print_runtime_message,
-                )
+            handle = await runtime.start_turn(
+                manager=manager,
+                message=user_input,
+                run_ref=run_ref,
+                turn_id=f"turn-{turn_index:04d}",
+                interactive_approvals=True,
             )
+            async with handle.subscribe() as execution_events:
+                async for event in execution_events:
+                    data = dict(thaw_json(event.data))
+                    if event.kind == "model.text.delta" and event.module_path.endswith(".react.model.model"):
+                        chunk = str(data.get("text") or "")
+                        if chunk:
+                            streamed = True
+                            pending_delta_text += chunk
+                            print(chunk, end="", flush=True)
+                    elif event.kind == "lora.approval.requested":
+                        answer = await asyncio.to_thread(
+                            input,
+                            f"Approve {data.get('tool_name')} {data.get('arguments')}? [y/N] ",
+                        )
+                        await runtime.deliver_approval(
+                            str(data["approval_id"]),
+                            approved=answer.strip().lower() in {"y", "yes"},
+                            comment="interactive CLI decision",
+                        )
+            output, _ = await handle.result()
+            result = dict(thaw_json(output.data).get("result") or {})
             status = result["status"]
             if streamed:
                 print()
@@ -338,6 +341,7 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
     finally:
         store.append("chat.finished", actor="system", payload={"status": status}, turn_id=None)
         manager.finish_case_run(run_ref, status)
+        await runtime.close(cancel=True)
     return None
 
 
@@ -353,88 +357,11 @@ def _chat_message_payload(run_ref: Any, result: dict[str, Any]) -> dict[str, Any
     return payload
 
 
-def _format_runtime_message_for_chat(
-    message: RuntimeMessage,
-    *,
-    pending_delta_text: str = "",
-    max_tool_result_lines: int = 5,
-) -> list[str]:
-    if message.role == "assistant":
-        lines: list[str] = []
-        content = message.content.strip()
-        if content and content != pending_delta_text:
-            lines.extend(content.splitlines())
-        for tool_call in _message_tool_calls(message):
-            name = _tool_call_name(tool_call)
-            arguments = _tool_call_arguments(tool_call)
-            suffix = f" {arguments}" if arguments else ""
-            lines.append(f"[tool call] {name}{suffix}")
-        return lines
-
-    if message.role != "tool":
-        return []
-
-    payload = _parse_json_object(message.content)
-    status = str(payload.get("status") or "result") if payload else "result"
-    tool_call_id = str((message.payload or {}).get("tool_call_id") or payload.get("tool_call_id") or "").strip()
-    heading = f"[tool result] {tool_call_id} {status}".strip()
-    preview_source = payload.get("result") if payload and "result" in payload else message.content
-    if payload and payload.get("error"):
-        preview_source = payload["error"]
-    preview_lines = _preview_lines(preview_source, max_lines=max_tool_result_lines)
-    return [heading, *preview_lines]
-
-
-def _message_tool_calls(message: RuntimeMessage) -> list[dict[str, Any]]:
-    payload = message.payload or {}
-    tool_calls = payload.get("tool_calls") or []
-    return [tool_call for tool_call in tool_calls if isinstance(tool_call, dict)]
-
-
-def _tool_call_name(tool_call: dict[str, Any]) -> str:
-    function = tool_call.get("function")
-    if isinstance(function, dict) and function.get("name"):
-        return str(function["name"])
-    return str(tool_call.get("name") or tool_call.get("tool_name") or "tool")
-
-
-def _tool_call_arguments(tool_call: dict[str, Any]) -> str:
-    function = tool_call.get("function")
-    if isinstance(function, dict) and function.get("arguments") is not None:
-        return str(function["arguments"])
-    arguments = tool_call.get("arguments")
-    if arguments is None:
-        return ""
-    if isinstance(arguments, str):
-        return arguments
-    return json.dumps(arguments, ensure_ascii=False, sort_keys=True)
-
-
-def _parse_json_object(content: str) -> dict[str, Any]:
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _preview_lines(value: Any, *, max_lines: int) -> list[str]:
-    if isinstance(value, str):
-        text = value
-    else:
-        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    lines = text.splitlines() or [text]
-    if len(lines) > max_lines:
-        return [*lines[: max_lines - 1], "..."]
-    return lines[:max_lines]
-
-
 def _manager(args: argparse.Namespace) -> SessionManager:
     return SessionManager(
         load_run_config(
             workspace_root=args.workspace_root,
             config_file=args.config,
-            model=args.model,
             agent_alias=args.agent_alias,
             max_steps=args.max_steps,
         )

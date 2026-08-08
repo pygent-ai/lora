@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora.schema import CaseDefinition, CaseRunRef, CaseRunResult, ContextEvent, ResolvedAgentConfig, RunConfig, SessionRef
+from lora.schema import CaseDefinition, CaseRunRef, CaseRunResult, ContextEvent, ModelRouteConfig, ResolvedAgentConfig, RunConfig, SessionRef
 
 
 class SchemaTests(unittest.TestCase):
@@ -22,15 +22,17 @@ class SchemaTests(unittest.TestCase):
                 workspace_root=tmp,
                 lora_root=Path(tmp) / ".lora",
                 agent_alias="dev",
-                model_name="profile-model",
-                api_key_source="env:DEV_API_KEY",
-                base_url="https://api.example/v1",
                 resolved_agent=ResolvedAgentConfig(
                     alias="dev",
-                    model_name="profile-model",
-                    api_key="raw-secret",
-                    api_key_source="env:DEV_API_KEY",
-                    base_url="https://api.example/v1",
+                    routes=(ModelRouteConfig(
+                        id="primary",
+                        provider="openai",
+                        model_name="profile-model",
+                        api_key="raw-secret",
+                        api_key_source="env:DEV_API_KEY",
+                        api_key_env="DEV_API_KEY",
+                        base_url="https://api.example/v1",
+                    ),),
                 ),
             )
 
@@ -38,12 +40,11 @@ class SchemaTests(unittest.TestCase):
             restored = RunConfig.from_dict(data)
 
         self.assertEqual(data["agent_alias"], "dev")
-        self.assertEqual(data["model_name"], "profile-model")
-        self.assertEqual(data["api_key_source"], "env:DEV_API_KEY")
+        self.assertEqual(data["resolved_agent"]["routes"][0]["model_name"], "profile-model")
         self.assertEqual(data["allow_read_outside_workspace"], True)
-        self.assertNotIn("resolved_agent", data)
         self.assertNotIn("raw-secret", str(data))
         self.assertEqual(restored.agent_alias, "dev")
+        self.assertEqual(restored.resolved_agent.routes[0].model_name, "profile-model")
         self.assertEqual(restored.allow_read_outside_workspace, True)
 
     def test_refs_round_trip(self) -> None:

@@ -20,7 +20,7 @@ def _isolated_cli_env(root: Path) -> dict[str, str]:
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
     }
-    for key in ("DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL", "LORA_MODEL"):
+    for key in ("DEEPSEEK_API_KEY",):
         env.pop(key, None)
     return env
 
@@ -500,9 +500,12 @@ class CliScenarioTests(unittest.TestCase):
                         "agents:",
                         "  - alias: dev",
                         "    model_request:",
-                        "      model_name: dev-model",
-                        "      api_key_env: DEV_PROFILE_KEY",
-                        "      base_url: https://profile.example/v1",
+                        "      routes:",
+                        "        - id: primary",
+                        "          provider: openai",
+                        "          model_name: dev-model",
+                        "          api_key_env: DEV_PROFILE_KEY",
+                        "          base_url: https://profile.example/v1",
                         "",
                     ]
                 ),
@@ -520,8 +523,6 @@ class CliScenarioTests(unittest.TestCase):
                     str(root),
                     "--agent",
                     "dev",
-                    "--model",
-                    "cli-model",
                     "chat",
                     "--message",
                     "hello agent",
@@ -537,17 +538,17 @@ class CliScenarioTests(unittest.TestCase):
             request = next(item for item in _read_jsonl(run_dir / "events.jsonl") if item["type"] == "model.request")
 
             self.assertEqual(run_config["agent_alias"], "dev")
-            self.assertEqual(run_config["model_name"], "cli-model")
-            self.assertEqual(run_config["api_key_source"], "missing")
+            self.assertEqual(run_config["resolved_agent"]["routes"][0]["model_name"], "dev-model")
+            self.assertEqual(run_config["resolved_agent"]["routes"][0]["api_key_source"], "missing")
             self.assertIn("agent alias 'dev'", payload["final_answer"])
             self.assertEqual(request["payload"]["agent_alias"], "dev")
-            self.assertEqual(request["payload"]["model_name"], "cli-model")
+            self.assertEqual(request["payload"]["model_name"], "dev-model")
 
     def test_missing_agent_alias_returns_exit_code_2(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "lora.yaml").write_text(
-                "agents:\n  - alias: dev\n    model_request:\n      model_name: dev-model\n",
+                "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: dev-model\n          base_url: https://example.test/v1\n          api_key_env: DEV_KEY\n",
                 encoding="utf-8",
             )
             env = _isolated_cli_env(root)

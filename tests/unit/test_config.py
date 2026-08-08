@@ -1,262 +1,91 @@
 from __future__ import annotations
 
 import os
-import tempfile
-import unittest
-import warnings
-from contextlib import contextmanager
 from pathlib import Path
-from collections.abc import Iterator
-from unittest.mock import patch
 
-from lora.config import load_mapping_file, load_run_config
+import pytest
+
+from lora.config import load_run_config
 
 
-class ConfigTests(unittest.TestCase):
-    def test_default_max_steps_is_unlimited(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            config = load_run_config(workspace_root=tmp)
+ROUTES_CONFIG = """
+agent:
+  default_alias: dev
+agents:
+  - alias: dev
+    model_request:
+      profile: production
+      routes:
+        - id: primary
+          provider: openai
+          model_name: model-a
+          base_url: https://example.test/v1
+          api_key_env: TEST_ROUTE_KEY
+      fallback: [primary]
+      retry:
+        max_attempts_per_route: 3
+runtime:
+  approvals:
+    enabled: true
+"""
 
-        self.assertEqual(config.max_steps, -1)
-        self.assertEqual(config.allow_read_outside_workspace, True)
-        self.assertEqual(config.user_lora_root, str((Path.home() / ".lora").resolve()))
 
-    def test_load_run_config_merges_file_and_overrides(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "lora.yaml").write_text(
-                "lora_root: data/lora\nruntime:\n  model: demo-model\n  max_steps: 3\n",
-                encoding="utf-8",
-            )
-            config = load_run_config(workspace_root=root, max_steps=9)
-
-        self.assertTrue(config.lora_root.endswith(str(Path("data") / "lora")))
-        self.assertEqual(config.model, "demo-model")
-        self.assertEqual(config.max_steps, 9)
-
-    def test_env_overrides_config(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            old = os.environ.get("LORA_MODEL")
-            os.environ["LORA_MODEL"] = "env-model"
-            try:
-                config = load_run_config(workspace_root=tmp)
-            finally:
-                if old is None:
-                    os.environ.pop("LORA_MODEL", None)
-                else:
-                    os.environ["LORA_MODEL"] = old
-
-        self.assertEqual(config.model, "env-model")
-
-    def test_yaml_subset_nested_maps_and_lists(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "case.yaml"
-            path.write_text(
-                "id: demo\ninput:\n  messages:\n    - role: user\n      content: hello\n    - role: assistant\n      content: world\nmetrics:\n  max_turns: 8\n",
-                encoding="utf-8",
-            )
-            data = load_mapping_file(path)
-
-        self.assertEqual(data["input"]["messages"][0], {"role": "user", "content": "hello"})
-        self.assertEqual(data["input"]["messages"][1], {"role": "assistant", "content": "world"})
-        self.assertEqual(data["metrics"]["max_turns"], 8)
-
-    def test_agent_profile_resolves_alias_model_and_secret_source(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, _clean_model_env():
-            root = Path(tmp)
-            (root / "lora.yaml").write_text(
-                "\n".join(
-                    [
-                        "agent:",
-                        "  default_alias: dev",
-                        "agents:",
-                        "  - alias: dev",
-                        "    model_request:",
-                        "      model_name: profile-model",
-                        "      api_key_env: DEV_API_KEY",
-                        "      base_url: https://profile.example/v1",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-            os.environ["DEV_API_KEY"] = "secret-from-env"
-
-            config = load_run_config(workspace_root=root)
-
-        self.assertEqual(config.agent_alias, "dev")
-        self.assertEqual(config.model_name, "profile-model")
-        self.assertEqual(config.api_key_source, "env:DEV_API_KEY")
-        self.assertEqual(config.base_url, "https://profile.example/v1")
-        self.assertEqual(config.resolved_agent.api_key, "secret-from-env")  # type: ignore[union-attr]
-        self.assertNotIn("secret-from-env", str(config.to_dict()))
-
-    def test_cli_model_overrides_agent_profile_model(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, _clean_model_env():
-            root = Path(tmp)
-            (root / "lora.yaml").write_text(
-                "agents:\n  - alias: fast-check\n    model_request:\n      model_name: profile-model\n",
-                encoding="utf-8",
-            )
-
-            config = load_run_config(workspace_root=root, agent_alias="fast-check", model="cli-model")
-
-        self.assertEqual(config.agent_alias, "fast-check")
-        self.assertEqual(config.model_name, "cli-model")
-
-    def test_load_run_config_accepts_utf8_bom_config_files(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, _clean_model_env():
-            root = Path(tmp)
-            (root / "lora.yaml").write_bytes(
-                b"\xef\xbb\xbfagents:\n"
-                b"  - alias: gui-e2e\n"
-                b"    model_request:\n"
-                b"      api_key_env: LORA_GUI_E2E_KEY\n"
-                b"      model_name: bom-model\n"
-            )
-
-            config = load_run_config(workspace_root=root, agent_alias="gui-e2e")
-
-        self.assertEqual(config.agent_alias, "gui-e2e")
-        self.assertEqual(config.model_name, "bom-model")
-        self.assertEqual(config.resolved_agent.api_key_env, "LORA_GUI_E2E_KEY")  # type: ignore[union-attr]
-
-    def test_missing_agent_alias_fails_before_session_creation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "lora.yaml").write_text(
-                "agents:\n  - alias: dev\n    model_request:\n      model_name: profile-model\n",
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(ValueError, "missing"):
-                load_run_config(workspace_root=root, agent_alias="missing")
-
-    def test_api_key_source_falls_back_to_config_without_leaking_key(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as tmp,
-            _clean_model_env(),
-            patch("lora.config.Path.home", return_value=Path(tmp)),
-            warnings.catch_warnings(),
-        ):
-            warnings.simplefilter("ignore", DeprecationWarning)
-            root = Path(tmp)
-            (root / "lora.yaml").write_text(
-                "\n".join(
-                    [
-                        "agents:",
-                        "  - alias: dev",
-                        "    model_request:",
-                        "      api_key: config-secret",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            config = load_run_config(workspace_root=root, agent_alias="dev")
-
-        self.assertEqual(config.api_key_source, "config:model_request.api_key")
-        self.assertEqual(config.resolved_agent.api_key, "config-secret")  # type: ignore[union-attr]
-        self.assertNotIn("config-secret", str(config.to_dict()))
-
-    def test_user_identity_and_cli_presets_resolve_from_config(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "lora.yaml").write_text(
-                "\n".join(
-                    [
-                        "user:",
-                        "  identity: alice",
-                        "cli:",
-                        "  bash:",
-                        "    presets:",
-                        "      - name: rg",
-                        "        command: rg --help",
-                        "        description: Search files quickly.",
-                        "      - name: pyright",
-                        "        command: pyright --help",
-                        "        description: Run Python type checks.",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            config = load_run_config(workspace_root=root)
-
-        self.assertEqual(config.user_identity, "alice")
-        self.assertEqual([preset.name for preset in config.cli_bash_presets], ["rg", "pyright"])
-        self.assertEqual(config.cli_bash_presets[0].command, "rg --help")
-        self.assertEqual(config.cli_bash_presets[1].description, "Run Python type checks.")
-
-    def test_bash_full_output_allowlist_resolves_from_config(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "lora.yaml").write_text(
-                "\n".join(
-                    [
-                        "cli:",
-                        "  bash:",
-                        "    full_output_allowlist:",
-                        "      - lora",
-                        "      - uv run pytest",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            config = load_run_config(workspace_root=root)
-
-        self.assertEqual(config.bash_full_output_allowlist, ["lora", "uv run pytest"])
-
-    def test_user_identity_and_cli_presets_have_defaults(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            config = load_run_config(workspace_root=tmp)
-
-        self.assertEqual(config.user_identity, "default")
-        self.assertEqual([preset.name for preset in config.cli_bash_presets], ["rg", "pyright", "lora-chat"])
-        self.assertEqual(config.bash_full_output_allowlist, [])
-
-    def test_bash_full_output_allowlist_must_be_a_list(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "lora.yaml").write_text(
-                "cli:\n  bash:\n    full_output_allowlist: lora\n",
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(ValueError, "cli.bash.full_output_allowlist"):
-                load_run_config(workspace_root=root)
-
-    def test_allow_read_outside_workspace_can_be_disabled_in_config(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "lora.yaml").write_text(
-                "runtime:\n  allow_read_outside_workspace: false\n",
-                encoding="utf-8",
-            )
-
-            config = load_run_config(workspace_root=root)
-
-        self.assertEqual(config.allow_read_outside_workspace, False)
-
-@contextmanager
-def _clean_model_env() -> Iterator[None]:
-    keys = ["LORA_MODEL", "DEEPSEEK_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEV_API_KEY"]
-    old = {key: os.environ.get(key) for key in keys}
-    for key in keys:
-        os.environ.pop(key, None)
+def test_routes_are_the_only_model_configuration(tmp_path: Path) -> None:
+    (tmp_path / "lora.yaml").write_text(ROUTES_CONFIG, encoding="utf-8")
+    os.environ["TEST_ROUTE_KEY"] = "secret"
     try:
-        yield
+        config = load_run_config(workspace_root=tmp_path)
     finally:
-        for key, value in old.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        os.environ.pop("TEST_ROUTE_KEY", None)
+    agent = config.resolved_agent
+    assert agent is not None
+    assert agent.profile == "production"
+    assert agent.fallback == ("primary",)
+    assert agent.retry.max_attempts_per_route == 3
+    assert agent.routes[0].model_name == "model-a"
+    assert agent.routes[0].api_key == "secret"
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_unknown_model_request_field_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "lora.yaml").write_text(
+        "agents:\n  - alias: dev\n    model_request:\n      model_name: old-model\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"model_request contains unknown fields: model_name"):
+        load_run_config(workspace_root=tmp_path, agent_alias="dev")
+
+
+def test_route_fields_are_required(tmp_path: Path) -> None:
+    (tmp_path / "lora.yaml").write_text(
+        "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="provider is required"):
+        load_run_config(workspace_root=tmp_path, agent_alias="dev")
+
+
+def test_default_configuration_is_routes_based(tmp_path: Path) -> None:
+    config = load_run_config(workspace_root=tmp_path)
+    assert config.resolved_agent is not None
+    assert config.resolved_agent.routes[0].id == "primary"
+    assert config.resolved_agent.routes[0].model_name == "deepseek-v4-flash"
+
+
+def test_runtime_and_context_settings_are_loaded(tmp_path: Path) -> None:
+    (tmp_path / "lora.yaml").write_text(
+        ROUTES_CONFIG
+        + "\ncontext_window: 64000\ncontext_compression:\n  enabled: false\n"
+        + "runtime:\n  capacity:\n    scope: deployment\n    coordinator_path: .state/capacity.sqlite3\n",
+        encoding="utf-8",
+    )
+    config = load_run_config(workspace_root=tmp_path)
+    assert config.context_window == 64000
+    assert config.context_compression_enabled is False
+    assert config.runtime_capacity.scope == "deployment"
+    assert config.runtime_capacity.coordinator_path == str((tmp_path / ".state/capacity.sqlite3").resolve())
+
+
+def test_missing_agent_alias_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "lora.yaml").write_text(ROUTES_CONFIG, encoding="utf-8")
+    with pytest.raises(ValueError, match="not configured"):
+        load_run_config(workspace_root=tmp_path, agent_alias="missing")

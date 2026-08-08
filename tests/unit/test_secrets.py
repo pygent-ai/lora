@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,16 +38,14 @@ class SecretsTests(unittest.TestCase):
         self.assertEqual(value, "process-key")
         self.assertEqual(source, "env:DEEPSEEK_API_KEY")
 
-    def test_load_credentials_merges_user_project_and_legacy_workspace_files(self) -> None:
+    def test_load_credentials_merges_user_and_project_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             user_root = root / "user"
             user_root.mkdir()
             (user_root / "credentials.env").write_text("DEEPSEEK_API_KEY=user-key\n", encoding="utf-8")
             (root / ".env.local").write_text("OPENAI_API_KEY=project-key\n", encoding="utf-8")
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                sources = load_credentials(user_lora_root=user_root, workspace_root=root)
+            sources = load_credentials(user_lora_root=user_root, workspace_root=root)
             self.assertIn("file:" + str(user_root / "credentials.env"), sources)
             self.assertIn("file:" + str(root / ".env.local"), sources)
 
@@ -56,20 +53,6 @@ class SecretsTests(unittest.TestCase):
             self.assertEqual(value, "user-key")
             self.assertEqual(source, "env:DEEPSEEK_API_KEY")
             self.assertEqual(os.environ.get("OPENAI_API_KEY"), "project-key")
-            self.assertFalse(any("deprecated" in str(item.message).lower() for item in caught))
-
-    def test_load_credentials_warns_for_legacy_workspace_env(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            user_root = root / "user"
-            user_root.mkdir()
-            (root / ".env").write_text("DEEPSEEK_API_KEY=legacy-key\n", encoding="utf-8")
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                load_credentials(user_lora_root=user_root, workspace_root=root)
-
-        self.assertTrue(any("deprecated" in str(item.message).lower() for item in caught))
-        self.assertEqual(os.environ.get("DEEPSEEK_API_KEY"), "legacy-key")
 
     def test_set_and_delete_user_credential_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,8 +88,12 @@ class SecretsTests(unittest.TestCase):
                         "agents:",
                         "  - alias: dev",
                         "    model_request:",
-                        "      api_key_env: DEV_API_KEY",
-                        "      model_name: profile-model",
+                        "      routes:",
+                        "        - id: primary",
+                        "          provider: openai",
+                        "          api_key_env: DEV_API_KEY",
+                        "          model_name: profile-model",
+                        "          base_url: https://example.test/v1",
                         "",
                     ]
                 ),
@@ -116,22 +103,22 @@ class SecretsTests(unittest.TestCase):
             os.environ.pop("DEV_API_KEY", None)
             config = load_run_config(workspace_root=root, agent_alias="dev")
 
-        self.assertEqual(config.api_key_source, "env:DEV_API_KEY")
-        self.assertEqual(config.resolved_agent.api_key, "from-user-file")  # type: ignore[union-attr]
-        self.assertEqual(config.resolved_agent.api_key_env, "DEV_API_KEY")  # type: ignore[union-attr]
+        self.assertEqual(config.resolved_agent.routes[0].api_key_source, "env:DEV_API_KEY")  # type: ignore[union-attr]
+        self.assertEqual(config.resolved_agent.routes[0].api_key, "from-user-file")  # type: ignore[union-attr]
+        self.assertEqual(config.resolved_agent.routes[0].api_key_env, "DEV_API_KEY")  # type: ignore[union-attr]
 
     def test_default_api_key_env_is_deepseek(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "lora.yaml").write_text("agents:\n  - alias: dev\n    model_request:\n      model_name: m\n", encoding="utf-8")
+            (root / "lora.yaml").write_text("agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: m\n          base_url: https://example.test/v1\n          api_key_env: DEEPSEEK_API_KEY\n", encoding="utf-8")
             os.environ["DEEPSEEK_API_KEY"] = "fallback"
             try:
                 config = load_run_config(workspace_root=root, agent_alias="dev")
             finally:
                 os.environ.pop("DEEPSEEK_API_KEY", None)
 
-        self.assertEqual(config.resolved_agent.api_key_env, DEFAULT_API_KEY_ENV)  # type: ignore[union-attr]
-        self.assertEqual(config.api_key_source, "env:DEEPSEEK_API_KEY")
+        self.assertEqual(config.resolved_agent.routes[0].api_key_env, DEFAULT_API_KEY_ENV)  # type: ignore[union-attr]
+        self.assertEqual(config.resolved_agent.routes[0].api_key_source, "env:DEEPSEEK_API_KEY")  # type: ignore[union-attr]
 
 
 if __name__ == "__main__":

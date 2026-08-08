@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -423,16 +422,16 @@ def _collect_file_event_reads(session_dir: Path) -> list[FileReadRecord]:
     for row in EventStore.iter_jsonl(session_dir / "logs" / "file_events.jsonl") or []:
         if row.get("type") != "file.read":
             continue
-        payload = row.get("payload") if isinstance(row.get("payload"), dict) else row
+        payload = row.get("payload")
         if not isinstance(payload, dict):
             continue
         content = payload.get("returned_content")
         if not isinstance(content, str):
             continue
-        path = payload.get("path") or row.get("path")
+        path = payload.get("path")
         if not isinstance(path, str) or not path:
             continue
-        mode, range_text = _mode_and_range(payload.get("returned_range") or payload.get("range"))
+        mode, range_text = _mode_and_range(payload.get("returned_range"))
         records.append(
             FileReadRecord(
                 path=path,
@@ -458,7 +457,7 @@ def _collect_tool_result_reads(session_dir: Path) -> list[FileReadRecord]:
             continue
         result = row.get("result")
         args = call.get("args") if isinstance(call.get("args"), dict) else {}
-        path = _first_string(args, ("path", "file_path", "filename")) or _result_path(result)
+        path = _first_string(args, ("file_path",))
         content = _result_content(result)
         if path is None or content is None:
             continue
@@ -481,12 +480,6 @@ def _mode_and_range(value: Any) -> tuple[Literal["full", "partial"], str | None]
     start = value.get("start", 1)
     end = value.get("end", "EOF")
     return "partial", f"{start}-{end}"
-
-
-def _result_path(result: Any) -> str | None:
-    if isinstance(result, dict):
-        return _first_string(result, ("path", "file_path", "filename"))
-    return None
 
 
 def _result_content(result: Any) -> str | None:
@@ -532,7 +525,8 @@ def _latest_token_usage(session: AgentSession) -> dict[str, int]:
     raw = dict(session.token_usage or session.metadata.get("token_usage") or {})
     if not raw:
         for message in reversed(session.history):
-            usage = message.get("usage")
+            metadata = message.get("metadata")
+            usage = metadata.get("usage") if isinstance(metadata, dict) else None
             if isinstance(usage, dict):
                 raw = dict(usage)
                 break

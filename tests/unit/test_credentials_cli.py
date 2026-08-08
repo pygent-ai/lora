@@ -26,8 +26,12 @@ class CredentialsCliTests(unittest.TestCase):
                         "agents:",
                         "  - alias: dev",
                         "    model_request:",
-                        "      api_key_env: DEV_API_KEY",
-                        "      model_name: profile-model",
+                        "      routes:",
+                        "        - id: primary",
+                        "          provider: openai",
+                        "          api_key_env: DEV_API_KEY",
+                        "          model_name: profile-model",
+                        "          base_url: https://example.test/v1",
                         "",
                     ]
                 ),
@@ -76,7 +80,7 @@ class CredentialsCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "lora.yaml").write_text(
-                "agents:\n  - alias: dev\n    model_request:\n      api_key_env: DEV_API_KEY\n",
+                "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          api_key_env: DEV_API_KEY\n          model_name: profile-model\n          base_url: https://example.test/v1\n",
                 encoding="utf-8",
             )
             os.environ.pop("DEV_API_KEY", None)

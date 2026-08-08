@@ -4,13 +4,22 @@ import os
 from pathlib import Path
 from typing import Any
 
-from lora.schema import BashCliPreset, ResolvedAgentConfig, RunConfig
+from lora.schema import (
+    BashCliPreset,
+    DelegationConfig,
+    MCPServerConfig,
+    ModelRetryConfig,
+    ModelRouteConfig,
+    ResolvedAgentConfig,
+    RunConfig,
+    RuntimeApprovalConfig,
+    RuntimeCapacityConfig,
+    RuntimeDurabilityConfig,
+)
 from lora.credentials import (
     DEFAULT_API_KEY_ENV,
     lookup_credential,
     load_credentials,
-    resolve_api_key_env_name,
-    warn_plaintext_api_key,
 )
 
 
@@ -44,7 +53,6 @@ def load_run_config(
     config_file: str | Path | None = None,
     session_id: str | None = None,
     case_file: str | Path | None = None,
-    model: str | None = None,
     agent_alias: str | None = None,
     max_steps: int | None = None,
     context_window: int | None = None,
@@ -56,6 +64,7 @@ def load_run_config(
     if not config_path.is_absolute():
         config_path = root / config_path
     config_data = _read_config(config_path if config_path.exists() else None)
+    _validate_config_shape(config_data)
 
     configured_lora_root = _dig(config_data, "lora_root") or os.environ.get("LORA_ROOT") or ".lora"
     lora_root = Path(configured_lora_root)
@@ -67,7 +76,6 @@ def load_run_config(
         if max_steps is not None
         else os.environ.get("LORA_MAX_STEPS")
         or _dig(config_data, "max_steps")
-        or _dig(config_data, "runtime.max_steps")
         or -1
     )
 
@@ -75,7 +83,6 @@ def load_run_config(
     resolved_agent = _resolve_agent_config(
         config_data=config_data,
         cli_agent_alias=agent_alias,
-        cli_model=model,
     )
     agent_profile = _agent_profile(config_data, resolved_agent.alias)
     model_request = agent_profile.get("model_request") if isinstance(agent_profile.get("model_request"), dict) else {}
@@ -85,12 +92,8 @@ def load_run_config(
         lora_root=str(lora_root),
         session_id=session_id or os.environ.get("LORA_SESSION_ID") or _dig(config_data, "session_id"),
         case_file=resolved_case_file,
-        model=model or os.environ.get("LORA_MODEL") or _dig(config_data, "model") or _dig(config_data, "runtime.model"),
         max_steps=int(configured_max_steps),
         agent_alias=resolved_agent.alias,
-        model_name=resolved_agent.model_name,
-        api_key_source=resolved_agent.api_key_source,
-        base_url=resolved_agent.base_url,
         resolved_agent=resolved_agent,
         user_identity=_non_empty(_dig(config_data, "user.identity")) or "default",
         cli_bash_presets=_resolve_cli_bash_presets(config_data),
@@ -98,7 +101,6 @@ def load_run_config(
         allow_read_outside_workspace=_bool_config(
             os.environ.get("LORA_ALLOW_READ_OUTSIDE_WORKSPACE"),
             _dig(config_data, "allow_read_outside_workspace"),
-            _dig(config_data, "runtime.allow_read_outside_workspace"),
             default=True,
         ),
         user_lora_root=str(user_lora_root),
@@ -107,7 +109,6 @@ def load_run_config(
             model_request.get("context_window"),
             os.environ.get("LORA_CONTEXT_WINDOW"),
             _dig(config_data, "context_window"),
-            _dig(config_data, "runtime.context_window"),
         ),
         context_compression_enabled=_bool_config(
             os.environ.get("CONTEXT_COMPRESSION_ENABLED"),
@@ -129,6 +130,11 @@ def load_run_config(
             _dig(config_data, "context_compression.file_read_max_chars"),
             default=5000,
         ),
+        runtime_durability=_resolve_runtime_durability(config_data, root),
+        runtime_capacity=_resolve_runtime_capacity(config_data, root),
+        runtime_approvals=_resolve_runtime_approvals(config_data),
+        mcp_servers=_resolve_mcp_servers(config_data, root),
+        delegation=_resolve_delegation(config_data),
     )
 
 
@@ -154,42 +160,233 @@ def _dig(data: dict[str, Any], dotted_key: str) -> Any:
     return cur
 
 
+def _validate_config_shape(data: dict[str, Any]) -> None:
+    _require_known_keys(
+        data,
+        {
+            "lora_root", "max_steps", "session_id", "allow_read_outside_workspace",
+            "context_window", "agent", "agents", "user", "cli", "context_compression",
+            "runtime", "mcp", "delegation",
+        },
+        "config",
+    )
+    _validate_mapping(data.get("agent"), {"default_alias"}, "agent")
+    _validate_mapping(data.get("user"), {"identity"}, "user")
+    _validate_mapping(
+        data.get("context_compression"),
+        {"enabled", "trigger_ratio", "file_read_count", "file_read_max_chars"},
+        "context_compression",
+    )
+    _validate_mapping(data.get("cli"), {"bash"}, "cli")
+    cli = data.get("cli")
+    if isinstance(cli, dict):
+        _validate_mapping(cli.get("bash"), {"presets", "full_output_allowlist"}, "cli.bash")
+        bash = cli.get("bash")
+        if isinstance(bash, dict) and isinstance(bash.get("presets"), list):
+            for index, preset in enumerate(bash["presets"]):
+                if isinstance(preset, dict):
+                    _require_known_keys(preset, {"name", "command", "description"}, f"cli.bash.presets[{index}]")
+    _validate_mapping(data.get("runtime"), {"durability", "capacity", "approvals"}, "runtime")
+    runtime = data.get("runtime")
+    if isinstance(runtime, dict):
+        _validate_mapping(runtime.get("durability"), {"mode", "history_path"}, "runtime.durability")
+        _validate_mapping(runtime.get("capacity"), {"scope", "coordinator_path"}, "runtime.capacity")
+        _validate_mapping(
+            runtime.get("approvals"),
+            {"enabled", "timeout_seconds", "preauthorized_tools"},
+            "runtime.approvals",
+        )
+    _validate_mapping(data.get("mcp"), {"servers"}, "mcp")
+    mcp = data.get("mcp")
+    if isinstance(mcp, dict) and isinstance(mcp.get("servers"), list):
+        for index, server in enumerate(mcp["servers"]):
+            if isinstance(server, dict):
+                _require_known_keys(
+                    server,
+                    {"name", "transport", "command", "args", "cwd", "env_from", "url", "headers_env", "timeout", "required"},
+                    f"mcp.servers[{index}]",
+                )
+    _validate_mapping(
+        data.get("delegation"),
+        {"allowed_agents", "max_depth", "max_parallel", "background_enabled"},
+        "delegation",
+    )
+    agents = data.get("agents")
+    if agents is not None and not isinstance(agents, list):
+        raise ValueError("agents must be a list")
+    for index, agent in enumerate(agents or []):
+        if not isinstance(agent, dict):
+            raise ValueError(f"agents[{index}] must be a mapping")
+        _require_known_keys(agent, {"alias", "model_request"}, f"agents[{index}]")
+        request = agent.get("model_request")
+        if not isinstance(request, dict):
+            raise ValueError(f"agents[{index}].model_request must be a mapping")
+        _require_known_keys(
+            request,
+            {"profile", "routes", "fallback", "retry", "context_window"},
+            f"agents[{index}].model_request",
+        )
+        routes = request.get("routes")
+        if isinstance(routes, list):
+            for route_index, route in enumerate(routes):
+                if isinstance(route, dict):
+                    _require_known_keys(
+                        route,
+                        {"id", "provider", "model_name", "base_url", "api_key_env"},
+                        f"agents[{index}].model_request.routes[{route_index}]",
+                    )
+        _validate_mapping(
+            request.get("retry"),
+            {"max_attempts_per_route", "attempt_timeout_seconds", "backoff_initial", "backoff_maximum", "backoff_multiplier"},
+            f"agents[{index}].model_request.retry",
+        )
+
+
+def _validate_mapping(value: Any, allowed: set[str], path: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must be a mapping")
+    _require_known_keys(value, allowed, path)
+
+
+def _require_known_keys(value: dict[str, Any], allowed: set[str], path: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(f"{path} contains unknown fields: {', '.join(unknown)}")
+
+
 def _resolve_agent_config(
     *,
     config_data: dict[str, Any],
     cli_agent_alias: str | None,
-    cli_model: str | None,
 ) -> ResolvedAgentConfig:
     alias = _non_empty(cli_agent_alias) or _non_empty(_dig(config_data, "agent.default_alias")) or "default"
     profile = _agent_profile(config_data, alias)
     model_request = profile.get("model_request") if isinstance(profile.get("model_request"), dict) else {}
     assert isinstance(model_request, dict)
 
-    model_name = (
-        _non_empty(cli_model)
-        or _non_empty(model_request.get("model_name"))
-        or _non_empty(os.environ.get("LORA_MODEL"))
-        or _non_empty(os.environ.get("DEEPSEEK_MODEL"))
-        or _non_empty(_dig(config_data, "model"))
-        or _non_empty(_dig(config_data, "runtime.model"))
-        or DEFAULT_MODEL_NAME
-    )
-    api_key_env = resolve_api_key_env_name(model_request)
-    api_key, api_key_source = _resolve_api_key(model_request, api_key_env=api_key_env)
-    base_url = (
-        _non_empty(model_request.get("base_url"))
-        or _non_empty(os.environ.get("DEEPSEEK_BASE_URL"))
-        or _non_empty(_dig(config_data, "base_url"))
-        or _non_empty(_dig(config_data, "runtime.base_url"))
-        or DEFAULT_BASE_URL
-    )
+    routes = _resolve_model_routes(model_request)
+    fallback = model_request.get("fallback")
+    if fallback is None:
+        fallback = [route.id for route in routes]
+    if not isinstance(fallback, list):
+        raise ValueError("model_request.fallback must be a list")
+    retry_data = model_request.get("retry") or {}
+    if not isinstance(retry_data, dict):
+        raise ValueError("model_request.retry must be a mapping")
     return ResolvedAgentConfig(
         alias=alias,
-        model_name=model_name,
-        api_key=api_key,
-        api_key_source=api_key_source,
-        api_key_env=api_key_env,
-        base_url=base_url,
+        profile=_non_empty(model_request.get("profile")) or "default",
+        routes=tuple(routes),
+        fallback=tuple(str(item) for item in fallback),
+        retry=ModelRetryConfig(**retry_data),
+    )
+
+
+def _resolve_model_routes(
+    model_request: dict[str, Any],
+) -> list[ModelRouteConfig]:
+    raw_routes = model_request.get("routes")
+    if raw_routes is None:
+        raise ValueError("agents[].model_request.routes is required")
+    if not isinstance(raw_routes, list) or not raw_routes:
+        raise ValueError("model_request.routes must be a non-empty list")
+    routes: list[ModelRouteConfig] = []
+    for index, item in enumerate(raw_routes):
+        if not isinstance(item, dict):
+            raise ValueError(f"model_request.routes[{index}] must be a mapping")
+        env_name = _non_empty(item.get("api_key_env")) or DEFAULT_API_KEY_ENV
+        key, source = lookup_credential(env_name)
+        routes.append(
+            ModelRouteConfig(
+                id=_required_config(item.get("id"), f"model_request.routes[{index}].id"),
+                provider=_required_config(item.get("provider"), f"model_request.routes[{index}].provider"),
+                model_name=_required_config(item.get("model_name"), f"model_request.routes[{index}].model_name"),
+                base_url=_required_config(item.get("base_url"), f"model_request.routes[{index}].base_url"),
+                api_key_env=env_name,
+                api_key=key,
+                api_key_source=source,
+            )
+        )
+    return routes
+
+
+def _required_config(value: object, name: str) -> str:
+    resolved = _non_empty(value)
+    if resolved is None:
+        raise ValueError(f"{name} is required")
+    return resolved
+
+
+def _runtime_path(root: Path, value: object, default: str) -> str:
+    path = Path(_non_empty(value) or default).expanduser()
+    return str(path if path.is_absolute() else root / path)
+
+
+def _resolve_runtime_durability(data: dict[str, Any], root: Path) -> RuntimeDurabilityConfig:
+    mode = _non_empty(_dig(data, "runtime.durability.mode")) or "preferred"
+    return RuntimeDurabilityConfig(
+        mode=mode,  # type: ignore[arg-type]
+        history_path=_runtime_path(
+            root,
+            _dig(data, "runtime.durability.history_path"),
+            ".lora/runtime/executions.sqlite3",
+        ),
+    )
+
+
+def _resolve_runtime_capacity(data: dict[str, Any], root: Path) -> RuntimeCapacityConfig:
+    scope = _non_empty(_dig(data, "runtime.capacity.scope")) or "runtime_instance"
+    return RuntimeCapacityConfig(
+        scope=scope,  # type: ignore[arg-type]
+        coordinator_path=_runtime_path(
+            root,
+            _dig(data, "runtime.capacity.coordinator_path"),
+            ".lora/runtime/capacity.sqlite3",
+        ),
+    )
+
+
+def _resolve_runtime_approvals(data: dict[str, Any]) -> RuntimeApprovalConfig:
+    tools = _dig(data, "runtime.approvals.preauthorized_tools") or []
+    if not isinstance(tools, list):
+        raise ValueError("runtime.approvals.preauthorized_tools must be a list")
+    return RuntimeApprovalConfig(
+        enabled=_bool_config(_dig(data, "runtime.approvals.enabled"), default=True),
+        timeout_seconds=_float_config(
+            _dig(data, "runtime.approvals.timeout_seconds"), default=300.0
+        ),
+        preauthorized_tools=tuple(str(item) for item in tools),
+    )
+
+
+def _resolve_mcp_servers(data: dict[str, Any], root: Path) -> list[MCPServerConfig]:
+    servers = _dig(data, "mcp.servers") or []
+    if not isinstance(servers, list):
+        raise ValueError("mcp.servers must be a list")
+    resolved: list[MCPServerConfig] = []
+    for index, item in enumerate(servers):
+        if not isinstance(item, dict):
+            raise ValueError(f"mcp.servers[{index}] must be a mapping")
+        cwd = item.get("cwd")
+        if cwd:
+            cwd = _runtime_path(root, cwd, ".")
+        resolved.append(MCPServerConfig(**{**item, "cwd": cwd}))
+    return resolved
+
+
+def _resolve_delegation(data: dict[str, Any]) -> DelegationConfig:
+    agents = _dig(data, "delegation.allowed_agents") or []
+    if not isinstance(agents, list):
+        raise ValueError("delegation.allowed_agents must be a list")
+    return DelegationConfig(
+        allowed_agents=tuple(str(item) for item in agents),
+        max_depth=int(_dig(data, "delegation.max_depth") or 4),
+        max_parallel=int(_dig(data, "delegation.max_parallel") or 4),
+        background_enabled=_bool_config(
+            _dig(data, "delegation.background_enabled"), default=True
+        ),
     )
 
 
@@ -232,7 +429,22 @@ def _agent_profile(config_data: dict[str, Any], alias: str) -> dict[str, Any]:
     agents = config_data.get("agents")
     if agents is None:
         if alias == "default":
-            return {}
+            return {
+                "alias": "default",
+                "model_request": {
+                    "profile": "default",
+                    "routes": [
+                        {
+                            "id": "primary",
+                            "provider": "openai",
+                            "model_name": DEFAULT_MODEL_NAME,
+                            "base_url": DEFAULT_BASE_URL,
+                            "api_key_env": DEFAULT_API_KEY_ENV,
+                        }
+                    ],
+                    "fallback": ["primary"],
+                },
+            }
         raise ValueError(f"Agent alias {alias!r} is not configured")
     if not isinstance(agents, list):
         raise ValueError("agents must be a list")
@@ -240,22 +452,6 @@ def _agent_profile(config_data: dict[str, Any], alias: str) -> dict[str, Any]:
         if isinstance(item, dict) and item.get("alias") == alias:
             return item
     raise ValueError(f"Agent alias {alias!r} is not configured")
-
-
-def _resolve_api_key(model_request: dict[str, Any], *, api_key_env: str) -> tuple[str | None, str]:
-    value, source = lookup_credential(api_key_env)
-    if value:
-        return value, source
-    configured = _non_empty(model_request.get("api_key"))
-    if configured:
-        warn_plaintext_api_key()
-        return configured, "config:model_request.api_key"
-    if api_key_env != DEFAULT_API_KEY_ENV:
-        return None, "missing"
-    fallback_value, fallback_source = lookup_credential(DEFAULT_API_KEY_ENV)
-    if fallback_value:
-        return fallback_value, fallback_source
-    return None, "missing"
 
 
 def _non_empty(value: Any) -> str | None:
@@ -427,6 +623,19 @@ def _indent(line: str) -> int:
 
 
 def _parse_scalar(value: str) -> Any:
+    if value.startswith("[") and value.endswith("]"):
+        content = value[1:-1].strip()
+        if not content:
+            return []
+        return [_parse_scalar(item.strip()) for item in content.split(",")]
+    if value.startswith("{") and value.endswith("}"):
+        content = value[1:-1].strip()
+        if not content:
+            return {}
+        return {
+            key: _parse_scalar(item)
+            for key, item in (_split_key_value(part.strip()) for part in content.split(","))
+        }
     if value in {"true", "True"}:
         return True
     if value in {"false", "False"}:

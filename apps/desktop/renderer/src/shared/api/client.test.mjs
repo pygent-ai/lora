@@ -13,7 +13,7 @@ test("api client updates settings with backend snake_case fields", async () => {
         ok: true,
         status: 200,
         headers: { get: () => "application/json" },
-        json: async () => ({ agent: "dev", model: "updated-model" }),
+        json: async () => ({ agent: "dev", profile: "production" }),
       };
     },
   });
@@ -22,13 +22,12 @@ test("api client updates settings with backend snake_case fields", async () => {
     workspaceRoot: "E:/Projects/lora",
     configPath: "",
     agent: "dev",
-    model: "updated-model",
     maxSteps: 7,
     contextWindow: "64000",
     apiKey: "secret-from-ui",
   });
 
-  assert.deepEqual(response, { agent: "dev", model: "updated-model" });
+  assert.deepEqual(response, { agent: "dev", profile: "production" });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "http://127.0.0.1:8765/settings");
   assert.equal(calls[0].init.method, "PATCH");
@@ -36,7 +35,6 @@ test("api client updates settings with backend snake_case fields", async () => {
     workspace_root: "E:/Projects/lora",
     config_path: "",
     agent_alias: "dev",
-    model: "updated-model",
     max_steps: 7,
     context_window: 64000,
     api_key: "secret-from-ui",
@@ -62,7 +60,6 @@ test("api client sends blank runtime fields so settings can clear overrides", as
     workspaceRoot: "E:/Projects/lora",
     configPath: "",
     agent: "default",
-    model: "",
     maxSteps: -1,
     contextWindow: "",
     apiKey: "",
@@ -72,7 +69,6 @@ test("api client sends blank runtime fields so settings can clear overrides", as
     workspace_root: "E:/Projects/lora",
     config_path: "",
     agent_alias: "default",
-    model: "",
     max_steps: -1,
     context_window: null,
   });
@@ -125,16 +121,39 @@ test("api client fetches tool results by tool call id", async () => {
   assert.deepEqual(response, { tool_call_id: "evt_1", result: "complete" });
 });
 
+test("api client delivers runtime approval decisions", async () => {
+  const calls = [];
+  const client = createApiClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ delivered: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+
+  await client.deliverApproval("run:call/1", true, "approved in test");
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8765/chat/approvals/run%3Acall%2F1");
+  assert.equal(calls[0].options.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    approved: true,
+    comment: "approved in test",
+  });
+});
+
 test("parseSseEvents decodes named events and JSON payloads", () => {
   const events = parseSseEvents(
     [
-      "event: chat.started",
-      'data: {"type":"chat.started","payload":{"session_id":"s1"}}',
+      "event: execution.event",
+      'data: {"execution_id":"exec1","sequence":1,"kind":"lora.chat.started","data":{"session_id":"s1"}}',
       "",
       ": keep-alive",
       "",
-      "event: assistant.delta",
-      'data: {"type":"assistant.delta","payload":{"delta":"hello"}}',
+      "event: execution.event",
+      'data: {"execution_id":"exec1","sequence":2,"kind":"model.text.delta","data":{"text":"hello"}}',
       "",
       "",
     ].join("\n"),
@@ -142,12 +161,12 @@ test("parseSseEvents decodes named events and JSON payloads", () => {
 
   assert.deepEqual(events, [
     {
-      event: "chat.started",
-      data: { type: "chat.started", payload: { session_id: "s1" } },
+      event: "execution.event",
+      data: { execution_id: "exec1", sequence: 1, kind: "lora.chat.started", data: { session_id: "s1" } },
     },
     {
-      event: "assistant.delta",
-      data: { type: "assistant.delta", payload: { delta: "hello" } },
+      event: "execution.event",
+      data: { execution_id: "exec1", sequence: 2, kind: "model.text.delta", data: { text: "hello" } },
     },
   ]);
 });
@@ -162,10 +181,10 @@ test("streamChat keeps reading when an event handler throws", async () => {
       fetchImpl: async () =>
         new Response(
           [
-            "event: chat.started\n",
-            'data: {"type":"chat.started","payload":{}}\n\n',
-            "event: assistant.delta\n",
-            'data: {"type":"assistant.delta","payload":{"delta":"hello"}}\n\n',
+            "event: execution.event\n",
+            'data: {"execution_id":"exec1","sequence":1,"kind":"lora.chat.started","data":{}}\n\n',
+            "event: execution.event\n",
+            'data: {"execution_id":"exec1","sequence":2,"kind":"model.text.delta","data":{"text":"hello"}}\n\n',
           ].join(""),
           {
             status: 200,
@@ -178,7 +197,7 @@ test("streamChat keeps reading when an event handler throws", async () => {
       { message: "hello" },
       {
         onEvent: (event) => {
-          seen.push(event.data.type);
+          seen.push(event.data.kind);
           if (seen.length === 1) {
             throw new Error("render failed");
           }
@@ -189,7 +208,7 @@ test("streamChat keeps reading when an event handler throws", async () => {
     console.error = previousConsoleError;
   }
 
-  assert.deepEqual(seen, ["chat.started", "assistant.delta"]);
+  assert.deepEqual(seen, ["lora.chat.started", "model.text.delta"]);
 });
 
 test("streamChat resumes the same run after a stream read failure", async () => {
@@ -213,8 +232,8 @@ test("streamChat resumes the same run after a stream read failure", async () => 
               controller.enqueue(
                 encoder.encode(
                   [
-                    "event: chat.started\n",
-                    'data: {"type":"chat.started","session_id":"s1","case_run_id":"run1","sequence":1,"payload":{}}\n\n',
+                    "event: execution.event\n",
+                    'data: {"execution_id":"exec1","sequence":1,"kind":"lora.chat.started","data":{"session_id":"s1"}}\n\n',
                   ].join(""),
                 ),
               );
@@ -228,10 +247,10 @@ test("streamChat resumes the same run after a stream read failure", async () => 
       }
       return new Response(
         [
-          "event: assistant.delta\n",
-          'data: {"type":"assistant.delta","session_id":"s1","case_run_id":"run1","sequence":2,"payload":{"delta":"hello"}}\n\n',
-          "event: chat.completed\n",
-          'data: {"type":"chat.completed","session_id":"s1","case_run_id":"run1","sequence":3,"payload":{"status":"passed"}}\n\n',
+          "event: execution.event\n",
+          'data: {"execution_id":"exec1","sequence":2,"kind":"model.text.delta","data":{"text":"hello"}}\n\n',
+          "event: execution.event\n",
+          'data: {"execution_id":"exec1","sequence":3,"kind":"execution.completed","data":{}}\n\n',
         ].join(""),
         {
           status: 200,
@@ -246,13 +265,13 @@ test("streamChat resumes the same run after a stream read failure", async () => 
     { message: "hello", sessionId: "s1" },
     {
       onEvent: (event) => {
-        seen.push(event.data.type);
+        seen.push(event.data.kind);
       },
     },
   );
 
-  assert.deepEqual(seen, ["chat.started", "assistant.delta", "chat.completed"]);
+  assert.deepEqual(seen, ["lora.chat.started", "model.text.delta", "execution.completed"]);
   assert.equal(calls.length, 2);
-  assert.equal(calls[1].resume_case_run_id, "run1");
-  assert.equal(calls[1].resume_from_event, 1);
+  assert.equal(calls[1].execution_id, "exec1");
+  assert.equal(calls[1].after_sequence, 1);
 });

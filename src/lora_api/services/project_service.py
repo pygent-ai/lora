@@ -20,18 +20,15 @@ def project_list_response(context: ApiContext) -> ProjectListResponse:
 
 
 def config_response(config: RunConfig) -> RuntimeConfigResponse:
-    api_key_env = "DEEPSEEK_API_KEY"
-    if config.resolved_agent is not None:
-        api_key_env = config.resolved_agent.api_key_env
+    if config.resolved_agent is None:
+        raise ValueError("selected agent has no model routes")
     return RuntimeConfigResponse(
         workspace_root=config.workspace_root,
         lora_root=config.lora_root,
         agent=config.agent_alias,
-        model=config.model_name,
-        api_key_env=api_key_env,
-        api_key_source=config.api_key_source,
+        profile=config.resolved_agent.profile,
+        routes=config.resolved_agent.safe_dict()["routes"],
         user_lora_root=config.user_lora_root or "",
-        base_url=config.base_url,
         max_steps=config.max_steps,
         context_window=config.context_window,
     )

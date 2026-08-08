@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from lora.core.io import read_json, write_json
@@ -34,36 +35,6 @@ def test_session_groups_are_partitioned_by_remembered_project(tmp_path: Path) ->
     assert [record.title for record in groups[scope_b].sessions] == ["Project B chat"]
 
 
-def test_session_groups_ignore_missing_default_agent_alias_for_remembered_project(tmp_path: Path) -> None:
-    from lora_api.routers.sessions import list_session_groups
-
-    project_a = tmp_path / "project-a"
-    project_b = tmp_path / "project-b"
-    _create_titled_chat(project_a, "Project A chat")
-    _create_titled_chat(project_b, "Project B chat")
-    (project_b / "lora.yaml").write_text(
-        "\n".join(
-            [
-                "agents:",
-                "  - alias: dev",
-                "    model_request:",
-                "      model_name: deepseek-v4-flash",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    context = ApiContext(workspace_root=str(project_a), state_path=str(tmp_path / "state.json"))
-    context.remember_project(project_a)
-    context.remember_project(project_b)
-
-    response = list_session_groups(context=context)
-
-    groups = {group.scope.scope_id: group for group in response.groups}
-    scope_b = f"project:{project_b.resolve()}"
-    assert [record.title for record in groups[scope_b].sessions] == ["Project B chat"]
-
-
 def test_update_settings_remembers_switched_workspace_for_project_list(tmp_path: Path) -> None:
     from lora_api.models.requests import UpdateSettingsRequest
     from lora_api.routers.projects import list_projects
@@ -76,7 +47,7 @@ def test_update_settings_remembers_switched_workspace_for_project_list(tmp_path:
     context = ApiContext(workspace_root=str(project_a), state_path=str(tmp_path / "state.json"))
     context.remember_project(project_a)
 
-    update_settings(UpdateSettingsRequest(workspace_root=str(project_b), max_steps=-1), context=context)
+    asyncio.run(update_settings(UpdateSettingsRequest(workspace_root=str(project_b), max_steps=-1), context=context))
 
     response = list_projects(context=context)
 

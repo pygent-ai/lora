@@ -11,7 +11,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--workspace-root", default=None)
     parser.add_argument("--config", dest="config_path", default=None)
     parser.add_argument("--agent", dest="agent_alias", default=None)
-    parser.add_argument("--model", default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     args = parser.parse_args(argv)
 
@@ -23,7 +22,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         workspace_root=args.workspace_root,
         config_path=args.config_path,
         agent_alias=args.agent_alias,
-        model=args.model,
         max_steps=args.max_steps,
     )
     uvicorn.run(app, host=args.host, port=args.port)

@@ -18,7 +18,7 @@ def get_settings(context: ApiContext = Depends(get_api_context)) -> RuntimeConfi
 
 
 @router.patch("", response_model=RuntimeConfigResponse)
-def update_settings(
+async def update_settings(
     request: UpdateSettingsRequest,
     context: ApiContext = Depends(get_api_context),
 ) -> RuntimeConfigResponse:
@@ -27,17 +27,16 @@ def update_settings(
         workspace_root=overrides.get("workspace_root", context.workspace_root),
         config_file=overrides.get("config_path", context.config_path),
         agent_alias=overrides.get("agent_alias", context.agent_alias),
-        model=overrides.get("model", context.model),
         max_steps=overrides.get("max_steps", context.max_steps),
         context_window=overrides.get("context_window", context.context_window),
     )
     api_key = _clean_optional_string(request.api_key)
     if api_key:
-        api_key_env = "DEEPSEEK_API_KEY"
-        if target_config.resolved_agent is not None:
-            api_key_env = target_config.resolved_agent.api_key_env
+        if target_config.resolved_agent is None:
+            raise ValueError("selected agent has no model routes")
+        api_key_env = target_config.resolved_agent.routes[0].api_key_env
         set_user_credential(target_config.user_lora_root or "", api_key_env, api_key)
-    config = context.reload(overrides)
+    config = await context.areload(overrides)
     context.remember_project(config.workspace_root)
     return config_response(config)
 
@@ -48,7 +47,6 @@ def _settings_overrides(request: UpdateSettingsRequest) -> dict[str, object | No
         ("workspace_root", "workspace_root"),
         ("config_path", "config_path"),
         ("agent_alias", "agent_alias"),
-        ("model", "model"),
     ):
         if request_field not in request.model_fields_set:
             continue

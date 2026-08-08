@@ -26,9 +26,9 @@ class CaseManager:
     def validate(self, case: CaseDefinition) -> None:
         validate_path_id(case.id, "case id")
         messages = case.input.get("messages")
-        prompt = case.input.get("content") or case.input.get("prompt")
+        prompt = case.input.get("content")
         if messages is None and not prompt:
-            raise ValueError("case input must define messages, content, or prompt")
+            raise ValueError("case input must define messages or content")
         if messages is not None:
             if not isinstance(messages, list) or not messages:
                 raise ValueError("case input.messages must be a non-empty list")

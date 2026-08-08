@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 from typing import Any
 
 from lora.config import load_run_config
@@ -14,7 +13,6 @@ from lora.credentials import (
     list_user_credential_names,
     lookup_credential,
     prompt_for_secret,
-    resolve_api_key_env_name,
     set_keyring_credential,
     set_user_credential,
     user_credentials_path,
@@ -100,13 +98,13 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
         workspace_root=args.workspace_root,
         config_file=args.config,
         agent_alias=args.agent_alias,
-        model=args.model,
         max_steps=args.max_steps,
     )
     resolved = config.resolved_agent
-    env_name = resolved.api_key_env if resolved is not None else DEFAULT_API_KEY_ENV
-    api_key = resolved.api_key if resolved is not None else None
-    api_key_source = resolved.api_key_source if resolved is not None else "missing"
+    route = resolved.routes[0] if resolved is not None else None
+    env_name = route.api_key_env if route is not None else DEFAULT_API_KEY_ENV
+    api_key = route.api_key if route is not None else None
+    api_key_source = route.api_key_source if route is not None else "missing"
     if api_key:
         return {
             "status": "ok",
@@ -134,7 +132,6 @@ def _base_config(args: argparse.Namespace):
         workspace_root=args.workspace_root,
         config_file=args.config,
         agent_alias=args.agent_alias,
-        model=args.model,
         max_steps=args.max_steps,
     )
 

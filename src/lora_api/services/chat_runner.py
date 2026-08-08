@@ -3,26 +3,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from lora.tracing import EventStore
-from lora.runtime import AgentRuntimeAdapter, RuntimeMessage
-from lora.schema import CaseRunRef
+from pygent import thaw_json
 
+from lora.schema import CaseRunRef
 from lora_api.dependencies import ApiContext
-from lora_api.models.events import ApiEvent
+from lora_api.models.events import ExecutionEvent
 from lora_api.models.requests import ChatTurnRequest
 from lora_api.services.session_service import SessionService
 
 CHAT_DISCONNECT_GRACE_SECONDS = 60.0
-CHAT_COMPLETED_RESUME_TTL_SECONDS = 300.0
-CHAT_EVENT_BUFFER_LIMIT = 1_000
 CHAT_KEEPALIVE_SECONDS = 10.0
-TOOL_RESULT_PREVIEW_LIMIT = 1_000
 
 
 async def stream_chat_turn(
@@ -32,36 +26,19 @@ async def stream_chat_turn(
     registry: ChatRunRegistry | None = None,
 ) -> AsyncIterator[str]:
     registry = registry or _CHAT_RUN_REGISTRY
-    active_run = await registry.start_or_resume(context, request)
-    if active_run is None:
+    run = await registry.resolve(context, request)
+    if run is None:
         yield _sse(
-            ApiEvent(
-                type="chat.error",
-                session_id=request.session_id,
-                case_run_id=request.resume_case_run_id,
-                payload={
-                    "error": "Chat run is no longer active and cannot be resumed.",
-                    "error_type": "ResumeUnavailable",
-                },
+            ExecutionEvent(
+                execution_id=request.execution_id or "",
+                sequence=0,
+                kind="lora.transport.error",
+                data={"error": "execution not found", "error_type": "ExecutionNotFound"},
             )
         )
         return
-
-    queue, replay = await active_run.subscribe(after_sequence=request.resume_from_event)
-    try:
-        for event in replay:
-            yield _sse(event)
-        while True:
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=CHAT_KEEPALIVE_SECONDS)
-            except TimeoutError:
-                yield ": keep-alive\n\n"
-                continue
-            if event is None:
-                break
-            yield _sse(event)
-    finally:
-        await active_run.unsubscribe(queue)
+    async for event in run.events(after=request.after_sequence):
+        yield _sse(event)
 
 
 @dataclass(slots=True)
@@ -70,84 +47,97 @@ class ActiveChatRun:
     request: ChatTurnRequest
     run_ref: CaseRunRef
     registry: ChatRunRegistry
-    events: deque[ApiEvent] = field(default_factory=lambda: deque(maxlen=CHAT_EVENT_BUFFER_LIMIT))
-    subscribers: set[asyncio.Queue[ApiEvent | None]] = field(default_factory=set)
-    next_sequence: int = 0
     done: bool = False
     status: str = "running"
     task: asyncio.Task[None] | None = None
+    execution_handle: Any | None = None
     disconnect_timer: asyncio.Task[None] | None = None
-    cleanup_timer: asyncio.Task[None] | None = None
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    subscribers: int = 0
+    startup_error: BaseException | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
-    def session_id(self) -> str:
-        return self.run_ref.session_id
-
-    @property
-    def case_run_id(self) -> str:
-        return self.run_ref.case_run_id
+    def execution_id(self) -> str | None:
+        return None if self.execution_handle is None else self.execution_handle.execution_id
 
     async def start(self) -> None:
-        await self.publish(
-            ApiEvent(
-                type="chat.started",
-                session_id=self.session_id,
-                case_run_id=self.case_run_id,
-                payload=self.run_ref.to_dict(),
+        self.task = asyncio.create_task(self._run_turn(), name=f"chat-run:{self.run_ref.case_run_id}")
+        await self.ready.wait()
+
+    async def events(self, *, after: int | None) -> AsyncIterator[ExecutionEvent]:
+        if self.startup_error is not None and self.execution_handle is None:
+            yield ExecutionEvent(
+                execution_id="",
+                sequence=0,
+                kind="lora.transport.error",
+                data={
+                    "error": str(self.startup_error),
+                    "error_type": type(self.startup_error).__name__,
+                },
             )
-        )
-        self.task = asyncio.create_task(self._run_turn(), name=f"chat-run:{self.case_run_id}")
-
-    async def subscribe(
-        self,
-        *,
-        after_sequence: int | None,
-    ) -> tuple[asyncio.Queue[ApiEvent | None], list[ApiEvent]]:
-        queue: asyncio.Queue[ApiEvent | None] = asyncio.Queue()
+            return
+        handle = self.execution_handle
+        if handle is None:
+            return
         async with self.lock:
+            self.subscribers += 1
             self._cancel_disconnect_timer_locked()
-            replay = [
-                event
-                for event in self.events
-                if after_sequence is None or (event.sequence or 0) > after_sequence
-            ]
-            if self.done:
-                queue.put_nowait(None)
-            else:
-                self.subscribers.add(queue)
-        return queue, replay
+        try:
+            async with handle.subscribe(after=after) as execution_events:
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(anext(execution_events), CHAT_KEEPALIVE_SECONDS)
+                    except TimeoutError:
+                        yield ExecutionEvent(
+                            execution_id=handle.execution_id,
+                            sequence=after or 0,
+                            kind="lora.transport.keepalive",
+                        )
+                        continue
+                    except StopAsyncIteration:
+                        break
+                    yield _execution_event(raw)
+        finally:
+            async with self.lock:
+                self.subscribers -= 1
+                if not self.done and self.subscribers == 0:
+                    self._schedule_disconnect_cancel_locked()
 
-    async def unsubscribe(self, queue: asyncio.Queue[ApiEvent | None]) -> None:
-        async with self.lock:
-            self.subscribers.discard(queue)
-            if not self.subscribers and not self.done:
-                self._schedule_disconnect_cancel_locked()
-
-    async def publish(self, event: ApiEvent) -> None:
-        async with self.lock:
-            self.next_sequence += 1
-            sequenced = event.model_copy(update={"sequence": self.next_sequence})
-            self.events.append(sequenced)
-            subscribers = list(self.subscribers)
-        for queue in subscribers:
-            queue.put_nowait(sequenced)
-
-    async def finish(self, status: str) -> None:
-        async with self.lock:
+    async def _run_turn(self) -> None:
+        status = "error"
+        try:
+            async with self.registry.session_execution(self.run_ref.session_id):
+                service = self.context.runtime_service
+                self.execution_handle = await service.start_turn(
+                    manager=self.context.manager,
+                    message=self.request.message or "",
+                    run_ref=self.run_ref,
+                    turn_id=self.request.turn_id or f"turn-{self.run_ref.case_run_id[-8:]}",
+                    interactive_approvals=True,
+                    deadline=asyncio.get_running_loop().time() + 30 * 60,
+                )
+                self.ready.set()
+                await self.registry.attach(self)
+                output, _ = await self.execution_handle.result()
+                result = dict(thaw_json(output.data).get("result") or {})
+                status = str(result.get("status") or "passed")
+        except asyncio.CancelledError:
+            status = "skipped"
+            if self.execution_handle is not None:
+                await self.execution_handle.cancel()
+        except BaseException as exc:
+            self.startup_error = exc
+        finally:
             self.done = True
-            self.status = status
-            self._cancel_disconnect_timer_locked()
-            subscribers = list(self.subscribers)
-            self.subscribers.clear()
-        for queue in subscribers:
-            queue.put_nowait(None)
-        self.registry.schedule_cleanup(self)
+            self.status = status if status in {"passed", "failed", "error", "skipped"} else "error"
+            self.ready.set()
+            self.context.manager.finish_case_run(self.run_ref, self.status)
+            await self.registry.remove(self)
 
     def _schedule_disconnect_cancel_locked(self) -> None:
-        if self.disconnect_timer is not None and not self.disconnect_timer.done():
-            return
-        self.disconnect_timer = asyncio.create_task(self._cancel_after_disconnect_grace())
+        if self.disconnect_timer is None or self.disconnect_timer.done():
+            self.disconnect_timer = asyncio.create_task(self._cancel_after_disconnect_grace())
 
     def _cancel_disconnect_timer_locked(self) -> None:
         if self.disconnect_timer is not None and not self.disconnect_timer.done():
@@ -155,240 +145,138 @@ class ActiveChatRun:
         self.disconnect_timer = None
 
     async def _cancel_after_disconnect_grace(self) -> None:
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await asyncio.sleep(self.registry.disconnect_grace_seconds)
             async with self.lock:
-                should_cancel = not self.done and not self.subscribers
-                task = self.task
-            if should_cancel and task is not None and not task.done():
-                task.cancel()
-        except asyncio.CancelledError:
-            return
+                should_cancel = not self.done and self.subscribers == 0
+            if should_cancel and self.execution_handle is not None:
+                await self.execution_handle.cancel()
 
-    async def _run_turn(self) -> None:
-        status = "error"
-        try:
-            session = self.context.manager.load(self.session_id)
-            adapter = AgentRuntimeAdapter(config=self.context.config, session_manager=self.context.manager)
-            result = await adapter.run_turn(
-                session=session,
-                user_input=self.request.message,
-                case_run_ref=self.run_ref,
-                turn_id=self.request.turn_id,
-                on_assistant_delta=self._on_assistant_delta,
-                on_assistant_reasoning_delta=self._on_assistant_reasoning_delta,
-                on_runtime_message=self._on_runtime_message,
-            )
-            status = str(result.get("status") or "passed")
-            await self.publish(
-                ApiEvent(
-                    type="chat.completed",
-                    session_id=self.session_id,
-                    case_run_id=self.case_run_id,
-                    payload=result,
-                )
-            )
-        except asyncio.CancelledError:
-            status = "skipped"
-            await self.publish(
-                ApiEvent(
-                    type="chat.cancelled",
-                    session_id=self.session_id,
-                    case_run_id=self.case_run_id,
-                    payload={"status": status, "reason": "client disconnected before resume timeout"},
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - API stream should surface runtime failures.
-            status = "error"
-            await self.publish(
-                ApiEvent(
-                    type="chat.error",
-                    session_id=self.session_id,
-                    case_run_id=self.case_run_id,
-                    payload={"error": str(exc), "error_type": type(exc).__name__},
-                )
-            )
-        finally:
-            self.context.manager.finish_case_run(self.run_ref, _case_run_status(status))
-            await self.finish(_case_run_status(status))
 
-    async def _on_assistant_delta(self, delta: str) -> None:
-        await self.publish(
-            ApiEvent(
-                type="assistant.delta",
-                session_id=self.session_id,
-                case_run_id=self.case_run_id,
-                payload={"delta": delta},
-            )
-        )
+@dataclass(slots=True)
+class JournalExecutionRun:
+    context: ApiContext
+    execution_id: str
 
-    async def _on_assistant_reasoning_delta(self, delta: str) -> None:
-        await self.publish(
-            ApiEvent(
-                type="assistant.reasoning_delta",
-                session_id=self.session_id,
-                case_run_id=self.case_run_id,
-                payload={"delta": delta},
+    async def events(self, *, after: int | None) -> AsyncIterator[ExecutionEvent]:
+        cursor = -1 if after is None else after
+        while True:
+            rows = await self.context.runtime_service.history.events_after(
+                execution_id=self.execution_id,
+                after=cursor,
+                limit=256,
             )
-        )
-
-    async def _on_runtime_message(self, message: RuntimeMessage) -> None:
-        payload = _tool_result_event_payload(message, run_dir=Path(self.run_ref.run_dir))
-        if payload is not None:
-            await self.publish(
-                ApiEvent(
-                    type="tool.result",
-                    session_id=self.session_id,
-                    case_run_id=self.case_run_id,
-                    payload=payload,
-                )
-            )
-            return
-        await self.publish(
-            ApiEvent(
-                type="runtime.message",
-                session_id=self.session_id,
-                case_run_id=self.case_run_id,
-                payload=_runtime_message_payload(message),
-            )
-        )
+            if not rows:
+                break
+            for raw in rows:
+                event = _execution_event(raw)
+                cursor = max(cursor, event.sequence)
+                yield event
+            if len(rows) < 256:
+                break
 
 
 class ChatRunRegistry:
-    def __init__(
-        self,
-        *,
-        disconnect_grace_seconds: float = CHAT_DISCONNECT_GRACE_SECONDS,
-        completed_resume_ttl_seconds: float = CHAT_COMPLETED_RESUME_TTL_SECONDS,
-    ) -> None:
+    def __init__(self, *, disconnect_grace_seconds: float = CHAT_DISCONNECT_GRACE_SECONDS) -> None:
         self.disconnect_grace_seconds = disconnect_grace_seconds
-        self.completed_resume_ttl_seconds = completed_resume_ttl_seconds
-        self._runs: dict[tuple[str, str], ActiveChatRun] = {}
+        self._runs: dict[str, ActiveChatRun] = {}
+        self._session_gates: dict[str, _SessionGate] = {}
         self._lock = asyncio.Lock()
 
-    async def start_or_resume(self, context: ApiContext, request: ChatTurnRequest) -> ActiveChatRun | None:
-        if request.resume_case_run_id:
-            if request.session_id is None:
-                return None
-            return await self.get(request.session_id, request.resume_case_run_id)
-        return await self.start(context, request)
+    @contextlib.asynccontextmanager
+    async def session_execution(self, session_id: str) -> AsyncIterator[None]:
+        async with self._lock:
+            gate = self._session_gates.setdefault(session_id, _SessionGate())
+            gate.users += 1
+        try:
+            async with gate.lock:
+                yield
+        finally:
+            async with self._lock:
+                gate.users -= 1
+                if gate.users == 0 and self._session_gates.get(session_id) is gate:
+                    del self._session_gates[session_id]
 
-    async def start(self, context: ApiContext, request: ChatTurnRequest) -> ActiveChatRun:
+    async def resolve(
+        self, context: ApiContext, request: ChatTurnRequest
+    ) -> ActiveChatRun | JournalExecutionRun | None:
+        if request.execution_id:
+            async with self._lock:
+                active = self._runs.get(request.execution_id)
+            if active is not None:
+                return active
+            await context.runtime_service.initialize()
+            stored = await context.runtime_service.history.get_execution(request.execution_id)
+            return None if stored is None else JournalExecutionRun(context, request.execution_id)
+        if not request.message:
+            raise ValueError("message is required when execution_id is not provided")
         service = SessionService(context.manager)
-        session_id = request.session_id
-        if session_id is None:
-            session_id = service.create_session(case_id=request.case_id, mode="chat").session_id
+        session_id = request.session_id or service.create_session(case_id=request.case_id, mode="chat").session_id
         service.save_title_from_user_input(session_id, request.message)
-
         run_ref = context.manager.start_case_run(session_id, request.case_id, run_config=context.config)
-        active_run = ActiveChatRun(
+        active = ActiveChatRun(
             context=context,
             request=request.model_copy(update={"session_id": session_id}),
             run_ref=run_ref,
             registry=self,
         )
-        async with self._lock:
-            self._runs[(active_run.session_id, active_run.case_run_id)] = active_run
-        await active_run.start()
-        return active_run
+        await active.start()
+        return active
 
-    async def get(self, session_id: str, case_run_id: str) -> ActiveChatRun | None:
-        async with self._lock:
-            return self._runs.get((session_id, case_run_id))
-
-    def schedule_cleanup(self, active_run: ActiveChatRun) -> None:
-        if active_run.cleanup_timer is not None and not active_run.cleanup_timer.done():
-            return
-        active_run.cleanup_timer = asyncio.create_task(self._cleanup_later(active_run))
-
-    async def _cleanup_later(self, active_run: ActiveChatRun) -> None:
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.sleep(self.completed_resume_ttl_seconds)
+    async def attach(self, active: ActiveChatRun) -> None:
+        if active.execution_id is not None:
             async with self._lock:
-                key = (active_run.session_id, active_run.case_run_id)
-                if self._runs.get(key) is active_run:
-                    del self._runs[key]
+                self._runs[active.execution_id] = active
+
+    async def remove(self, active: ActiveChatRun) -> None:
+        if active.execution_id is not None:
+            async with self._lock:
+                if self._runs.get(active.execution_id) is active:
+                    del self._runs[active.execution_id]
 
 
-def _runtime_message_payload(message: RuntimeMessage) -> dict[str, Any]:
-    return {
-        "role": message.role,
-        "content": message.content,
-        "reasoning_content": message.reasoning_content,
-        "message_type": message.type,
-        "payload": message.payload or {},
-        "is_delta": message.is_delta,
-    }
+@dataclass(slots=True)
+class _SessionGate:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
 
 
-def _tool_result_event_payload(message: RuntimeMessage, *, run_dir: Path) -> dict[str, Any] | None:
-    if message.role != "tool":
-        return None
-    parsed = _parse_json_object(message.content)
-    payload = message.payload or {}
-    tool_call_id = str(payload.get("tool_call_id") or parsed.get("tool_call_id") or "").strip()
-    if not tool_call_id:
-        return None
-    error = parsed.get("error")
-    result = parsed.get("result", parsed.get("content", message.content))
-    status = str(parsed.get("status") or ("error" if error else "success"))
-    result_source = error if error else result
-    result_text = _stringify(result_source)
-    preview = _preview_text(result_text)
-    result_size = _serialized_size(result_source)
-    return {
-        "tool_call_id": tool_call_id,
-        "tool_name": _tool_name_for_call(run_dir, tool_call_id),
-        "status": status,
-        "preview": preview,
-        "result_size": result_size,
-        "truncated": len(result_text) > TOOL_RESULT_PREVIEW_LIMIT,
-        "result_ref": f"/tool-results/{tool_call_id}",
-    }
+def _execution_event(raw: Any) -> ExecutionEvent:
+    if isinstance(raw, dict):
+        value = thaw_json(raw)
+    else:
+        value = {
+            "schema_version": raw.schema_version,
+            "event_id": raw.event_id,
+            "execution_id": raw.execution_id,
+            "trace_id": raw.trace_id,
+            "span_id": raw.span_id,
+            "parent_span_id": raw.parent_span_id,
+            "sequence": raw.sequence,
+            "timestamp_unix_ns": raw.timestamp_unix_ns,
+            "kind": raw.kind,
+            "module_path": raw.module_path,
+            "data": thaw_json(raw.data),
+        }
+    return ExecutionEvent(
+        schema_version=str(value.get("schema_version") or ""),
+        event_id=str(value.get("event_id") or ""),
+        execution_id=str(value.get("execution_id") or ""),
+        trace_id=str(value.get("trace_id") or ""),
+        span_id=str(value.get("span_id") or ""),
+        parent_span_id=value.get("parent_span_id"),
+        sequence=int(value.get("sequence") or 0),
+        timestamp_unix_ns=int(value.get("timestamp_unix_ns") or 0),
+        kind=str(value.get("kind") or ""),
+        module_path=str(value.get("module_path") or ""),
+        data=dict(value.get("data") or {}),
+    )
 
 
-def _parse_json_object(value: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _preview_text(text: str) -> str:
-    return text if len(text) <= TOOL_RESULT_PREVIEW_LIMIT else f"{text[:TOOL_RESULT_PREVIEW_LIMIT]}..."
-
-
-def _serialized_size(value: Any) -> int:
-    return len(_stringify(value).encode("utf-8"))
-
-
-def _stringify(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
-
-
-def _tool_name_for_call(run_dir: Path, tool_call_id: str) -> str:
-    for row in EventStore.iter_jsonl(run_dir / "tool_calls.jsonl") or []:
-        if tool_call_id in {
-            str(row.get("event_id") or ""),
-            str(row.get("tool_call_id") or ""),
-            str(row.get("model_tool_call_id") or ""),
-        }:
-            return str(row.get("tool_name") or "tool")
-    return "tool"
-
-
-def _case_run_status(status: str) -> str:
-    return status if status in {"passed", "failed", "error", "skipped"} else "error"
-
-
-def _sse(event: ApiEvent) -> str:
-    data = json.dumps(event.model_dump(), ensure_ascii=False, sort_keys=True)
-    return f"event: {event.type}\ndata: {data}\n\n"
+def _sse(event: ExecutionEvent) -> str:
+    if event.kind == "lora.transport.keepalive":
+        return ": keep-alive\n\n"
+    return f"event: execution.event\ndata: {json.dumps(event.model_dump(), ensure_ascii=False, sort_keys=True)}\n\n"
 
 
 _CHAT_RUN_REGISTRY = ChatRunRegistry()

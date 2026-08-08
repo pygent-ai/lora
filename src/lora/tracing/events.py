@@ -46,6 +46,7 @@ LORA_EVENT_TYPES = DESIGN_EVENT_TYPES | frozenset(
         "chat.started",
         "chat.finished",
         "runtime.error",
+        "runtime.cancelled",
         "error",
     }
 )
@@ -276,7 +277,7 @@ def _tool_call_record(event: ContextEvent) -> dict[str, Any]:
         "case_id": event.case_id,
         "case_run_id": event.case_run_id,
         "turn_id": event.turn_id,
-        "tool_name": event.payload.get("tool_name") or event.payload.get("name"),
+        "tool_name": event.payload.get("tool_name"),
         "args": event.payload.get("args", {}),
         "created_at": event.timestamp,
     }
@@ -311,7 +312,7 @@ def _tool_result_record(event: ContextEvent) -> dict[str, Any]:
         "turn_id": event.turn_id,
         "tool_call_id": event.payload.get("tool_call_id"),
         "status": event.payload.get("status", "success"),
-        "result": event.payload.get("result", event.payload.get("content")),
+        "result": event.payload.get("result"),
         "created_at": event.timestamp,
     }
     if event.payload.get("error") is not None:
@@ -334,7 +335,7 @@ def _file_event_record(event: ContextEvent) -> dict[str, Any]:
         "turn_id": event.turn_id,
         "type": event.type,
         "path": event.payload.get("path"),
-        "content_hash": event.payload.get("content_hash") or event.payload.get("hash"),
+        "content_hash": event.payload.get("content_hash"),
         "created_at": event.timestamp,
         "payload": event.payload,
     }

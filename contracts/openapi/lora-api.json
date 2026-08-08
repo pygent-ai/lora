@@ -2,16 +2,46 @@
   "components": {
     "schemas": {
       "ChatTurnRequest": {
+        "additionalProperties": false,
         "properties": {
+          "after_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Sequence"
+          },
           "case_id": {
             "default": "chat",
             "title": "Case Id",
             "type": "string"
           },
+          "execution_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
+          },
           "message": {
-            "minLength": 1,
-            "title": "Message",
-            "type": "string"
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
           },
           "session_id": {
             "anyOf": [
@@ -36,9 +66,6 @@
             "title": "Turn Id"
           }
         },
-        "required": [
-          "message"
-        ],
         "title": "ChatTurnRequest",
         "type": "object"
       },
@@ -124,16 +151,38 @@
       },
       "ProjectResponse": {
         "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
           "lora_root": {
             "title": "Lora Root",
             "type": "string"
           },
-          "workspace_root": {
-            "title": "Workspace Root",
+          "scope_id": {
+            "title": "Scope Id",
             "type": "string"
+          },
+          "tooltip": {
+            "default": "",
+            "title": "Tooltip",
+            "type": "string"
+          },
+          "workspace_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Root"
           }
         },
         "required": [
+          "scope_id",
+          "label",
           "workspace_root",
           "lora_root"
         ],
@@ -146,20 +195,16 @@
             "title": "Agent",
             "type": "string"
           },
-          "api_key_source": {
-            "title": "Api Key Source",
-            "type": "string"
-          },
-          "base_url": {
+          "context_window": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Base Url"
+            "title": "Context Window"
           },
           "lora_root": {
             "title": "Lora Root",
@@ -169,16 +214,21 @@
             "title": "Max Steps",
             "type": "integer"
           },
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model"
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "routes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Routes",
+            "type": "array"
+          },
+          "user_lora_root": {
+            "title": "User Lora Root",
+            "type": "string"
           },
           "workspace_root": {
             "title": "Workspace Root",
@@ -189,10 +239,11 @@
           "workspace_root",
           "lora_root",
           "agent",
-          "model",
-          "api_key_source",
-          "base_url",
-          "max_steps"
+          "profile",
+          "routes",
+          "user_lora_root",
+          "max_steps",
+          "context_window"
         ],
         "title": "RuntimeConfigResponse",
         "type": "object"
@@ -220,6 +271,52 @@
           "session"
         ],
         "title": "SessionDetailResponse",
+        "type": "object"
+      },
+      "SessionGroupListResponse": {
+        "properties": {
+          "active_scope_id": {
+            "title": "Active Scope Id",
+            "type": "string"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/SessionGroupResponse"
+            },
+            "title": "Groups",
+            "type": "array"
+          }
+        },
+        "required": [
+          "active_scope_id",
+          "groups"
+        ],
+        "title": "SessionGroupListResponse",
+        "type": "object"
+      },
+      "SessionGroupResponse": {
+        "properties": {
+          "collapsed": {
+            "default": false,
+            "title": "Collapsed",
+            "type": "boolean"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/SessionScopeResponse"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionRecordResponse"
+            },
+            "title": "Sessions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scope",
+          "sessions"
+        ],
+        "title": "SessionGroupResponse",
         "type": "object"
       },
       "SessionListResponse": {
@@ -274,6 +371,17 @@
             "title": "Mode",
             "type": "string"
           },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
           "session_dir": {
             "title": "Session Dir",
             "type": "string"
@@ -303,6 +411,122 @@
         "title": "SessionRecordResponse",
         "type": "object"
       },
+      "SessionScopeResponse": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "lora_root": {
+            "title": "Lora Root",
+            "type": "string"
+          },
+          "runtime_workspace_root": {
+            "title": "Runtime Workspace Root",
+            "type": "string"
+          },
+          "scope_id": {
+            "title": "Scope Id",
+            "type": "string"
+          },
+          "tooltip": {
+            "title": "Tooltip",
+            "type": "string"
+          },
+          "workspace_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Root"
+          }
+        },
+        "required": [
+          "scope_id",
+          "label",
+          "tooltip",
+          "workspace_root",
+          "lora_root",
+          "runtime_workspace_root"
+        ],
+        "title": "SessionScopeResponse",
+        "type": "object"
+      },
+      "ToolApprovalRequest": {
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "comment": {
+            "default": "",
+            "title": "Comment",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approved"
+        ],
+        "title": "ToolApprovalRequest",
+        "type": "object"
+      },
+      "ToolResultResponse": {
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "result": {
+            "title": "Result"
+          },
+          "result_size": {
+            "title": "Result Size",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_call_id",
+          "tool_name",
+          "status",
+          "result_size"
+        ],
+        "title": "ToolResultResponse",
+        "type": "object"
+      },
       "TraceEventsResponse": {
         "properties": {
           "case_run_id": {
@@ -330,8 +554,88 @@
         "title": "TraceEventsResponse",
         "type": "object"
       },
+      "UpdateSettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Alias"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "config_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Path"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window"
+          },
+          "max_steps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Steps"
+          },
+          "workspace_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Root"
+          }
+        },
+        "title": "UpdateSettingsRequest",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
           "loc": {
             "items": {
               "anyOf": [
@@ -371,6 +675,60 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/chat/approvals/{approval_id}": {
+      "post": {
+        "operationId": "deliver_approval_chat_approvals__approval_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolApprovalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Deliver Approval Chat Approvals  Approval Id  Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deliver Approval",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/chat/stream": {
       "post": {
         "operationId": "stream_turn_chat_stream_post",
@@ -452,6 +810,92 @@
         ]
       }
     },
+    "/runtime/tasks/{task_id}": {
+      "delete": {
+        "operationId": "cancel_task_runtime_tasks__task_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Task Runtime Tasks  Task Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Task",
+        "tags": [
+          "runtime"
+        ]
+      },
+      "get": {
+        "operationId": "get_task_runtime_tasks__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Task Runtime Tasks  Task Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
     "/sessions": {
       "get": {
         "operationId": "list_sessions_sessions_get",
@@ -507,6 +951,27 @@
           }
         },
         "summary": "Create Session",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/sessions/groups": {
+      "get": {
+        "operationId": "list_session_groups_sessions_groups_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionGroupListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Session Groups",
         "tags": [
           "sessions"
         ]
@@ -612,6 +1077,87 @@
         "summary": "Get Settings",
         "tags": [
           "settings"
+        ]
+      },
+      "patch": {
+        "operationId": "update_settings_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/tool-results/{tool_call_id}": {
+      "get": {
+        "operationId": "get_tool_result_tool_results__tool_call_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tool_call_id",
+            "required": true,
+            "schema": {
+              "title": "Tool Call Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Tool Result",
+        "tags": [
+          "tool-results"
         ]
       }
     },
