@@ -433,7 +433,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "pygent-ai", git = "https://github.com/pygent-ai/pygent.git?rev=d4a691f" },
+    { name = "pygent-ai", git = "https://github.com/pygent-ai/pygent.git?rev=c1c05f3" },
     { name = "uvicorn", specifier = ">=0.32.0" },
 ]
 
@@ -603,8 +603,8 @@ wheels = [
 
 [[package]]
 name = "pygent-ai"
-version = "0.2.5"
-source = { git = "https://github.com/pygent-ai/pygent.git?rev=d4a691f#d4a691f50ec3ff8c031f515b8a07ebcddb7232d1" }
+version = "0.2.6"
+source = { git = "https://github.com/pygent-ai/pygent.git?rev=c1c05f3#c1c05f3224739b1a7afdc8e23ead5ff54e3fc36b" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "griffe" },

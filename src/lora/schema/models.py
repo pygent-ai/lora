@@ -106,7 +106,7 @@ class ResolvedAgentConfig:
 @dataclass(slots=True)
 class RuntimeDurabilityConfig:
     mode: Literal["disabled", "preferred", "required"] = "preferred"
-    history_path: str = ".lora/runtime/executions.sqlite3"
+    history_path: str = ".lora/runtime/executions-v1.sqlite3"
 
     def __post_init__(self) -> None:
         if self.mode not in {"disabled", "preferred", "required"}:
@@ -117,7 +117,7 @@ class RuntimeDurabilityConfig:
 @dataclass(slots=True)
 class RuntimeCapacityConfig:
     scope: Literal["runtime_instance", "deployment"] = "runtime_instance"
-    coordinator_path: str = ".lora/runtime/capacity.sqlite3"
+    coordinator_path: str = ".lora/runtime/capacity-v1.sqlite3"
 
     def __post_init__(self) -> None:
         if self.scope not in {"runtime_instance", "deployment"}:

@@ -124,8 +124,15 @@ def _delegation_spec(name: str, description: str) -> ToolSpec:
             parameters={
                 "type": "object",
                 "properties": {
-                    "agent": {"type": "string"},
-                    "task": {"type": "string", "minLength": 1},
+                    "agent": {
+                        "type": "string",
+                        "description": "Configured Lora agent alias allowed for delegation.",
+                    },
+                    "task": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Complete task for the delegated agent to perform.",
+                    },
                 },
                 "required": ["agent", "task"],
                 "additionalProperties": False,
@@ -142,6 +149,14 @@ DELEGATE_TOOL_SPEC = _delegation_spec("delegate", "Run a task synchronously with
 DELEGATE_BACKGROUND_TOOL_SPEC = _delegation_spec(
     "delegate_background", "Start a durable background task with an allowed Lora agent."
 )
+
+
+def _visible_delegation_specs(config: RunConfig) -> tuple[ToolSpec, ...]:
+    if not config.delegation.allowed_agents:
+        return ()
+    if config.delegation.background_enabled:
+        return DELEGATE_TOOL_SPEC, DELEGATE_BACKGROUND_TOOL_SPEC
+    return (DELEGATE_TOOL_SPEC,)
 
 
 class _WorkspaceToolExecutor(LocalToolExecutor):
@@ -182,7 +197,7 @@ class LoraRuntimeService:
     ) -> None:
         self.config = config
         history_path = Path(config.runtime_durability.history_path)
-        model_path = history_path.with_name("model-deployments.sqlite3")
+        model_path = history_path.with_name("model-deployments-v1.sqlite3")
         self.history = SQLiteHistoryStore(history_path)
         self.model_store = SQLiteModelDeploymentStore(model_path)
         self.capacity = (
@@ -262,10 +277,7 @@ class LoraRuntimeService:
             ),
             durability=DurabilityPolicy(DurabilityMode(config.runtime_durability.mode)),
         )
-        self.external_tools: tuple[ToolSpec, ...] = (
-            DELEGATE_TOOL_SPEC,
-            DELEGATE_BACKGROUND_TOOL_SPEC,
-        )
+        self.external_tools: tuple[ToolSpec, ...] = _visible_delegation_specs(config)
         self._diff_tools: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
         self._diff_executor = _DiffExecutor(self)
         self.warnings: list[str] = []
@@ -384,7 +396,6 @@ class LoraRuntimeService:
             managed_model=True,
             interactive_approvals=interactive_approvals,
             model_invoker=invoker,
-            task_manager=self.task_manager,
         )
         if resolved is not None and agent.llm is not None:
             self._model_invokers.setdefault(resolved.alias, agent.llm)
@@ -508,7 +519,7 @@ class LoraRuntimeService:
                 ).encode("utf-8")
             ).hexdigest()
             self.model_resolver.register(revision, agent.llm)
-            await handle.configure(
+            await handle.ensure_profile(
                 profile=agent.resolved_agent.profile,
                 routes=tuple(
                     ModelRoute(route.id, provider=route.provider, model=route.model_name)
@@ -525,8 +536,9 @@ class LoraRuntimeService:
                     capacity_owner_id=f"lora:{Path(self.config.workspace_root).resolve()}",
                     coordinator_domain=str(Path(self.config.workspace_root).resolve()),
                 ),
+                make_default=True,
+                deadline=time.monotonic() + 60,
             )
-            await handle.set_default(agent.resolved_agent.profile)
         return bound
 
     async def start_turn(

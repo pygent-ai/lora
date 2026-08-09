@@ -331,7 +331,7 @@ def _resolve_runtime_durability(data: dict[str, Any], root: Path) -> RuntimeDura
         history_path=_runtime_path(
             root,
             _dig(data, "runtime.durability.history_path"),
-            ".lora/runtime/executions.sqlite3",
+            ".lora/runtime/executions-v1.sqlite3",
         ),
     )
 
@@ -343,7 +343,7 @@ def _resolve_runtime_capacity(data: dict[str, Any], root: Path) -> RuntimeCapaci
         coordinator_path=_runtime_path(
             root,
             _dig(data, "runtime.capacity.coordinator_path"),
-            ".lora/runtime/capacity.sqlite3",
+            ".lora/runtime/capacity-v1.sqlite3",
         ),
     )
 

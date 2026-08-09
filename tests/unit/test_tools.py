@@ -221,10 +221,12 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(result.status, "success")
-            jobs = interceptor.drain_file_effect_jobs()
-            self.assertEqual(len(jobs), 1)
-            self.assertEqual(jobs[0].declared[0].type, "file.read")
-            self.assertEqual(jobs[0].declared[0].path, str(outside.resolve()))
+            self.assertEqual(interceptor.drain_file_effect_jobs(), [])
+            effects = list(
+                EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl")
+            )
+            self.assertEqual(effects[0]["type"], "file.read")
+            self.assertEqual(effects[0]["payload"]["path"], str(outside.resolve()))
 
     async def test_tool_interceptor_deferred_mode_does_not_snapshot_before_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -723,6 +725,11 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(properties["scope"]["enum"], ["turn", "run", "session"])
             self.assertEqual(properties["format"]["enum"], ["summary", "patch", "json"])
             self.assertEqual(properties["limit"]["minimum"], 1)
+            self.assertIn("history scope", properties["scope"]["description"])
+            self.assertIn("workspace path", properties["path"]["description"])
+            self.assertIn("tool call ID", properties["tool_call_id"]["description"])
+            self.assertIn("unified patches", properties["format"]["description"])
+            self.assertIn("Maximum number", properties["limit"]["description"])
             self.assertFalse(parameters["additionalProperties"])
 
 

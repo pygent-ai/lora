@@ -5,12 +5,13 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from pygent import AIMessage, Context, Module, ToolCall, UserMessage
+from pygent import AIMessage, Context, Module, ToolCall, UserMessage, thaw_json
 from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
 from pygent.runtime import ExecutionOptions
 from pygent.tool import AgentToolExecutor
 
 from lora.config import load_run_config
+from lora.runtime.agent import PromptRenderContext, _render_available_tools_prompt
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import SessionManager
 
@@ -59,9 +60,7 @@ async def test_runtime_admits_concurrent_executions_without_application_delay() 
                 )
             )
 
-            stored = await asyncio.gather(
-                *(service.history.get_execution(handle.execution_id) for handle in handles)
-            )
+            snapshots = await asyncio.gather(*(handle.snapshot() for handle in handles))
 
             async def collect_events(handle):
                 async with handle.subscribe() as events:
@@ -71,12 +70,46 @@ async def test_runtime_admits_concurrent_executions_without_application_delay() 
                 asyncio.gather(*(collect_events(handle) for handle in handles)),
                 asyncio.gather(*(handle.result() for handle in handles)),
             )
+            stored = await asyncio.gather(
+                *(service.history.get_execution(handle.execution_id) for handle in handles)
+            )
         finally:
             await service.close()
 
     assert all(row is not None for row in stored)
-    assert all(events for events in event_sets)
+    assert all(snapshot.execution_id for snapshot in snapshots)
+    assert all(events[-1].kind == "execution.completed" for events in event_sets)
     assert [result[0].content for result in results] == [str(index) for index in range(20)]
+
+
+@pytest.mark.asyncio
+async def test_runtime_replays_completed_execution_through_pygent_handle() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = load_run_config(workspace_root=Path(tmp))
+        service = LoraRuntimeService(config)
+        try:
+            await service.initialize()
+            handle = await service.binding.bind(_DurableEcho()).start(
+                UserMessage(content="durable"), Context()
+            )
+            await handle.result()
+            execution_id = handle.execution_id
+        finally:
+            await service.close()
+
+        restored = LoraRuntimeService(config)
+        try:
+            await restored.initialize()
+            attached = await restored.runtime.get_execution_handle(execution_id)
+            outcome = await attached.outcome()
+            async with attached.subscribe(after=outcome.terminal_sequence - 1) as events:
+                replay = [event async for event in events]
+            result, _ = await attached.result()
+        finally:
+            await restored.close()
+
+    assert [event.kind for event in replay] == ["execution.completed"]
+    assert result.content == "durable"
 
 
 @pytest.mark.asyncio
@@ -111,6 +144,12 @@ async def test_standard_read_tool_advertises_its_workspace_sandbox() -> None:
                 "turn-0001",
                 interactive_approvals=False,
             )
+            read_definition = next(
+                definition
+                for definition in agent.tool_definitions
+                if definition.name == "read"
+            )
+            read_properties = thaw_json(read_definition.parameters)["properties"]
             layer = agent.new_tool_layer()
             assert layer.executor_registry is None
             read_spec = next(spec for spec in layer.tools if spec.definition.name == "read")
@@ -151,6 +190,55 @@ async def test_standard_read_tool_advertises_its_workspace_sandbox() -> None:
     assert message.results[0].status == "succeeded"
     assert "sandbox-ready" in str(message.results[0].output)
     assert diff_message.results[0].status == "succeeded"
+    assert "text lines" in read_properties["limit"]["description"]
+    assert "One-based" in read_properties["offset"]["description"]
+    assert "PDF-only" in read_properties["pages"]["description"]
+
+
+@pytest.mark.parametrize(
+    ("allowed_agents", "background_enabled", "visible_names"),
+    [
+        ((), True, set()),
+        (("dev",), False, {"delegate"}),
+        (("dev",), True, {"delegate", "delegate_background"}),
+    ],
+)
+def test_runtime_exposes_only_executable_delegation_tools(
+    allowed_agents: tuple[str, ...],
+    background_enabled: bool,
+    visible_names: set[str],
+) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = load_run_config(workspace_root=Path(tmp))
+        config.delegation.allowed_agents = allowed_agents
+        config.delegation.background_enabled = background_enabled
+        service = LoraRuntimeService(config)
+
+    assert {spec.definition.name for spec in service.external_tools} == visible_names
+    for spec in service.external_tools:
+        properties = thaw_json(spec.definition.parameters)["properties"]
+        assert "Configured Lora agent alias" in properties["agent"]["description"]
+        assert "Complete task" in properties["task"]["description"]
+
+
+def test_available_tools_prompt_documents_exact_grep_arguments() -> None:
+    root = Path("workspace")
+    prompt = _render_available_tools_prompt(
+        PromptRenderContext(
+            session_id="session",
+            workspace_root=root,
+            session_dir=root / ".lora" / "sessions" / "session",
+            turn_id="turn",
+            projection={},
+            tool_names=["grep"],
+        )
+    )
+
+    assert (
+        "grep tool accepts only pattern, path, glob, ignoreCase, literal, context, and limit"
+        in prompt
+    )
+    assert "do not use output_mode, head_limit, ignore_case" in prompt
 
 
 def test_delegation_uses_pygent_agent_tool_executor() -> None:

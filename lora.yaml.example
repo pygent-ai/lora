@@ -32,10 +32,10 @@ agents:
 runtime:
   durability:
     mode: preferred
-    history_path: .lora/runtime/executions.sqlite3
+    history_path: .lora/runtime/executions-v1.sqlite3
   capacity:
     scope: runtime_instance
-    coordinator_path: .lora/runtime/capacity.sqlite3
+    coordinator_path: .lora/runtime/capacity-v1.sqlite3
   approvals:
     enabled: true
     timeout_seconds: 300

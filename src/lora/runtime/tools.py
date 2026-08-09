@@ -474,14 +474,23 @@ class ToolObserver:
             else []
         )
         if self.defer_file_effects:
-            self._append_deferred_file_effect_job(
-                tool_call_id=call_id,
-                tool_name=name,
-                args=args,
-                turn_id=turn_id,
-                declared=declared,
-                include_declared=result.status == "succeeded",
-            )
+            requires_snapshot = _tool_requires_deferred_snapshot(name, args)
+            if (
+                result.status == "succeeded"
+                and declared
+                and not requires_snapshot
+                and self.file_effect_tracker is not None
+            ):
+                self.file_effect_tracker.append_effects(declared, turn_id=turn_id)
+            else:
+                self._append_deferred_file_effect_job(
+                    tool_call_id=call_id,
+                    tool_name=name,
+                    args=args,
+                    turn_id=turn_id,
+                    declared=declared,
+                    include_declared=result.status == "succeeded",
+                )
 
         if result.status == "succeeded":
             value = plain_data(thaw_json(result.output))

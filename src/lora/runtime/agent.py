@@ -71,6 +71,29 @@ from .tools import ToolObserver
 
 MAX_EMPTY_TOOL_FOLLOWUP_RETRIES = 5
 
+_READ_PARAMETER_DESCRIPTIONS = {
+    "limit": "Maximum number of text lines to return from the starting offset.",
+    "offset": "One-based text line number at which to start reading.",
+    "pages": (
+        "PDF-only one-based page number or inclusive range such as '3' or '1-5'; "
+        "at most 20 pages."
+    ),
+}
+
+
+def _model_tool_definition(definition: ToolDefinition) -> ToolDefinition:
+    if definition.name != "read":
+        return definition
+    parameters = plain_data(thaw_json(definition.parameters))
+    properties = parameters.get("properties")
+    if not isinstance(properties, dict):
+        return definition
+    for name, description in _READ_PARAMETER_DESCRIPTIONS.items():
+        parameter = properties.get(name)
+        if isinstance(parameter, dict):
+            parameter["description"] = description
+    return replace(definition, parameters=parameters)
+
 
 class LoraToolAuthorization(Module[ToolAuthorizationRequest, ToolAuthorizationDecision]):
     execution_requirements = ExecutionRequirements(
@@ -163,12 +186,10 @@ class _LoraRunServices:
         agent: "LoraAgent",
         context_manager: "AgentContextManager",
         observer: ToolObserver,
-        task_manager: Any | None,
     ) -> None:
         self.agent = agent
         self.context_manager = context_manager
         self.observer = observer
-        self.task_manager = task_manager
         self.runtime_context: LoraExecutionContext | None = None
         self.session_manager: Any | None = None
         self.model_context_compacted = False
@@ -405,7 +426,7 @@ class PersistedDiffModule(Module[ToolMessage, ToolMessage]):
                 workspace_root=agent.workspace_root,
                 jobs=jobs,
             )
-            submitted, _ = await self.tasks(
+            await self.tasks(
                 AIMessage(
                     tool_calls=(
                         ToolCall(
@@ -420,10 +441,6 @@ class PersistedDiffModule(Module[ToolMessage, ToolMessage]):
                 ),
                 replace(context, tools=(FILE_EFFECT_TOOL_SPEC.definition,)),
             )
-            if self.services.task_manager is not None and submitted.results:
-                task = submitted.results[0].task
-                if task is not None:
-                    await self.services.task_manager.get_result(task.task_id, wait=True)
         return message, context
 
 
@@ -1116,7 +1133,6 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         "_services",
         "_external_tools",
         "_diff_tool",
-        "_task_manager",
     )
 
     def __init__(
@@ -1128,7 +1144,6 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         managed_model: bool = False,
         interactive_approvals: bool = False,
         model_invoker: Any | None = None,
-        task_manager: Any | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -1153,13 +1168,15 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         self._toolkit: ToolKit | None = None
         self._external_tools = external_tools
         self._diff_tool: DiffTool | None = None
-        self._task_manager = task_manager
         self._services: _LoraRunServices | None = None
 
     @property
     def tool_definitions(self) -> tuple[ToolDefinition, ...]:
         local = self._toolkit.definitions if self._toolkit is not None else ()
-        return (*local, *(spec.definition for spec in self._external_tools))
+        return (
+            *(_model_tool_definition(definition) for definition in local),
+            *(spec.definition for spec in self._external_tools),
+        )
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -1263,7 +1280,6 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             agent=self,
             context_manager=self.context_manager,
             observer=observer,
-            task_manager=self._task_manager,
         )
         self.prompt = DynamicPromptModule(self._services)
         if self.llm is not None:
@@ -1275,7 +1291,6 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                     preauthorized_tools=(),
                     interactive=False,
                     scope_key=case_run_ref.case_run_id,
-                    detached_tools=(FILE_EFFECT_TOOL_SPEC.definition.name,),
                 ),
             )
             model = self.new_model_layer()
@@ -1829,6 +1844,7 @@ def _render_available_tools_prompt(ctx: PromptRenderContext) -> str:
             f"Workspace root: {ctx.workspace_root}",
             'Default excludes: .git, .lora, .venv, .pytest_cache, .ruff_cache, __pycache__, sessions.',
             "Use glob or grep before bash find/cat for file discovery and content search.",
+            "The grep tool accepts only pattern, path, glob, ignoreCase, literal, context, and limit; do not use output_mode, head_limit, ignore_case, context_before, or context_after.",
             "For large files, do not read the whole file first. Use grep/rg/glob to locate relevant symbols, headings, or line numbers, then call read with offset and limit around those matches.",
             "Read full files only when they are small, roughly under 200 lines, or when whole-file structure is necessary. For files over 300 lines, prefer targeted reads of 80-150 lines and expand only if needed.",
             "If a previous tool result provides exact line numbers or headings, use read with offset/limit for those ranges instead of re-reading the whole file.",

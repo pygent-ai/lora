@@ -160,11 +160,26 @@ class DiffTool:
     )
     async def forward(
         self,
-        scope: Literal["turn", "run", "session"] = "run",
-        path: str | None = None,
-        tool_call_id: str | None = None,
-        format: Literal["summary", "patch", "json"] = "summary",
-        limit: Annotated[int, Field(ge=1)] = 20,
+        scope: Annotated[
+            Literal["turn", "run", "session"],
+            Field(description="File-effect history scope to inspect."),
+        ] = "run",
+        path: Annotated[
+            str | None,
+            Field(description="Optional workspace path whose persisted changes to show."),
+        ] = None,
+        tool_call_id: Annotated[
+            str | None,
+            Field(description="Optional originating tool call ID to filter by."),
+        ] = None,
+        format: Annotated[
+            Literal["summary", "patch", "json"],
+            Field(description="Result detail: compact summary, unified patches, or records."),
+        ] = "summary",
+        limit: Annotated[
+            int,
+            Field(ge=1, description="Maximum number of persisted diff records to return."),
+        ] = 20,
     ) -> dict[str, Any]:
         records = self._records(scope)
         if scope == "turn":

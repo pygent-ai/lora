@@ -28,6 +28,7 @@ class ApiContext:
     _manager: SessionManager | None = None
     _project_state: GuiProjectState | None = None
     _runtime_service: LoraRuntimeService | None = None
+    _chat_registry: Any | None = None
     _lock: RLock = field(default_factory=RLock)
 
     @property
@@ -60,10 +61,23 @@ class ApiContext:
                 self._runtime_service = LoraRuntimeService(self.config)
             return self._runtime_service
 
+    @property
+    def chat_registry(self) -> Any:
+        with self._lock:
+            if self._chat_registry is None:
+                from lora_api.services.chat_runner import ChatRunRegistry
+
+                self._chat_registry = ChatRunRegistry()
+            return self._chat_registry
+
     async def aclose(self) -> None:
         with self._lock:
             runtime = self._runtime_service
             self._runtime_service = None
+            registry = self._chat_registry
+            self._chat_registry = None
+        if registry is not None:
+            await registry.close()
         if runtime is not None:
             await runtime.close(cancel=True)
 
@@ -71,6 +85,10 @@ class ApiContext:
         with self._lock:
             runtime = self._runtime_service
             self._runtime_service = None
+            registry = self._chat_registry
+            self._chat_registry = None
+        if registry is not None:
+            await registry.close()
         if runtime is not None:
             await runtime.close(cancel=True)
         return self.reload(overrides)

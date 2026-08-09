@@ -25,13 +25,20 @@ async def stream_chat_turn(
     *,
     registry: ChatRunRegistry | None = None,
 ) -> AsyncIterator[str]:
-    registry = registry or _CHAT_RUN_REGISTRY
+    registry = registry or context.chat_registry
     run = await registry.resolve(context, request)
     if run is None:
         yield _sse(
             ExecutionEvent(
+                schema_version="1",
+                event_id="lora-transport-error",
                 execution_id=request.execution_id or "",
+                attempt_id="transport",
+                trace_id="transport",
+                span_id="transport",
                 sequence=0,
+                timestamp_unix_ns=0,
+                module_path="lora.transport",
                 kind="lora.transport.error",
                 data={"error": "execution not found", "error_type": "ExecutionNotFound"},
             )
@@ -68,8 +75,15 @@ class ActiveChatRun:
     async def events(self, *, after: int | None) -> AsyncIterator[ExecutionEvent]:
         if self.startup_error is not None and self.execution_handle is None:
             yield ExecutionEvent(
+                schema_version="1",
+                event_id="lora-transport-error",
                 execution_id="",
+                attempt_id="transport",
+                trace_id="transport",
+                span_id="transport",
                 sequence=0,
+                timestamp_unix_ns=0,
+                module_path="lora.transport",
                 kind="lora.transport.error",
                 data={
                     "error": str(self.startup_error),
@@ -117,8 +131,8 @@ class ActiveChatRun:
                     interactive_approvals=True,
                     deadline=asyncio.get_running_loop().time() + 30 * 60,
                 )
-                self.ready.set()
                 await self.registry.attach(self)
+                self.ready.set()
                 output, _ = await self.execution_handle.result()
                 result = dict(thaw_json(output.data).get("result") or {})
                 status = str(result.get("status") or "passed")
@@ -154,26 +168,13 @@ class ActiveChatRun:
 
 
 @dataclass(slots=True)
-class JournalExecutionRun:
-    context: ApiContext
-    execution_id: str
+class AttachedExecutionRun:
+    execution_handle: Any
 
     async def events(self, *, after: int | None) -> AsyncIterator[ExecutionEvent]:
-        cursor = -1 if after is None else after
-        while True:
-            rows = await self.context.runtime_service.history.events_after(
-                execution_id=self.execution_id,
-                after=cursor,
-                limit=256,
-            )
-            if not rows:
-                break
-            for raw in rows:
-                event = _execution_event(raw)
-                cursor = max(cursor, event.sequence)
-                yield event
-            if len(rows) < 256:
-                break
+        async with self.execution_handle.subscribe(after=after) as events:
+            async for raw in events:
+                yield _execution_event(raw)
 
 
 class ChatRunRegistry:
@@ -199,15 +200,20 @@ class ChatRunRegistry:
 
     async def resolve(
         self, context: ApiContext, request: ChatTurnRequest
-    ) -> ActiveChatRun | JournalExecutionRun | None:
+    ) -> ActiveChatRun | AttachedExecutionRun | None:
         if request.execution_id:
             async with self._lock:
                 active = self._runs.get(request.execution_id)
             if active is not None:
                 return active
             await context.runtime_service.initialize()
-            stored = await context.runtime_service.history.get_execution(request.execution_id)
-            return None if stored is None else JournalExecutionRun(context, request.execution_id)
+            try:
+                handle = await context.runtime_service.runtime.get_execution_handle(
+                    request.execution_id
+                )
+            except KeyError:
+                return None
+            return AttachedExecutionRun(handle)
         if not request.message:
             raise ValueError("message is required when execution_id is not provided")
         service = SessionService(context.manager)
@@ -234,6 +240,19 @@ class ChatRunRegistry:
                 if self._runs.get(active.execution_id) is active:
                     del self._runs[active.execution_id]
 
+    async def close(self) -> None:
+        async with self._lock:
+            runs = tuple(self._runs.values())
+            self._runs.clear()
+        for run in runs:
+            if run.task is not None and not run.task.done():
+                run.task.cancel()
+        if runs:
+            await asyncio.gather(
+                *(run.task for run in runs if run.task is not None),
+                return_exceptions=True,
+            )
+
 
 @dataclass(slots=True)
 class _SessionGate:
@@ -249,6 +268,7 @@ def _execution_event(raw: Any) -> ExecutionEvent:
             "schema_version": raw.schema_version,
             "event_id": raw.event_id,
             "execution_id": raw.execution_id,
+            "attempt_id": raw.attempt_id,
             "trace_id": raw.trace_id,
             "span_id": raw.span_id,
             "parent_span_id": raw.parent_span_id,
@@ -258,25 +278,10 @@ def _execution_event(raw: Any) -> ExecutionEvent:
             "module_path": raw.module_path,
             "data": thaw_json(raw.data),
         }
-    return ExecutionEvent(
-        schema_version=str(value.get("schema_version") or ""),
-        event_id=str(value.get("event_id") or ""),
-        execution_id=str(value.get("execution_id") or ""),
-        trace_id=str(value.get("trace_id") or ""),
-        span_id=str(value.get("span_id") or ""),
-        parent_span_id=value.get("parent_span_id"),
-        sequence=int(value.get("sequence") or 0),
-        timestamp_unix_ns=int(value.get("timestamp_unix_ns") or 0),
-        kind=str(value.get("kind") or ""),
-        module_path=str(value.get("module_path") or ""),
-        data=dict(value.get("data") or {}),
-    )
+    return ExecutionEvent.model_validate(value)
 
 
 def _sse(event: ExecutionEvent) -> str:
     if event.kind == "lora.transport.keepalive":
         return ": keep-alive\n\n"
     return f"event: execution.event\ndata: {json.dumps(event.model_dump(), ensure_ascii=False, sort_keys=True)}\n\n"
-
-
-_CHAT_RUN_REGISTRY = ChatRunRegistry()

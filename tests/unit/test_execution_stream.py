@@ -16,6 +16,7 @@ def test_execution_event_preserves_native_journal_contract() -> None:
             "schema_version": "1",
             "event_id": "event-1",
             "execution_id": "exec-1",
+            "attempt_id": "attempt-1",
             "trace_id": "trace-1",
             "span_id": "span-1",
             "parent_span_id": None,
@@ -30,6 +31,7 @@ def test_execution_event_preserves_native_journal_contract() -> None:
         "schema_version": "1",
         "event_id": "event-1",
         "execution_id": "exec-1",
+        "attempt_id": "attempt-1",
         "trace_id": "trace-1",
         "span_id": "span-1",
         "parent_span_id": None,
@@ -48,6 +50,7 @@ def test_execution_event_accepts_pygent_event_without_translation() -> None:
         schema_version="1",
         event_id="event-1",
         execution_id="exec-1",
+        attempt_id="attempt-1",
         trace_id="trace-1",
         span_id="span-1",
         parent_span_id=None,
@@ -61,6 +64,7 @@ def test_execution_event_accepts_pygent_event_without_translation() -> None:
         "schema_version": raw.schema_version,
         "event_id": raw.event_id,
         "execution_id": raw.execution_id,
+        "attempt_id": raw.attempt_id,
         "trace_id": raw.trace_id,
         "span_id": raw.span_id,
         "parent_span_id": raw.parent_span_id,
@@ -70,6 +74,24 @@ def test_execution_event_accepts_pygent_event_without_translation() -> None:
         "kind": raw.kind,
         "data": {"text": "hello"},
     }
+
+
+def test_execution_event_rejects_pre_026_shape() -> None:
+    with pytest.raises(ValidationError):
+        _execution_event(
+            {
+                "schema_version": "0.2",
+                "event_id": "event-1",
+                "execution_id": "exec-1",
+                "trace_id": "trace-1",
+                "span_id": "span-1",
+                "sequence": 1,
+                "timestamp_unix_ns": 123,
+                "module_path": "lora.react.model",
+                "kind": "model.text.delta",
+                "data": {"text": "hello"},
+            }
+        )
 
 
 def test_chat_resume_uses_execution_identity_and_sequence() -> None:
