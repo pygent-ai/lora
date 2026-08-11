@@ -239,7 +239,6 @@ export function App() {
       setTraceEvents([]);
       setLiveEvents([]);
       const assistantId = `assistant-${Date.now()}`;
-      const activityId = assistantId;
       let streamSessionId = initialSessionId || null;
       const startedWithoutSession = !streamSessionId;
       let finalStatus = "Ready";
@@ -302,41 +301,27 @@ export function App() {
               if (isStreamSessionVisible()) {
                 setLiveEvents((items) => [...items, apiEventToTraceEvent(data)]);
               }
-              if (eventKind === "model.reasoning.delta") {
-                appendReasoningDelta(updateVisibleMessages, activityId, String(eventData.text || ""));
-              } else if (eventKind === "model.text.delta") {
-                appendAssistantDelta(updateVisibleMessages, assistantId, String(eventData.text || ""));
-              } else if (eventKind === "lora.runtime.message") {
-                applyRuntimeEvent(updateVisibleMessages, activityId, assistantId, data);
-              } else if (eventKind === "lora.approval.requested") {
+              projectLiveExecutionEvent(updateVisibleMessages, assistantId, data);
+              if (eventKind === "lora.approval.requested") {
                 setApprovals((items) => [
                   ...items.filter((item) => item.approval_id !== eventData.approval_id),
                   { ...eventData, session_id: eventSessionId || streamSessionId },
                 ]);
               } else if (eventKind === "execution.completed") {
                 finalStatus = "Done";
-                finalizeRuntimeActivity(updateVisibleMessages, activityId, finalStatus);
                 if (isStreamSessionVisible()) {
                   setActivityCollapseToken((value) => value + 1);
                 }
               } else if (eventKind === "lora.transport.error" || eventKind === "execution.failed" || eventKind === "execution.deadline_exceeded") {
                 finalStatus = "Error";
-                finalizeRuntimeActivity(updateVisibleMessages, activityId, finalStatus);
                 if (isStreamSessionVisible()) {
                   setActivityCollapseToken((value) => value + 1);
                 }
-                replaceAssistantMessage(updateVisibleMessages, assistantId, `Error: ${eventData.error || eventData.message || "chat failed"}`);
               } else if (eventKind === "execution.cancelled") {
                 finalStatus = "Skipped";
-                finalizeRuntimeActivity(updateVisibleMessages, activityId, finalStatus);
                 if (isStreamSessionVisible()) {
                   setActivityCollapseToken((value) => value + 1);
                 }
-                replaceAssistantMessage(
-                  updateVisibleMessages,
-                  assistantId,
-                  data.payload?.reason || "Chat cancelled after reconnect timeout.",
-                );
               }
             },
           },
@@ -359,11 +344,13 @@ export function App() {
           setStatus("Error");
         }
         setError(readableError(err));
-        finalizeRuntimeActivity(updateVisibleMessages, activityId, "Error");
+        projectLiveExecutionEvent(updateVisibleMessages, assistantId, {
+          kind: "lora.transport.error",
+          data: { error: readableError(err) },
+        });
         if (isStreamSessionVisible()) {
           setActivityCollapseToken((value) => value + 1);
         }
-        replaceAssistantMessage(updateVisibleMessages, assistantId, `Error: ${readableError(err)}`);
       } finally {
         const completedSessionId = streamSessionId || initialSessionId;
         if (completedSessionId) {
@@ -426,7 +413,6 @@ export function App() {
         sessionGroups={visibleSessionGroups}
         activeScopeId={activeScopeId}
         activeSessionId={activeSessionId}
-        running={hasRunningSessions}
         onCreateSession={handleCreateSession}
         onDeleteSession={handleDeleteSession}
         onSelectSession={handleSelectSession}
@@ -465,15 +451,13 @@ export function App() {
   );
 }
 
-function SessionSidebar({
+export function SessionSidebar({
   collapsed,
   settings,
   projects,
   sessionGroups,
   activeScopeId,
   activeSessionId,
-  running,
-  approvals,
   onCreateSession,
   onDeleteSession,
   onSelectSession,
@@ -518,7 +502,7 @@ function SessionSidebar({
           </button>
         </div>
 
-        <button className="primary-action" disabled={running} title="New chat" type="button" onClick={onCreateSession}>
+        <button className="primary-action" title="New chat" type="button" onClick={onCreateSession}>
           <MessageSquarePlus aria-hidden="true" />
           <span className="action-label">New Chat</span>
         </button>
@@ -648,6 +632,7 @@ function Workbench({
   settings,
   status,
   running,
+  approvals,
   traceCollapsed,
   traceEvents,
   api,
@@ -1211,7 +1196,7 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
   );
 }
 
-function historyToMessages(history) {
+export function historyToMessages(history) {
   const rendered = [];
   let index = 0;
   while (index < history.length) {
@@ -1250,7 +1235,6 @@ function renderTurnSegment(segment, idPrefix) {
   });
 
   let sections = [];
-  let activityToneValue = "success";
   let finalContent = "";
   segment.forEach((message, index) => {
     const role = String(message?.role || "");
@@ -1274,9 +1258,6 @@ function renderTurnSegment(segment, idPrefix) {
     if (role === "tool") {
       const activity = toolResultActivity(message);
       sections = applyToolResultToSections(sections, activity);
-      if (activity.status === "error") {
-        activityToneValue = "error";
-      }
     }
   });
   if (sections.length === 0 && !finalContent) {
@@ -1287,7 +1268,7 @@ function renderTurnSegment(segment, idPrefix) {
       id: `${idPrefix}-assistant`,
       role: "assistant",
       content: finalContent,
-      status: activityToneValue,
+      status: "success",
       startedAt: sections.length > 0 ? 0 : undefined,
       endedAt: sections.length > 0 ? 0 : undefined,
       sections: finalizeToolSections(sections),
@@ -1322,93 +1303,99 @@ function tracePreviewPayload(payload) {
   return preview;
 }
 
-function appendAssistantDelta(setMessages, assistantId, delta) {
-  setMessages((items) =>
-    items.map((item) =>
-      item.id === assistantId
-        ? { ...item, sections: appendDeltaSection(item.sections, "Assistant content", delta) }
-        : item,
-    ),
-  );
-}
-
-function appendReasoningDelta(setMessages, activityId, delta) {
-  const content = String(delta || "");
-  if (!content) {
-    return;
-  }
-  setMessages((items) =>
-    items.map((item) =>
-      item.id === activityId ? { ...item, sections: appendDeltaSection(item.sections, "Thinking", content) } : item,
-    ),
-  );
-}
-
-function applyRuntimeEvent(setMessages, activityId, assistantId, event) {
-  const payload = event.data || {};
-  if (event.kind !== "lora.runtime.message") {
-    return;
-  }
-  if (payload.role === "assistant") {
-    const content = cleanContent(String(payload.content || ""));
-    const calls = toolCallsFromMessage(payload).map(toolCallState);
-    if (content) {
-      mergeAssistantMessage(setMessages, assistantId, content);
-    }
-    if (calls.length) {
-      setMessages((items) =>
-        items.map((item) => {
-          if (item.id !== activityId) {
-            return item;
-          }
-          let sections = item.sections || [];
-          sections = appendToolCallsSection(sections, calls);
-          return { ...item, sections };
-        }),
-      );
-    }
-  }
-}
-
-function finalizeRuntimeActivity(setMessages, activityId, status) {
-  setMessages((items) =>
-    items.map((item) => {
-      if (item.id !== activityId) {
-        return item;
-      }
-      return {
-        ...item,
-        endedAt: Date.now(),
-        sections: finalizeToolSections(item.sections || []),
-        status: activityTone(status) === "error" ? "error" : "success",
-      };
-    }),
-  );
-}
-
-function replaceAssistantMessage(setMessages, assistantId, content) {
-  setMessages((items) =>
-    items.map((item) =>
-      item.id === assistantId
-        ? { ...item, content, sections: removeLastAssistantContentSection(item.sections || []) }
-        : item,
-    ),
-  );
-}
-
-function mergeAssistantMessage(setMessages, assistantId, content) {
-  setMessages((items) =>
-    items.map((item) => {
+function projectLiveExecutionEvent(setMessages, assistantId, event) {
+  setMessages((items) => {
+    let changed = false;
+    const next = items.map((item) => {
       if (item.id !== assistantId) {
         return item;
       }
-      const sections = mergeAssistantContentSection(item.sections || [], content);
-      if (sections === item.sections) {
-        return item;
-      }
-      return { ...item, content: "", sections };
-    }),
-  );
+      const projected = projectLiveAssistantEvent(item, event);
+      changed = changed || projected !== item;
+      return projected;
+    });
+    return changed ? next : items;
+  });
+}
+
+export function projectLiveAssistantEvent(message, event, now = Date.now()) {
+  const kind = String(event?.kind || "");
+  const payload = event?.data && typeof event.data === "object" ? event.data : {};
+
+  if (kind === "model.reasoning.delta") {
+    const delta = String(payload.text || "");
+    return delta ? { ...message, sections: appendDeltaSection(message.sections, "Thinking", delta) } : message;
+  }
+
+  if (kind === "model.text.delta") {
+    return { ...message, content: `${message.content || ""}${String(payload.text || "")}` };
+  }
+
+  if (kind === "model.tool_call.completed") {
+    let sections = Array.isArray(message.sections) ? message.sections : [];
+    if (String(message.content || "").trim()) {
+      sections = appendTextSection(sections, "Assistant content", message.content);
+    }
+    const call = toolCallState({
+      id: payload.call_id,
+      name: payload.name,
+      arguments: payload.arguments,
+    });
+    return { ...message, content: "", sections: appendToolCallsSection(sections, [call]) };
+  }
+
+  if (kind === "lora.runtime.message" && payload.role === "tool") {
+    const result = toolResultActivity(payload);
+    return {
+      ...message,
+      sections: applyToolResultToSections(message.sections || [], result),
+    };
+  }
+
+  if (kind === "tool.completed" || kind === "tool.failed" || kind === "tool.cancelled") {
+    const failed = kind !== "tool.completed";
+    const result = {
+      toolCallId: String(payload.call_id || ""),
+      content: failed ? String(payload.error_kind || kind.replace("tool.", "")) : "",
+      status: failed ? "error" : "success",
+    };
+    return {
+      ...message,
+      sections: applyToolResultToSections(message.sections || [], result),
+    };
+  }
+
+  if (kind === "execution.completed") {
+    return {
+      ...message,
+      content: cleanContent(String(message.content || "")),
+      endedAt: now,
+      sections: finalizeToolSections(message.sections || []),
+      status: "success",
+    };
+  }
+
+  if (kind === "execution.cancelled") {
+    return {
+      ...message,
+      content: String(payload.reason || "Chat cancelled."),
+      endedAt: now,
+      sections: finalizeToolSections(message.sections || []),
+      status: "error",
+    };
+  }
+
+  if (kind === "lora.transport.error" || kind === "execution.failed" || kind === "execution.deadline_exceeded") {
+    return {
+      ...message,
+      content: `Error: ${payload.error || payload.message || "chat failed"}`,
+      endedAt: now,
+      sections: finalizeToolSections(message.sections || []),
+      status: "error",
+    };
+  }
+
+  return message;
 }
 
 function activityHeaderText(message, now) {
@@ -1506,46 +1493,6 @@ function appendDeltaSection(sections, title, delta) {
       content: delta,
     },
   ];
-}
-
-function mergeAssistantContentSection(sections, content) {
-  const value = String(content || "").trim();
-  if (!value) {
-    return Array.isArray(sections) ? sections : [];
-  }
-  const nextSections = Array.isArray(sections) ? [...sections] : [];
-  for (let index = nextSections.length - 1; index >= 0; index -= 1) {
-    const section = nextSections[index];
-    if (section.type !== "text" || section.title !== "Assistant content") {
-      continue;
-    }
-    const current = String(section.content || "");
-    if (!current || value.startsWith(current)) {
-      nextSections[index] = { ...section, content: value };
-      return nextSections;
-    }
-    if (current.includes(value)) {
-      return sections;
-    }
-    nextSections[index] = {
-      ...section,
-      content: `${current}${current.endsWith("\n") ? "" : "\n"}${value}`,
-    };
-    return nextSections;
-  }
-  return appendTextSection(nextSections, "Assistant content", value);
-}
-
-function removeLastAssistantContentSection(sections) {
-  const nextSections = Array.isArray(sections) ? [...sections] : [];
-  for (let index = nextSections.length - 1; index >= 0; index -= 1) {
-    const section = nextSections[index];
-    if (section.type === "text" && section.title === "Assistant content") {
-      nextSections.splice(index, 1);
-      return nextSections;
-    }
-  }
-  return nextSections;
 }
 
 function appendTextSection(sections, title, content) {
@@ -1829,48 +1776,6 @@ function cleanSessionTitle(title) {
   return String(title || "").replace(/\s+/g, " ").trim();
 }
 
-function runtimeActivityUpdateFromEvent(event) {
-  const payload = event.payload || {};
-  if (event.type === "tool.result") {
-    return {
-      thinking: [],
-      calls: [],
-      results: [toolResultActivityFromPayload(payload)],
-    };
-  }
-  if (payload.role === "assistant") {
-    return {
-      thinking: [],
-      calls: toolCallsFromMessage(payload).map(toolCallState),
-      results: [],
-    };
-  }
-  if (payload.role === "tool") {
-    return {
-      thinking: [],
-      calls: [],
-      results: [toolResultActivity(payload)],
-    };
-  }
-  return { thinking: [], calls: [], results: [] };
-}
-
-function toolResultActivityFromPayload(payload) {
-  const status = String(payload.status || "success");
-  const toolCallId = String(payload.tool_call_id || "tool");
-  const tone = status === "error" || payload.error ? "error" : "success";
-  return {
-    title: `Tool result: ${toolCallId}`,
-    toolCallId,
-    toolName: String(payload.tool_name || "tool"),
-    content: stringifyDetail(payload.error || payload.preview || ""),
-    resultRef: String(payload.result_ref || ""),
-    resultSize: Number.isFinite(payload.result_size) ? payload.result_size : 0,
-    truncated: Boolean(payload.truncated),
-    status: tone,
-  };
-}
-
 function toolCallsFromMessage(message) {
   const payload = message?.payload && typeof message.payload === "object" ? message.payload : {};
   const rawToolCalls = message?.tool_calls || payload.tool_calls || [];
@@ -1974,75 +1879,6 @@ function findLastRunningToolCallIndex(toolCalls) {
   return -1;
 }
 
-function appendToolCallsToRows(rows, calls) {
-  const safeCalls = Array.isArray(calls) ? calls : [];
-  if (!safeCalls.length) {
-    return rows;
-  }
-  const nextRows = Array.isArray(rows) ? [...rows] : [];
-  const last = nextRows[nextRows.length - 1];
-  if (last?.type === "tools") {
-    nextRows[nextRows.length - 1] = { ...last, calls: mergeToolCalls(last.calls || [], safeCalls) };
-    return nextRows;
-  }
-  nextRows.push({ type: "tools", calls: safeCalls });
-  return nextRows;
-}
-
-function applyToolResultToRows(rows, result) {
-  if (!rows.length) {
-    return rows;
-  }
-  const nextRows = rows.map((row) =>
-    row.type === "tools" ? { ...row, calls: [...(row.calls || [])] } : row,
-  );
-  if (result.toolCallId) {
-    for (let rowIndex = nextRows.length - 1; rowIndex >= 0; rowIndex -= 1) {
-      const row = nextRows[rowIndex];
-      if (row.type !== "tools") {
-        continue;
-      }
-      if ((row.calls || []).some((call) => call.id === result.toolCallId)) {
-        nextRows[rowIndex] = { ...row, calls: applyToolResult(row.calls || [], result) };
-        return nextRows;
-      }
-    }
-  }
-  for (let rowIndex = nextRows.length - 1; rowIndex >= 0; rowIndex -= 1) {
-    const row = nextRows[rowIndex];
-    if (row.type !== "tools") {
-      continue;
-    }
-    if ((row.calls || []).some((call) => call.status === "running")) {
-      nextRows[rowIndex] = { ...row, calls: applyToolResult(row.calls || [], result) };
-      return nextRows;
-    }
-  }
-  return appendToolCallsToRows(nextRows, applyToolResult([], result));
-}
-
-function activityContentFromRows(rows) {
-  const safeRows = Array.isArray(rows) ? rows : [];
-  return safeRows
-    .map((row) => {
-      if (row.type === "thinking") {
-        return `Thinking\n${row.content}`;
-      }
-      const calls = Array.isArray(row.calls) ? row.calls : [];
-      return calls
-        .map((call) => {
-          const lines = [toolCallDetail(call)];
-          if (call.result) {
-            lines.push(`Tool result: ${call.id || call.name}\n${call.result}`);
-          }
-          return lines.join("\n");
-        })
-        .join("\n\n");
-    })
-    .filter(Boolean)
-    .join("\n\n");
-}
-
 function toolActionLabel(name) {
   const normalized = String(name || "").trim().toLowerCase().replace(/-/g, "_");
   const aliases = {
@@ -2120,10 +1956,6 @@ function toolCallArguments(toolCall) {
     return "";
   }
   return limitText(typeof args === "string" ? args : safeJsonStringify(args), TOOL_ARGUMENT_PREVIEW_LIMIT);
-}
-
-function toolCallDetail(toolCall) {
-  return `Tool call: ${toolCallName(toolCall)}\n${toolCallArguments(toolCall)}`.trim();
 }
 
 function toolCallDescription(argumentsText) {
