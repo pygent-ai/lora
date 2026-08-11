@@ -1,10 +1,12 @@
 import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_API_PORT,
   apiBaseUrl,
+  findAvailablePort,
   resolveBackendLaunch,
   startBackendProcess,
   stopBackendProcess,
@@ -18,8 +20,10 @@ let backendProcess;
 let backendStatus = { state: "starting", error: null };
 
 async function startBackend() {
-  const port = Number(process.env.LORA_API_PORT || DEFAULT_API_PORT);
+  const preferredPort = Number(process.env.LORA_API_PORT || DEFAULT_API_PORT);
+  const port = await findAvailablePort(preferredPort);
   const baseUrl = apiBaseUrl(port);
+  const instanceId = randomUUID();
   process.env.LORA_API_BASE_URL = baseUrl;
 
   const launch = resolveBackendLaunch({
@@ -33,6 +37,10 @@ async function startBackend() {
   });
 
   backendProcess = startBackendProcess(launch, {
+    env: {
+      ...process.env,
+      LORA_BACKEND_INSTANCE_ID: instanceId,
+    },
     logPath: path.join(app.getPath("userData"), "logs", "lora-api.log"),
   });
 
@@ -46,12 +54,14 @@ async function startBackend() {
   });
 
   try {
-    await waitForBackend({ baseUrl });
-    backendStatus = { state: "ready", error: null };
+    await waitForBackend({ baseUrl, child: backendProcess, expectedInstanceId: instanceId });
+    backendStatus = { state: "ready", error: null, port };
   } catch (err) {
+    stopBackendProcess(backendProcess);
     backendStatus = {
       state: "error",
       error: err instanceof Error ? err.message : String(err),
+      port,
     };
   }
 

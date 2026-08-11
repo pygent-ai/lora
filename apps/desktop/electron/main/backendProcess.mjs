@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
+import net from "node:net";
 import path from "node:path";
 
 export const DEFAULT_API_HOST = "127.0.0.1";
@@ -26,7 +27,11 @@ export function resolveBackendLaunch({
   const resolvedRepoRoot = repoRoot || path.resolve(appPath, "..", "..");
   return {
     command: "uv",
-    args: backendArgs({ port, workspaceRoot: resolvedRepoRoot, prefix: ["run", "lora-api"] }),
+    args: backendArgs({
+      port,
+      workspaceRoot: resolvedRepoRoot,
+      prefix: ["run", "--no-sync", "lora-api"],
+    }),
     cwd: resolvedRepoRoot,
   };
 }
@@ -37,6 +42,22 @@ export function backendExecutableName(platform = process.platform) {
 
 export function apiBaseUrl(port = DEFAULT_API_PORT) {
   return `http://${DEFAULT_API_HOST}:${port}`;
+}
+
+export async function findAvailablePort(
+  preferredPort = DEFAULT_API_PORT,
+  { maxAttempts = 100, isAvailable = isPortAvailable } = {},
+) {
+  for (let offset = 0; offset < maxAttempts; offset += 1) {
+    const port = preferredPort + offset;
+    if (port > 65_535) {
+      break;
+    }
+    if (await isAvailable(port)) {
+      return port;
+    }
+  }
+  throw new Error(`No available local port found from ${preferredPort}`);
 }
 
 export function startBackendProcess(launch, { env = process.env, logPath } = {}) {
@@ -65,21 +86,55 @@ export function startBackendProcess(launch, { env = process.env, logPath } = {})
   return child;
 }
 
-export async function waitForBackend({ baseUrl, timeoutMs = 30_000, retryDelayMs = 300 } = {}) {
+export async function waitForBackend({
+  baseUrl,
+  child,
+  expectedInstanceId,
+  fetchImpl = fetch,
+  timeoutMs = 30_000,
+  retryDelayMs = 300,
+} = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
+  let exitListener;
+  const childExit = child
+    ? new Promise((_, reject) => {
+        exitListener = (code, signal) => reject(backendExitError(code, signal));
+        if (child.exitCode !== null || child.signalCode) {
+          exitListener(child.exitCode, child.signalCode);
+        } else {
+          child.once("exit", exitListener);
+        }
+      })
+    : null;
 
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${baseUrl}/health`);
-      if (response.ok) {
-        return true;
+  try {
+    while (Date.now() < deadline) {
+      try {
+        const response = await raceChildExit(fetchImpl(`${baseUrl}/health`), childExit);
+        if (response.ok) {
+          const actualInstanceId = response.headers?.get?.("x-lora-backend-instance") || "";
+          if (!expectedInstanceId || actualInstanceId === expectedInstanceId) {
+            return true;
+          }
+          lastError = new Error(
+            `Health check reached another lora-api instance at ${baseUrl}`,
+          );
+        } else {
+          lastError = new Error(`Health check failed with ${response.status}`);
+        }
+      } catch (err) {
+        if (isBackendExitError(err)) {
+          throw err;
+        }
+        lastError = err;
       }
-      lastError = new Error(`Health check failed with ${response.status}`);
-    } catch (err) {
-      lastError = err;
+      await raceChildExit(delay(retryDelayMs), childExit);
     }
-    await delay(retryDelayMs);
+  } finally {
+    if (child && exitListener) {
+      child.off("exit", exitListener);
+    }
   }
 
   throw lastError instanceof Error ? lastError : new Error("Timed out waiting for lora-api");
@@ -102,4 +157,31 @@ function backendArgs({ port, workspaceRoot, prefix = [] }) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", () => resolve(false));
+    server.listen({ host: DEFAULT_API_HOST, port, exclusive: true }, () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+function raceChildExit(operation, childExit) {
+  return childExit ? Promise.race([operation, childExit]) : operation;
+}
+
+function backendExitError(code, signal) {
+  const error = new Error(
+    `lora-api exited before becoming ready (code=${code ?? ""} signal=${signal ?? ""})`,
+  );
+  error.code = "LORA_BACKEND_EXITED";
+  return error;
+}
+
+function isBackendExitError(error) {
+  return error?.code === "LORA_BACKEND_EXITED";
 }

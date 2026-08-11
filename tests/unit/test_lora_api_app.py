@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from lora.tracing import EventStore
 from lora_api.app import create_app
 from lora_api.dependencies import ApiContext
+from lora_api.routers.health import health
 from lora_api.routers.tool_results import get_tool_result
 
 
@@ -23,6 +24,17 @@ def test_create_app_exposes_runtime_approval_and_task_contracts() -> None:
 
     assert "post" in schema["paths"]["/chat/approvals/{approval_id}"]
     assert {"get", "delete"} <= set(schema["paths"]["/runtime/tasks/{task_id}"])
+
+
+def test_health_exposes_backend_instance_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LORA_BACKEND_INSTANCE_ID", "desktop-instance-1")
+    response = Response()
+
+    payload = health(response)
+
+    assert payload.status == "ok"
+    assert payload.service == "lora-api"
+    assert response.headers["X-Lora-Backend-Instance"] == "desktop-instance-1"
 
 
 def test_get_tool_result_returns_persisted_result(tmp_path) -> None:
