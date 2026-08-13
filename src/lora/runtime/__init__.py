@@ -9,7 +9,7 @@ from .agent import (
     ToolAuditModule,
     _to_pygent_message,
 )
-from .context import LoraExecutionContext
+from .context import LORA_CONTEXT_CODEC, LoraContext
 from .context_compression import (
     ContextCompressionModelResult,
     ContextCompressionRunner,
@@ -18,7 +18,6 @@ from .context_compression import (
     parse_summary,
     render_file_read_block,
 )
-from .runner import execute_case_run
 from .service import LoraRuntimeService
 from .tools import ToolObserver
 
@@ -28,15 +27,15 @@ __all__ = [
     "ContextCompressionRunner",
     "DynamicPromptModule",
     "LoraAgent",
+    "LoraContext",
+    "LORA_CONTEXT_CODEC",
     "LoraRuntimeService",
     "PersistedDiffModule",
-    "LoraExecutionContext",
     "SkillReminderModule",
     "ToolAuditModule",
     "ToolObserver",
     "_to_pygent_message",
     "collect_recent_file_reads",
-    "execute_case_run",
     "load_model_context",
     "parse_summary",
     "render_file_read_block",

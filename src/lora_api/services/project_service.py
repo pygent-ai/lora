@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from lora.schema import RunConfig
-from lora_api.dependencies import ApiContext
+from lora_api.container import ApiContext
 from lora_api.models.responses import ProjectListResponse, ProjectResponse, RuntimeConfigResponse
-from lora_api.services.project_state import SessionScope, active_project_scope_id, build_session_scopes
+from lora_api.project_state import SessionScope, active_project_scope_id, build_session_scopes
 
 
 def project_list_response(context: ApiContext) -> ProjectListResponse:

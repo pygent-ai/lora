@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -10,94 +9,14 @@ from pygent import IdempotencyPolicy, ToolDefinition, ToolSideEffect, ToolSpec, 
 from pygent.tool.executors import SandboxExecutorSupport, ToolExecutionContext
 
 from lora.core.io import read_json, utc_now, write_json
-from lora.schema import CaseRunRef
 from lora.tracing.events import EventStore
 
-@dataclass(slots=True)
-class DeferredFileEffectJob:
-    tool_call_id: str
-    tool_name: str
-    args: dict[str, Any]
-    turn_id: str | None
-    declared: list[Any]
-    include_declared: bool = True
-    requires_snapshot: bool = True
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "tool_call_id": self.tool_call_id,
-            "tool_name": self.tool_name,
-            "args": self.args,
-            "turn_id": self.turn_id,
-            "declared": [_file_effect_to_dict(effect) for effect in self.declared],
-            "include_declared": self.include_declared,
-            "requires_snapshot": self.requires_snapshot,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "DeferredFileEffectJob":
-        return cls(
-            tool_call_id=str(data["tool_call_id"]),
-            tool_name=str(data["tool_name"]),
-            args=dict(data.get("args") or {}),
-            turn_id=data.get("turn_id"),
-            declared=[_file_effect_from_dict(effect) for effect in data.get("declared", [])],
-            include_declared=bool(data.get("include_declared", True)),
-            requires_snapshot=bool(data.get("requires_snapshot", True)),
-        )
-
-
-@dataclass(slots=True)
-class DeferredFileEffectBatch:
-    batch_id: str
-    case_run_ref: CaseRunRef
-    workspace_root: str
-    jobs: list[DeferredFileEffectJob]
-    turn_id: str | None
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        case_run_ref: CaseRunRef,
-        workspace_root: str | Path,
-        jobs: list[DeferredFileEffectJob],
-    ) -> DeferredFileEffectBatch:
-        turn_id = jobs[0].turn_id if jobs else None
-        identity = "\0".join(job.tool_call_id for job in jobs) or uuid.uuid4().hex
-        import hashlib
-
-        return cls(
-            batch_id=f"filefx-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:32]}",
-            case_run_ref=case_run_ref,
-            workspace_root=str(Path(workspace_root).expanduser().resolve()),
-            jobs=list(jobs),
-            turn_id=turn_id,
-        )
-
-    @property
-    def tool_call_ids(self) -> list[str]:
-        return [job.tool_call_id for job in self.jobs]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "batch_id": self.batch_id,
-            "case_run_ref": self.case_run_ref.to_dict(),
-            "workspace_root": self.workspace_root,
-            "jobs": [job.to_dict() for job in self.jobs],
-            "turn_id": self.turn_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "DeferredFileEffectBatch":
-        return cls(
-            batch_id=str(data["batch_id"]),
-            case_run_ref=CaseRunRef.from_dict(dict(data["case_run_ref"])),
-            workspace_root=str(data["workspace_root"]),
-            jobs=[DeferredFileEffectJob.from_dict(job) for job in data.get("jobs", [])],
-            turn_id=data.get("turn_id"),
-        )
-
+from .file_effect_models import (
+    DeferredFileEffectBatch,
+    DeferredFileEffectJob,
+    FileSnapshot,
+)
+from .tools import FileEffectTracker
 
 class FileEffectBaselineStore:
     def __init__(self, session_dir: str | Path | None):
@@ -107,8 +26,6 @@ class FileEffectBaselineStore:
     def load(self) -> dict[str, Any] | None:
         if self.path is None or not self.path.exists():
             return None
-        from .tools import FileSnapshot
-
         data = read_json(self.path, default={"snapshots": {}})
         raw_snapshots = data.get("snapshots")
         if not isinstance(raw_snapshots, dict):
@@ -171,8 +88,6 @@ class FileEffectToolExecutor:
 def process_file_effect_batch(batch: DeferredFileEffectBatch) -> None:
     """Execute one idempotently admitted diff batch; scheduling belongs to Pygent."""
 
-    from .tools import FileEffectTracker
-
     session_dir = EventStore(batch.case_run_ref).session_dir
     baseline_store = FileEffectBaselineStore(session_dir)
     tracker = FileEffectTracker(workspace_root=batch.workspace_root, store=EventStore(batch.case_run_ref))
@@ -206,15 +121,12 @@ def _primary_job(batch: DeferredFileEffectBatch) -> DeferredFileEffectJob:
     return batch.jobs[-1]
 
 
-def _file_effect_to_dict(effect: Any) -> dict[str, Any]:
-    if isinstance(effect, dict):
-        return dict(effect)
-    return asdict(effect)
-
-
-def _file_effect_from_dict(data: Any) -> Any:
-    if not isinstance(data, dict):
-        return data
-    from .tools import FileEffect
-
-    return FileEffect(**data)
+__all__ = [
+    "DeferredFileEffectBatch",
+    "DeferredFileEffectJob",
+    "FILE_EFFECT_TOOL_SPEC",
+    "FileEffectBaselineStore",
+    "FileEffectToolExecutor",
+    "FileSnapshot",
+    "process_file_effect_batch",
+]

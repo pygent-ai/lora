@@ -221,7 +221,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(result.status, "success")
-            self.assertEqual(interceptor.drain_file_effect_jobs(), [])
+            self.assertIsNone(result.deferred_job)
             effects = list(
                 EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl")
             )
@@ -252,7 +252,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(tool_results[0]["status"], "success")
             self.assertFalse((Path(run.run_dir) / "file_events.jsonl").exists())
 
-    async def test_tool_interceptor_drain_file_effect_jobs_returns_declared_metadata(self) -> None:
+    async def test_tool_interceptor_returns_deferred_file_effect_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"
             workspace.mkdir()
@@ -266,19 +266,18 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             )
             ctx = "turn-0001"
 
-            await _call_and_record(interceptor,
+            result = await _call_and_record(interceptor,
                 "write",
                 {"file_path": str(path), "content": "hello\n"},
                 ctx,
                 lambda file_path, content: Path(file_path).write_text(content, encoding="utf-8"),
             )
 
-            jobs = interceptor.drain_file_effect_jobs()
-            self.assertEqual(len(jobs), 1)
-            self.assertEqual(jobs[0].tool_name, "write")
-            self.assertEqual(jobs[0].turn_id, "turn-0001")
-            self.assertEqual(jobs[0].declared[0].type, "file.write")
-            self.assertEqual(interceptor.drain_file_effect_jobs(), [])
+            job = result.deferred_job
+            self.assertIsNotNone(job)
+            self.assertEqual(job.tool_name, "write")
+            self.assertEqual(job.turn_id, "turn-0001")
+            self.assertEqual(job.declared[0].type, "file.write")
 
     async def test_tool_interceptor_deferred_mode_skips_read_only_bash_snapshot_job(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,14 +292,14 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             )
             ctx = "turn-0001"
 
-            await _call_and_record(interceptor,
+            result = await _call_and_record(interceptor,
                 "bash",
                 {"command": "rg -n \"DiffTool\" src/lora"},
                 ctx,
                 lambda command: "src/lora/tracing/diffing.py:135:class DiffTool",
             )
 
-            self.assertEqual(interceptor.drain_file_effect_jobs(), [])
+            self.assertIsNone(result.deferred_job)
 
 class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
     """Specification tests for the planned workspace file-effect tracker."""
@@ -763,7 +762,7 @@ async def _call_and_record(
         error = str(exc)
         error_kind = type(exc).__name__
         status = "failed"
-    payload = interceptor.record_framework_result(
+    payload, deferred_job = interceptor.record_framework_result(
         name,
         args,
         ctx,
@@ -786,6 +785,7 @@ async def _call_and_record(
         result=projected_result,
         error=payload.get("error"),
         tool_call_id=payload["tool_call_id"],
+        deferred_job=deferred_job,
     )
 
 

@@ -11,6 +11,7 @@ from pygent.runtime import ExecutionOptions
 from pygent.tool import AgentToolExecutor
 
 from lora.config import load_run_config
+from lora.runtime.context import LoraContext
 from lora.runtime.agent import PromptRenderContext, _render_available_tools_prompt
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import SessionManager
@@ -140,8 +141,6 @@ async def test_standard_read_tool_advertises_its_workspace_sandbox() -> None:
         try:
             await service.initialize()
             agent = service.new_agent(
-                run_ref,
-                "turn-0001",
                 interactive_approvals=False,
             )
             read_definition = next(
@@ -180,7 +179,14 @@ async def test_standard_read_tool_advertises_its_workspace_sandbox() -> None:
                         ),
                     )
                 ),
-                Context(tools=(diff_spec.definition,)),
+                    LoraContext(
+                        session_id=run_ref.session_id,
+                        case_id=run_ref.case_id,
+                        case_run_id=run_ref.case_run_id,
+                        run_dir=run_ref.run_dir,
+                        turn_id="turn-0001",
+                        tools=(diff_spec.definition,),
+                    ),
                 execution=ExecutionOptions(request_id=run_ref.case_run_id),
             )
         finally:
@@ -249,3 +255,47 @@ def test_delegation_uses_pygent_agent_tool_executor() -> None:
         service.executor_registry.resolve("lora.agent.delegate", "1"),
         AgentToolExecutor,
     )
+
+
+@pytest.mark.asyncio
+async def test_one_agent_definition_is_reused_with_isolated_run_contexts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = load_run_config(workspace_root=Path(tmp))
+        manager = SessionManager(config)
+        first_session = manager.create(case_id="chat", mode="agent")
+        second_session = manager.create(case_id="chat", mode="agent")
+        first_run = manager.start_case_run(first_session.session_id, "chat", run_config=config)
+        second_run = manager.start_case_run(second_session.session_id, "chat", run_config=config)
+        service = LoraRuntimeService(config, max_runnable_executions=2)
+        try:
+            agent = service.new_agent(interactive_approvals=False)
+            assert agent is service.new_agent(interactive_approvals=False)
+
+            first_message, first_context = service._prepare_turn(
+                agent=agent,
+                manager=manager,
+                run_ref=first_run,
+                message="first",
+                config=config,
+                turn_id="turn-first",
+            )
+            second_message, second_context = service._prepare_turn(
+                agent=agent,
+                manager=manager,
+                run_ref=second_run,
+                message="second",
+                config=config,
+                turn_id="turn-second",
+            )
+
+            assert first_message.content != second_message.content
+            assert first_context.case_run_ref == first_run
+            assert second_context.case_run_ref == second_run
+            assert first_context.turn_id == "turn-first"
+            assert second_context.turn_id == "turn-second"
+            assert not hasattr(agent, "case_run_ref")
+            assert not hasattr(agent, "turn_id")
+        finally:
+            manager.finish_case_run(first_run, "passed")
+            manager.finish_case_run(second_run, "passed")
+            await service.close()

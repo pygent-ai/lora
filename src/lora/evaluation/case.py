@@ -283,7 +283,3 @@ def _resolve_workspace_path(root: Path, value: Any, *, field_name: str) -> Path:
     except ValueError as exc:
         raise ValueError(f"{field_name} must stay within workspace_root: {value}") from exc
     return resolved
-
-
-def _resolve_under_root(root: Path, value: Any) -> Path:
-    return _resolve_workspace_path(root, value, field_name="workspace path")

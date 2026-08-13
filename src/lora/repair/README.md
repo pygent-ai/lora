@@ -1,5 +1,3 @@
 # Repair
 
-Placeholder for future repair workflow package modules.
-
-The current repair implementation remains in `src/lora/repair.py` during the transition.
+Coordinates the higher-level diagnose, repair, and regression-gate workflow. It composes evaluation, sessions, tracing, and schema contracts rather than implementing those domains itself.

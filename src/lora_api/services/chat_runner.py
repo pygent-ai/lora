@@ -10,7 +10,7 @@ from typing import Any
 from pygent import thaw_json
 
 from lora.schema import CaseRunRef
-from lora_api.dependencies import ApiContext
+from lora_api.container import ApiContext
 from lora_api.models.events import ExecutionEvent
 from lora_api.models.requests import ChatTurnRequest
 from lora_api.services.session_service import SessionService

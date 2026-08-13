@@ -1,5 +1,5 @@
 # Config
 
-Placeholder for future configuration loading and profile package modules.
+Loads and resolves project configuration from YAML and environment-backed credentials.
 
-The current config implementation remains in `src/lora/config.py` during the transition.
+`loader.py` may depend on schema and credentials, but not on runtime, evaluation, CLI, or API adapters.

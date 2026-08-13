@@ -4,7 +4,6 @@ import hashlib
 import os
 import re
 import shlex
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,57 +13,13 @@ from lora.core.io import plain_data
 from lora.tracing import DiffRecorder, read_snapshot_content
 from lora.core.redaction import redact_secrets
 from lora.tracing import EventStore
-from .file_effects import DeferredFileEffectJob
+from .file_effect_models import DeferredFileEffectJob, FileEffect, FileSnapshot
 
 MAX_BASH_RESULT_CHARS = 20_000
 MAX_BASH_RESULT_LINES = 200
 BASH_RESULT_PREVIEW_LINES = 120
 BASH_RESULT_PREVIEW_CHARS = 12_000
 SPOOLED_TEXT_TOOL_NAMES = frozenset({"bash", "grep"})
-
-
-@dataclass(slots=True)
-class FileSnapshot:
-    path: str
-    exists: bool
-    kind: Literal["file", "dir", "other", "missing"]
-    size: int | None = None
-    mtime_ns: int | None = None
-    content_hash: str | None = None
-    content: str | None = None
-    content_available: bool = False
-    content_unavailable_reason: str | None = None
-
-
-@dataclass(slots=True)
-class FileEffect:
-    type: Literal["file.read", "file.write", "file.edit", "file.delete"]
-    path: str
-    tool_call_id: str
-    tool_name: str
-    detected_by: list[Literal["tool_args", "snapshot_diff", "bash_command_parse"]]
-    confidence: Literal["declared", "observed", "inferred"]
-    before_hash: str | None = None
-    after_hash: str | None = None
-    before_exists: bool | None = None
-    after_exists: bool | None = None
-    before_content: str | None = None
-    after_content: str | None = None
-    before_content_available: bool = False
-    after_content_available: bool = False
-    before_content_unavailable_reason: str | None = None
-    after_content_unavailable_reason: str | None = None
-
-    def key(self) -> tuple[Any, ...]:
-        return (
-            self.tool_call_id,
-            self.path,
-            self.type,
-            self.before_hash,
-            self.after_hash,
-            self.before_exists,
-            self.after_exists,
-        )
 
 
 class FileEffectTracker:
@@ -429,7 +384,6 @@ class ToolObserver:
         self.store = store
         self.bash_full_output_allowlist = list(bash_full_output_allowlist or [])
         self.defer_file_effects = defer_file_effects
-        self._file_effect_jobs: list[DeferredFileEffectJob] = []
         if track_file_effects and workspace_root is None:
             raise ValueError("workspace_root is required when track_file_effects=True")
         self.file_effect_tracker = (
@@ -442,11 +396,6 @@ class ToolObserver:
             else None
         )
 
-    def drain_file_effect_jobs(self) -> list[DeferredFileEffectJob]:
-        jobs = list(self._file_effect_jobs)
-        self._file_effect_jobs.clear()
-        return jobs
-
     def record_framework_result(
         self,
         name: str,
@@ -455,7 +404,7 @@ class ToolObserver:
         result: PygentToolResult,
         *,
         available_tools: tuple[str, ...] = (),
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], DeferredFileEffectJob | None]:
         """Persist Lora audit facts after Pygent has executed a tool."""
 
         call_id = self.store.append(
@@ -473,6 +422,7 @@ class ToolObserver:
             if self.file_effect_tracker is not None
             else []
         )
+        deferred_job: DeferredFileEffectJob | None = None
         if self.defer_file_effects:
             requires_snapshot = _tool_requires_deferred_snapshot(name, args)
             if (
@@ -483,7 +433,7 @@ class ToolObserver:
             ):
                 self.file_effect_tracker.append_effects(declared, turn_id=turn_id)
             else:
-                self._append_deferred_file_effect_job(
+                deferred_job = self._deferred_file_effect_job(
                     tool_call_id=call_id,
                     tool_name=name,
                     args=args,
@@ -519,9 +469,9 @@ class ToolObserver:
             }
         payload["model_tool_call_id"] = result.call_id
         self.store.append("tool.result", actor="tool", payload=payload, turn_id=turn_id)
-        return payload
+        return payload, deferred_job
 
-    def _append_deferred_file_effect_job(
+    def _deferred_file_effect_job(
         self,
         *,
         tool_call_id: str,
@@ -530,25 +480,19 @@ class ToolObserver:
         turn_id: str | None,
         declared: list[FileEffect],
         include_declared: bool = True,
-    ) -> None:
+    ) -> DeferredFileEffectJob | None:
         requires_snapshot = _tool_requires_deferred_snapshot(tool_name, args)
         if not requires_snapshot and (not include_declared or not declared):
-            return
-        self._file_effect_jobs.append(
-            DeferredFileEffectJob(
-                tool_call_id=tool_call_id,
-                tool_name=tool_name,
-                args=dict(args),
-                turn_id=turn_id,
-                declared=declared,
-                include_declared=include_declared,
-                requires_snapshot=requires_snapshot,
-            )
+            return None
+        return DeferredFileEffectJob(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            args=dict(args),
+            turn_id=turn_id,
+            declared=declared,
+            include_declared=include_declared,
+            requires_snapshot=requires_snapshot,
         )
-
-
-def _normalize(path: str | Path) -> str:
-    return str(Path(path).expanduser().resolve())
 
 
 def _normalize_user_path(path: str | Path) -> str | Path:

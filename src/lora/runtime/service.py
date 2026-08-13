@@ -5,23 +5,17 @@ import hashlib
 import asyncio
 import time
 import warnings
-import weakref
 from contextvars import ContextVar
-from contextlib import asynccontextmanager
 from dataclasses import replace
 from html import escape
 from pathlib import Path
 from typing import Any
 
 from pygent import (
-    Context,
     FallbackPolicy,
-    IdempotencyPolicy,
     ModelGroupConfig,
     ModelRoute,
-    ToolDefinition,
     ToolKit,
-    ToolSideEffect,
     UserMessage,
     thaw_json,
 )
@@ -58,9 +52,17 @@ from lora.schema import CaseRunRef, RunConfig
 from lora.config import load_run_config
 from lora.core.io import read_json, write_json
 from lora.sessions import SessionManager
+from lora.tracing import DIFF_TOOL_SPEC, DiffTool
+from pygent.runtime.codec import invocation_from_dict
 
-from .agent import LoraAgent, _initial_pygent_context
-from .context import LoraExecutionContext
+from .agent import LoraAgent, _initial_lora_context, _session_dir_for_run, _to_pygent_message
+from .context import LORA_CONTEXT_CODEC, LoraContext
+from .delegation import (
+    DELEGATE_BACKGROUND_TOOL_SPEC,
+    DELEGATE_TOOL_SPEC,
+    visible_delegation_specs,
+)
+from .deployment import LoraModelResourceResolver, WorkspaceToolExecutor
 from .file_effects import (
     FILE_EFFECT_TOOL_SPEC,
     FileEffectToolExecutor,
@@ -87,84 +89,6 @@ def _managed_child_budget(config: RunConfig) -> int:
     return max(1024, max_steps * 16)
 
 
-class _LoraModelResourceResolver:
-    """Reconstructable deployment identity with process-local live invokers."""
-
-    resolver_id = "lora-model"
-
-    def __init__(self) -> None:
-        self._invokers: dict[str, Any] = {}
-
-    def register(self, revision: str, invoker: Any) -> None:
-        self._invokers[revision] = invoker
-
-    async def validate(self, model_group: Any, resources: Any) -> None:
-        del model_group
-        for _, resource in resources.route_resources:
-            if resource.revision not in self._invokers:
-                raise ValueError(f"model resource revision {resource.revision!r} is unavailable")
-
-    @asynccontextmanager
-    async def acquire(self, model_group: Any, resources: Any) -> Any:
-        del model_group
-        revision = resources.route_resources[0][1].revision
-        invoker = self._invokers.get(revision)
-        if invoker is None:
-            raise RuntimeError(f"model resource revision {revision!r} is unavailable")
-        yield invoker
-
-
-def _delegation_spec(name: str, description: str) -> ToolSpec:
-    return ToolSpec(
-        tool_id=f"lora.agent.{name}",
-        version="1",
-        definition=ToolDefinition(
-            name=name,
-            description=description,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "agent": {
-                        "type": "string",
-                        "description": "Configured Lora agent alias allowed for delegation.",
-                    },
-                    "task": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Complete task for the delegated agent to perform.",
-                    },
-                },
-                "required": ["agent", "task"],
-                "additionalProperties": False,
-            },
-        ),
-        side_effect=ToolSideEffect.EXTERNAL,
-        idempotency=IdempotencyPolicy.REQUIRES_KEY,
-        resource_key="lora-agent",
-        sandbox_profile="agent",
-    )
-
-
-DELEGATE_TOOL_SPEC = _delegation_spec("delegate", "Run a task synchronously with an allowed Lora agent.")
-DELEGATE_BACKGROUND_TOOL_SPEC = _delegation_spec(
-    "delegate_background", "Start a durable background task with an allowed Lora agent."
-)
-
-
-def _visible_delegation_specs(config: RunConfig) -> tuple[ToolSpec, ...]:
-    if not config.delegation.allowed_agents:
-        return ()
-    if config.delegation.background_enabled:
-        return DELEGATE_TOOL_SPEC, DELEGATE_BACKGROUND_TOOL_SPEC
-    return (DELEGATE_TOOL_SPEC,)
-
-
-class _WorkspaceToolExecutor(LocalToolExecutor):
-    """Deployment adapter for Pygent tools confined by Lora's workspace policy."""
-
-    sandbox_support = SandboxExecutorSupport(profiles=("workspace",))
-
-
 class _DiffExecutor:
     def __init__(self, service: "LoraRuntimeService") -> None:
         self.service = service
@@ -176,9 +100,17 @@ class _DiffExecutor:
         record = await self.service.history.get_execution(context.execution_id)
         if record is None:
             raise RuntimeError("managed diff execution record is unavailable")
-        diff = self.service._diff_tools.get(record.request_id)
-        if diff is None:
-            raise RuntimeError("managed diff execution is no longer active")
+        _, execution_context = invocation_from_dict(
+            record.input,
+            registry=self.service.runtime.context_codec_registry,
+        )
+        if not isinstance(execution_context, LoraContext):
+            raise TypeError("managed diff execution requires LoraContext")
+        diff = DiffTool(
+            case_run_ref=execution_context.case_run_ref,
+            workspace_root=self.service.config.workspace_root,
+            turn_id=execution_context.turn_id,
+        )
         return await diff.forward(**dict(thaw_json(call.arguments)))
 
 
@@ -211,8 +143,10 @@ class LoraRuntimeService:
             capacity_coordinator=self.capacity,
             model_deployment_store=self.model_store,
             deployment_namespace=str(Path(config.workspace_root).resolve()),
+            context_codecs=(LORA_CONTEXT_CODEC,),
         )
         self.runtime.attach_executor_registry(self.executor_registry)
+        self._diff_executor = _DiffExecutor(self)
         standard = StandardTools(workspace_root=config.workspace_root)
         ToolKit(
             standard.bash.bash,
@@ -224,12 +158,13 @@ class LoraRuntimeService:
         ).register_into_runtime(
             self.runtime,
             executor_factory=lambda spec, handler: (
-                _WorkspaceToolExecutor(handler)
+                WorkspaceToolExecutor(handler)
                 if spec.sandbox_profile == "workspace"
                 else LocalToolExecutor(handler)
             ),
         )
         self.runtime.register_tool(FILE_EFFECT_TOOL_SPEC, FileEffectToolExecutor())
+        self.runtime.register_tool(DIFF_TOOL_SPEC, self._diff_executor)
         delegation_executor = AgentToolExecutor(invoke=self._execute_delegation)
         setattr(
             delegation_executor,
@@ -244,7 +179,7 @@ class LoraRuntimeService:
             self.runtime.register_tool(spec, delegation_executor)
         self.task_manager = DurableToolTaskManager(self.history, self.executor_registry)
         self.runtime.attach_tool_task_manager(self.task_manager)
-        self.model_resolver = _LoraModelResourceResolver()
+        self.model_resolver = LoraModelResourceResolver()
         self.runtime.register_model_resource_resolver(self.model_resolver)
         scope = (
             CapacityScope.DEPLOYMENT
@@ -277,15 +212,16 @@ class LoraRuntimeService:
             ),
             durability=DurabilityPolicy(DurabilityMode(config.runtime_durability.mode)),
         )
-        self.external_tools: tuple[ToolSpec, ...] = _visible_delegation_specs(config)
-        self._diff_tools: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
-        self._diff_executor = _DiffExecutor(self)
+        self.external_tools: tuple[ToolSpec, ...] = visible_delegation_specs(config)
         self.warnings: list[str] = []
         self._delegation_slots = asyncio.Semaphore(config.delegation.max_parallel)
         self._initialized = False
         self._initializing_task: asyncio.Task[None] | None = None
         self._closed = False
         template = LoraAgent(config, managed_model=True)
+        self._agent_definitions: dict[tuple[int, bool], LoraAgent] = {
+            (id(config), False): template
+        } if config.resolved_agent is not None else {}
         self._model_invokers: dict[str, Any] = {
             config.resolved_agent.alias: template.llm
         } if config.resolved_agent is not None and template.llm is not None else {}
@@ -380,14 +316,18 @@ class LoraRuntimeService:
 
     def new_agent(
         self,
-        run_ref: CaseRunRef,
-        turn_id: str,
         *,
         interactive_approvals: bool,
         config: RunConfig | None = None,
     ) -> LoraAgent:
         effective_config = config or self.config
         resolved = effective_config.resolved_agent
+        if resolved is None:
+            raise ValueError("resolved agent configuration is required")
+        key = (id(effective_config), interactive_approvals)
+        existing = self._agent_definitions.get(key)
+        if existing is not None:
+            return existing
         invoker = self._model_invokers.get(resolved.alias) if resolved is not None else None
         agent = LoraAgent(
             effective_config,
@@ -399,15 +339,7 @@ class LoraRuntimeService:
         )
         if resolved is not None and agent.llm is not None:
             self._model_invokers.setdefault(resolved.alias, agent.llm)
-        agent.assemble_run(run_ref, turn_id)
-        if agent._diff_tool is not None:
-            self._diff_tools[run_ref.case_run_id] = agent._diff_tool
-            diff_spec = next(
-                spec for spec in agent._toolkit.specs
-                if spec.definition.name == "diff"
-            )
-            if not self.executor_registry.contains(diff_spec.tool_id, diff_spec.version):
-                self.runtime.register_tool(diff_spec, self._diff_executor)
+        self._agent_definitions[key] = agent
         return agent
 
     async def run_delegated(
@@ -458,8 +390,6 @@ class LoraRuntimeService:
         run_ref = manager.start_case_run(session.session_id, "delegation", run_config=child_config)
         turn_id = f"delegate-{parent_call_id}"
         child = self.new_agent(
-            run_ref,
-            turn_id,
             interactive_approvals=True,
             config=child_config,
         )
@@ -469,6 +399,7 @@ class LoraRuntimeService:
             run_ref=run_ref,
             message=task,
             config=child_config,
+            turn_id=turn_id,
         )
         bound = await self.bind(child, child)
         handle = await bound.start(
@@ -554,18 +485,14 @@ class LoraRuntimeService:
         from pygent.runtime import ExecutionOptions
 
         await self.initialize()
-        agent = await asyncio.to_thread(
-            self.new_agent,
-            run_ref,
-            turn_id,
-            interactive_approvals=interactive_approvals,
-        )
+        agent = self.new_agent(interactive_approvals=interactive_approvals)
         turn_message, turn_context = self._prepare_turn(
             agent=agent,
             manager=manager,
             run_ref=run_ref,
             message=message,
             config=self.config,
+            turn_id=turn_id,
         )
         bound = await self.bind(agent, agent)
         handle = await bound.start(
@@ -611,18 +538,14 @@ class LoraRuntimeService:
         for prior in messages[:-1]:
             session.history.append({"role": "user", "content": prior})
             store.append("conversation.user_message", actor="user", payload={"role": "user", "content": prior}, turn_id="turn-0001")
-        agent = await asyncio.to_thread(
-            self.new_agent,
-            run_ref,
-            "turn-0001",
-            interactive_approvals=False,
-        )
+        agent = self.new_agent(interactive_approvals=False)
         turn_message, turn_context = self._prepare_turn(
             agent=agent,
             manager=manager,
             run_ref=run_ref,
             message=current_message,
             config=self.config,
+            turn_id="turn-0001",
             session=session,
         )
         bound = await self.bind(agent, agent)
@@ -660,18 +583,32 @@ class LoraRuntimeService:
         run_ref: CaseRunRef,
         message: str,
         config: RunConfig,
+        turn_id: str,
         session: Any | None = None,
-    ) -> tuple[UserMessage, Context]:
+    ) -> tuple[UserMessage, LoraContext]:
         session = session or manager.load(run_ref.session_id)
-        runtime_context = LoraExecutionContext(session)
-        agent.attach_runtime_context(runtime_context, manager)
+        full_history = tuple(
+            converted
+            for item in session.history
+            if (converted := _to_pygent_message(item)) is not None
+        )
+        lora_context = LoraContext(
+            session_id=session.session_id,
+            session_status=session.status,
+            case_id=run_ref.case_id,
+            case_run_id=run_ref.case_run_id,
+            run_dir=run_ref.run_dir,
+            turn_id=turn_id,
+            system_prompt=session.system_prompt,
+            full_history=full_history,
+        )
         wrapped = _wrap_user_message(message, config.user_identity)
-        reminder = agent.render_initial_user_reminder(runtime_context)
+        reminder = agent.render_initial_user_reminder(lora_context)
         if reminder:
             wrapped = f"{wrapped}\n\n{reminder}"
-        history, _ = _initial_pygent_context(
-            context=runtime_context,
-            session_dir=agent.context_manager.session_dir,
+        history, _ = _initial_lora_context(
+            context=lora_context,
+            session_dir=_session_dir_for_run(Path(run_ref.run_dir)),
         )
         return (
             UserMessage(content=wrapped, kind="lora.chat.turn", data={"raw_content": message}),

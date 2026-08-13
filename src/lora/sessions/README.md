@@ -1,5 +1,5 @@
 # Sessions
 
-Placeholder for future session lifecycle and storage package modules.
+Owns session creation, loading, mutation, and on-disk persistence through `SessionManager`.
 
-The current session manager remains in `src/lora/session.py` during the transition.
+It depends on core helpers and schema contracts, and stays independent of runtime orchestration.

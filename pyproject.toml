@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115.0",
-    "pygent-ai==0.2.10",
+    "pygent-ai==0.2.12",
     "uvicorn>=0.32.0",
 ]
 
@@ -32,6 +32,3 @@ packages = ["src/lora", "src/lora_api"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-
-[tool.uv.sources]
-pygent-ai = { git = "https://github.com/pygent-ai/pygent.git", rev = "71fec6f" }

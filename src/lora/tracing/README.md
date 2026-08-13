@@ -1,5 +1,6 @@
 # Tracing
 
-Placeholder for future trace and event storage package modules.
+Owns append-only runtime events and persisted workspace diffs.
 
-The current trace implementation remains in `src/lora/trace.py` during the transition.
+- `events.py`: event storage and event type contracts.
+- `diffing.py`: snapshots, diff recording, and the diff tool adapter.

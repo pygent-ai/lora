@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pygent import IdempotencyPolicy, ToolSideEffect, tool
+from pygent import IdempotencyPolicy, ToolSideEffect, ToolKit, tool
 from pydantic import Field
 
 from lora.schema import CaseRunRef
@@ -259,6 +259,30 @@ class DiffTool:
             )
             result.pop("patch", None)
         return result
+
+
+@tool(
+    tool_id="lora.diff",
+    version="1.0.0",
+    side_effect=ToolSideEffect.READ,
+    idempotency=IdempotencyPolicy.INHERENT,
+    name="diff",
+    description="Show persisted file diffs for the current Lora session or run.",
+    timeout=30,
+    resource_key="lora-diffs",
+    required_permissions=("filesystem:read",),
+)
+async def _diff_contract(
+    scope: Annotated[Literal["turn", "run", "session"], Field(description="File-effect history scope to inspect.")] = "run",
+    path: Annotated[str | None, Field(description="Optional workspace path whose persisted changes to show.")] = None,
+    tool_call_id: Annotated[str | None, Field(description="Optional originating tool call ID to filter by.")] = None,
+    format: Annotated[Literal["summary", "patch", "json"], Field(description="Result detail: compact summary, unified patches, or records.")] = "summary",
+    limit: Annotated[int, Field(ge=1, description="Maximum number of persisted diff records to return.")] = 20,
+) -> dict[str, Any]:
+    raise RuntimeError("diff is resolved by the Lora runtime executor")
+
+
+DIFF_TOOL_SPEC = ToolKit(_diff_contract).specs[0]
 
 def read_snapshot_content(path: Path) -> DiffSnapshotContent:
     try:

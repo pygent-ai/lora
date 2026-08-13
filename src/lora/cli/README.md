@@ -1,5 +1,8 @@
 # CLI
 
-Placeholder for future CLI package modules.
+Thin command-line adapter over Lora application services.
 
-The current CLI entry point remains in `src/lora/cli.py` during the transition.
+- `main.py`: parser and command dispatch.
+- `credentials.py`: credential subcommands.
+
+Business logic belongs in the corresponding feature package, not in command handlers.

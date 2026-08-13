@@ -8,11 +8,11 @@ from typing import Any
 from lora.core.io import read_json
 from lora.core.io import validate_path_id
 from lora.core.io import write_json
-from lora.schema import AgentSession, RunConfig
+from lora.schema import RunConfig
 from lora.sessions import SessionManager
 from lora.tracing.events import EventStore
 
-from lora_api.dependencies import ApiContext
+from lora_api.container import ApiContext
 from lora_api.models.responses import (
     SessionDetailResponse,
     SessionGroupListResponse,
@@ -20,7 +20,7 @@ from lora_api.models.responses import (
     SessionRecordResponse,
     SessionScopeResponse,
 )
-from lora_api.services.project_state import active_project_scope_id, build_session_scopes
+from lora_api.project_state import active_project_scope_id, build_session_scopes
 
 
 class SessionService:
@@ -131,10 +131,6 @@ def _record_from_metadata(
         last_case_run_id=_optional_str(metadata.get("last_case_run_id")),
         last_case_run_status=_optional_str(metadata.get("last_case_run_status")),
     )
-
-
-def _session_from_manager(manager: SessionManager, session_id: str) -> AgentSession:
-    return manager.load(session_id)
 
 
 def _display_title(session_id: str) -> str:

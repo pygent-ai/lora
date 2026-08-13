@@ -153,7 +153,7 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
                 DeferredFileEffectBatch.create(
                     case_run_ref=run,
                     workspace_root=workspace,
-                    jobs=interceptor.drain_file_effect_jobs(),
+                    jobs=[result.deferred_job] if result.deferred_job is not None else [],
                 )
             )
 
@@ -206,7 +206,7 @@ async def _call_and_record(
         status = "failed"
         error = str(exc)
         error_kind = type(exc).__name__
-    payload = interceptor.record_framework_result(
+    payload, deferred_job = interceptor.record_framework_result(
         name,
         args,
         ctx,
@@ -220,7 +220,7 @@ async def _call_and_record(
             side_effect_committed=status == "succeeded",
         ),
     )
-    jobs = interceptor.drain_file_effect_jobs()
+    jobs = [deferred_job] if deferred_job is not None else []
     if jobs and process_jobs:
         process_file_effect_batch(
             DeferredFileEffectBatch.create(
@@ -229,13 +229,12 @@ async def _call_and_record(
                 jobs=jobs,
             )
         )
-    elif jobs:
-        interceptor._file_effect_jobs.extend(jobs)
     return SimpleNamespace(
         status=payload["status"],
         result=payload.get("result"),
         error=payload.get("error"),
         tool_call_id=payload["tool_call_id"],
+        deferred_job=deferred_job,
     )
 
 

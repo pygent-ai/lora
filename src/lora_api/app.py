@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from lora_api.dependencies import ApiContext
+from lora_api.container import ApiContext
 from lora_api.routers import chat, health, projects, runtime, sessions, settings, tool_results, traces
+from lora_api.services.chat_runner import ChatRunRegistry
 
 
 def create_app(
@@ -22,6 +23,7 @@ def create_app(
         agent_alias=agent_alias,
         max_steps=max_steps,
     )
+    context.attach_chat_registry(ChatRunRegistry())
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

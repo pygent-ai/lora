@@ -5,7 +5,7 @@ from typing import Any
 
 from lora.tracing import EventStore
 
-from lora_api.dependencies import ApiContext
+from lora_api.container import ApiContext
 
 
 def find_tool_result(context: ApiContext, tool_call_id: str) -> dict[str, Any] | None:

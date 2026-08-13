@@ -4,6 +4,7 @@ This directory contains project-level documentation. Package-local README files 
 
 ## Current Docs
 
+- [Principles](principles/README.md): normative first principles that constrain product, architecture, memory, compression, and evaluation decisions.
 - [API](api/README.md): local FastAPI service routes, SSE events, and generated OpenAPI contract.
 - [CLI](cli/lora-chat.md): command-line chat usage.
 - [Guides](guides/development-guide.md): development workflow and operational guides.
@@ -19,6 +20,7 @@ This directory contains project-level documentation. Package-local README files 
 
 ```text
 docs/
+  principles/           Normative first principles and non-negotiable invariants
   api/                  Local FastAPI service documentation and API contracts
   architecture/         Current repository and system architecture
   cli/                  CLI user documentation

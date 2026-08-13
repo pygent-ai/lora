@@ -14,7 +14,7 @@ from lora.config import load_run_config
 from lora.evaluation import Evaluator
 from lora.evaluation import RegressionRunner
 from lora.repair import RepairWorkflow
-from lora.runtime import execute_case_run
+from lora.workflows import execute_case_run
 from lora.runtime.service import LoraRuntimeService
 from pygent import thaw_json
 from lora.sessions import SessionManager
@@ -375,7 +375,3 @@ def _repair_workflow(args: argparse.Namespace) -> RepairWorkflow:
 
 def _find_case_run(manager: SessionManager, session_id: str, case_run_id: str):
     return manager.find_case_run(session_id, case_run_id)
-
-
-def _root_causes(verdict: dict[str, Any], events: list[Any]) -> list[dict[str, Any]]:
-    return FailureAnalyzer().analyze(verdict=verdict, events=events, run_dir=Path(".")).to_dict()["root_causes"]

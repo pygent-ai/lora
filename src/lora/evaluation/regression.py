@@ -10,7 +10,7 @@ from .case import CaseManager
 from lora.config import load_mapping_file
 from .evaluator import Evaluator
 from lora.core.io import append_jsonl, write_json
-from lora.runtime.runner import execute_case_run
+from lora.workflows.case_run import execute_case_run
 from lora.schema import CaseRunRef, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import EventStore
