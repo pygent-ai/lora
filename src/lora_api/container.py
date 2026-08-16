@@ -90,10 +90,6 @@ class ApiContext:
         with self._lock:
             runtime = self._runtime_service
             self._runtime_service = None
-            registry = self._chat_registry
-            self._chat_registry = None
-        if registry is not None:
-            await registry.close()
         if runtime is not None:
             await runtime.close(cancel=True)
         return self.reload(overrides)

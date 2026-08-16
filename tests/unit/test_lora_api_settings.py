@@ -6,6 +6,14 @@ from unittest.mock import patch
 
 from lora_api.dependencies import ApiContext
 
+
+class _RecordingChatRegistry:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
 def test_update_settings_saves_api_key_and_reloads_runtime_config(tmp_path: Path) -> None:
     from lora_api.models.requests import UpdateSettingsRequest
     from lora_api.routers.settings import update_settings
@@ -141,3 +149,24 @@ def test_update_settings_switches_workspace_and_rebuilds_session_manager(tmp_pat
     assert response.routes[0]["model_name"] == "workspace-b-model"
     assert response.routes[0]["api_key_env"] == "OTHER_GUI_KEY"
     assert Path(context.manager.sessions_root) == (workspace_b / ".lora" / "sessions").resolve()
+
+
+def test_update_settings_preserves_application_chat_registry(tmp_path: Path) -> None:
+    from lora_api.models.requests import UpdateSettingsRequest
+    from lora_api.routers.settings import update_settings
+
+    workspace_a = tmp_path / "workspace-a"
+    workspace_b = tmp_path / "workspace-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+    context = ApiContext(workspace_root=str(workspace_a), state_path=str(tmp_path / "state.json"))
+    registry = _RecordingChatRegistry()
+    context.attach_chat_registry(registry)
+
+    asyncio.run(update_settings(
+        UpdateSettingsRequest(workspace_root=str(workspace_b), max_steps=-1),
+        context=context,
+    ))
+
+    assert context.chat_registry is registry
+    assert registry.closed is False
