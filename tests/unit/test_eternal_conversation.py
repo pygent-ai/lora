@@ -91,6 +91,17 @@ def test_extractor_retains_private_compatibility_boundaries() -> None:
     assert "Memory is not evidence" in EXTRACTOR_SYSTEM_PROMPT
 
 
+def test_extractor_retains_named_entities_as_retrievable_memory() -> None:
+    assert "user-defined proper" in EXTRACTOR_SYSTEM_PROMPT
+    assert "internal codenames" in EXTRACTOR_SYSTEM_PROMPT
+    assert "environment names" in EXTRACTOR_SYSTEM_PROMPT
+    assert "exact user-authored name" in EXTRACTOR_SYSTEM_PROMPT
+    assert "at least one query, and must_include" in EXTRACTOR_SYSTEM_PROMPT
+    assert "never leave it only in the Snapshot" in EXTRACTOR_SYSTEM_PROMPT
+    assert "memory-only visibility, not" in EXTRACTOR_SYSTEM_PROMPT
+    assert "self-audit every future-relevant named entity" in EXTRACTOR_SYSTEM_PROMPT
+
+
 @pytest.mark.asyncio
 async def test_harness_records_raw_history_publishes_snapshot_and_builds_memory(tmp_path: Path) -> None:
     config = RunConfig(workspace_root=str(tmp_path), lora_root=str(tmp_path / ".lora"))

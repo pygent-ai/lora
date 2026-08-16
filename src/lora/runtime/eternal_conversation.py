@@ -22,7 +22,14 @@ and likely future retrieval phrasings. Version support windows, deprecation dead
 promises, and constraints the user asks not to publish in project documentation are still durable
 memory and MUST be retained with their exact version/date boundary. A durable user decision or
 constraint MUST have its own stable UT and MUST NOT share a UT with an evolving implementation
-summary; this separation prevents later code updates from overwriting it. When updating an existing UT, carry forward every still-effective decision,
+summary; this separation prevents later code updates from overwriting it. Treat user-defined proper
+nouns, internal codenames, aliases, environment names, and their referents as durable retrieval keys
+whenever they may affect future behavior. Preserve the exact user-authored name in the UT content,
+at least one query, and must_include; never leave it only in the Snapshot. A request to keep a name
+out of source code, repository files, or project documentation means memory-only visibility, not
+permission to omit it. Before returning, self-audit every future-relevant named entity and alias in
+the continuous history and ensure an existing or changed stable UT carries both the exact name and
+its meaning. When updating an existing UT, carry forward every still-effective decision,
 constraint, commitment, and exact boundary from the published UT; absence from the frozen Working
 Memory is not evidence that an older constraint became stale. Do not decide cursor or
 publication legality.
