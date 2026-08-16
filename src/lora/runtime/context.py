@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
 
 from pygent import Context, ContextCodec, FrozenJsonObject, Message, freeze_json_object, thaw_json
@@ -15,7 +15,7 @@ class LoraContext(Context):
     """Portable Lora agent state carried through one Pygent execution."""
 
     context_schema: ClassVar[str] = "lora.agent-context"
-    context_schema_version: ClassVar[int] = 2
+    context_schema_version: ClassVar[int] = 3
 
     session_id: str = ""
     session_status: str = "normal"
@@ -25,11 +25,15 @@ class LoraContext(Context):
     turn_id: str | None = None
     full_history: tuple[Message, ...] = ()
     model_context_compacted: bool = False
+    eternal_memory_enabled: bool = False
+    memory_covered_through: int = 0
+    memory_projection: FrozenJsonObject = field(default_factory=lambda: freeze_json_object({}))
+    raw_history_location: str = ""
     pending_file_effects: tuple[FrozenJsonObject, ...] = ()
 
     @property
     def history(self) -> list[dict[str, Any]]:
-        """Return the complete persisted history in Lora's storage shape."""
+        """Return this execution's portable history segment in storage shape."""
 
         return [message_to_dict(message) for message in self.full_history]
 

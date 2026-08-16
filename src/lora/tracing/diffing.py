@@ -45,7 +45,33 @@ class DiffRecorder:
         if effect.type not in {"file.write", "file.edit", "file.delete"}:
             return
         path = Path(effect.path).expanduser().resolve()
-        relative_path = _relative_workspace_path(path, self.workspace_root)
+        try:
+            relative_path = _relative_workspace_path(path, self.workspace_root)
+        except ValueError:
+            # Shell tools can report an effect outside the configured project
+            # even when file tools themselves are workspace-scoped. Preserve
+            # that fact for audit without treating it as a project diff or
+            # letting observation failure abort the agent turn.
+            self.store.append(
+                "diff.created",
+                actor="tool",
+                payload={
+                    "diff_id": f"diff_{uuid.uuid4().hex}",
+                    "tool_call_id": effect.tool_call_id,
+                    "tool_name": effect.tool_name,
+                    "path": str(path),
+                    "relative_path": None,
+                    "change_type": _change_type(effect.type),
+                    "external_to_workspace": True,
+                    "patch_available": False,
+                    "patch_path": None,
+                    "patch_char_count": 0,
+                    "patch_line_count": 0,
+                    "patch_unavailable_reason": "file effect is outside workspace",
+                },
+                turn_id=turn_id,
+            )
+            return
         before = DiffSnapshotContent(
             content=getattr(effect, "before_content", None),
             available=bool(getattr(effect, "before_content_available", False)),

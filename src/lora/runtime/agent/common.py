@@ -40,6 +40,16 @@ def _serialize_tool_payload_for_model(payload: dict[str, Any]) -> str:
 
 
 def _initial_lora_context(*, context: LoraContext, session_dir: Path) -> tuple[LoraContext, bool]:
+    if context.eternal_memory_enabled:
+        converted_messages = []
+        # Eternal-conversation contexts carry only the uncovered durable
+        # suffix. The absolute cursor remains metadata; slicing by it again
+        # would drop the working memory segment from the model projection.
+        for message in context.full_history:
+            converted = _to_pygent_message(message_to_dict(message))
+            if converted is not None:
+                converted_messages.append(converted)
+        return replace(context, messages=tuple(converted_messages)), False
     state = load_model_context(session_dir)
     if state and state.get("is_compacted") is True:
         messages = [

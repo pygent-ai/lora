@@ -84,7 +84,12 @@ def session_groups_response(context: ApiContext) -> SessionGroupListResponse:
     collapsed_ids = set(context.project_state.collapsed_scope_ids or [])
     groups: list[SessionGroupResponse] = []
     for scope in build_session_scopes(context.project_state, active_workspace_root=config.workspace_root):
-        manager = SessionManager(_config_for_listing_scope(context, scope))
+        try:
+            manager = SessionManager(_config_for_listing_scope(context, scope))
+        except (OSError, ValueError):
+            if scope.scope_id == active_scope_id:
+                raise
+            continue
         records = SessionService(manager).list_chat_sessions(scope_id=scope.scope_id)
         groups.append(
             SessionGroupResponse(

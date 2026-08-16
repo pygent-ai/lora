@@ -20,6 +20,7 @@ from pygent import (
     ToolDefinition,
     ToolKit,
     UserMessage,
+    freeze_json_object,
     thaw_json,
 )
 from pygent.llm import (
@@ -35,6 +36,7 @@ from lora.schema import ResolvedAgentConfig, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import DIFF_TOOL_SPEC, EventStore
 from lora.runtime.context import LoraContext
+from lora.runtime.eternal_conversation import EternalConversationHarness
 from lora.runtime.file_effects import FILE_EFFECT_TOOL_SPEC
 
 from .common import _pygent_context_messages
@@ -52,6 +54,24 @@ from .pipeline import (
 )
 from .prompts import PromptRegistry
 
+
+MODEL_MAX_OUTPUT_TOKENS = 4096
+
+
+class _DeepSeekAdapter(OpenAICompatibleAdapter):
+    """Use DeepSeek's documented non-thinking mode for bounded agent operations."""
+
+    def build_request(self, request: Any) -> Any:
+        body = super().build_request(request).to_dict()
+        body["thinking"] = {"type": "disabled"}
+        return freeze_json_object(body)
+
+
+def _route_supports_streaming(route: Any) -> bool:
+    """DeepSeek can emit malformed JSON fragments for long streamed tool arguments."""
+    return "api.deepseek.com" not in route.base_url.lower()
+
+
 class LoraAgent(Agent[UserMessage, AIMessage]):
     trusted_live_resource_attributes = (
         "config",
@@ -62,6 +82,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         "_standard_tools",
         "_toolkit",
         "_external_tools",
+        "memory_harness",
     )
 
     def __init__(
@@ -73,6 +94,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         managed_model: bool = False,
         interactive_approvals: bool = False,
         model_invoker: Any | None = None,
+        memory_harness: EternalConversationHarness | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -93,6 +115,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         self._standard_tools: StandardTools | None = None
         self._toolkit: ToolKit | None = None
         self._external_tools = external_tools
+        self.memory_harness = memory_harness
         self._register_default_tools()
         self._assemble_definition()
 
@@ -111,14 +134,24 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
 
     def _build_model_invoker(self) -> DefaultModelInvoker:
         routes = self._resolved_routes()
+        providers = {route.provider for route in routes}
+        adapters = {}
+        for provider in providers:
+            provider_routes = [route for route in routes if route.provider == provider]
+            adapters[provider] = (
+                _DeepSeekAdapter()
+                if provider_routes
+                and all("api.deepseek.com" in route.base_url.lower() for route in provider_routes)
+                else OpenAICompatibleAdapter()
+            )
         return DefaultModelInvoker(
-            adapters={route.provider: OpenAICompatibleAdapter() for route in routes},
+            adapters=adapters,
             clients={
                 route.id: OpenAICompatibleClient(base_url=route.base_url, api_key=route.api_key or "")
                 for route in routes
             },
             capabilities={
-                route.provider: ModelProviderCapabilities(streaming=True) for route in routes
+                route.id: ModelProviderCapabilities(streaming=_route_supports_streaming(route)) for route in routes
             },
         )
 
@@ -160,7 +193,11 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                     multiplier=retry.backoff_multiplier,
                 ),
             ),
-            generation=GenerationConfig(temperature=0.1, tool_choice="auto"),
+            generation=GenerationConfig(
+                temperature=0.1,
+                tool_choice="auto",
+                max_output_tokens=MODEL_MAX_OUTPUT_TOKENS,
+            ),
             tools=self.tool_definitions,
             invoker=None if self.managed_model else self.llm,
         )
@@ -251,6 +288,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             turn_id=turn_id,
         )
         execution_context = context.append_history(message)
+        durable_history_start = len(context.full_history)
         await self.emit(kind="lora.chat.started", data=context.case_run_ref.to_dict())
         store.append(
             "model.request",
@@ -325,7 +363,11 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             raise
         finally:
             session = manager.load(context.session_id)
-            session.history = execution_context.history
+            # Raw History and Session history remain complete durable evidence,
+            # but the portable execution context contains only the uncovered
+            # working-memory suffix. Append this turn's delta instead of
+            # replacing the complete Session history with that suffix.
+            session.history.extend(execution_context.history[durable_history_start:])
             session.system_prompt = execution_context.system_prompt
             session.metadata.update(
                 {
@@ -335,6 +377,21 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 }
             )
             manager.save(session)
+            if self.memory_harness is not None and status == "passed":
+                await self.memory_harness.record_and_trigger(
+                    session,
+                    model_envelope={
+                        "system_prompt": execution_context.system_prompt,
+                        "tools": [
+                            {
+                                "name": definition.name,
+                                "description": definition.description,
+                                "parameters": plain_data(thaw_json(definition.parameters)),
+                            }
+                            for definition in execution_context.tools
+                        ],
+                    },
+                )
             store.append(
                 "model.response",
                 actor="system",
@@ -354,7 +411,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 actor="system",
                 payload={
                     "status": status,
-                    "history_message_count": len(execution_context.full_history),
+                    "history_message_count": len(session.history),
                     "case_run_id": context.case_run_id,
                 },
                 turn_id=turn_id,

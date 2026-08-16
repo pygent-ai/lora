@@ -182,6 +182,23 @@ class DelegationConfig:
 
 
 @dataclass(slots=True)
+class EternalConversationConfig:
+    enabled: bool = False
+    extractor_agent_alias: str | None = None
+    builder_agent_alias: str | None = None
+    dynamic_memory_cli_path: str | None = None
+
+    def __post_init__(self) -> None:
+        self.enabled = bool(self.enabled)
+        for name in ("extractor_agent_alias", "builder_agent_alias"):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(self, name, _require(value, name))
+        if self.dynamic_memory_cli_path is not None:
+            self.dynamic_memory_cli_path = _abs_path(self.dynamic_memory_cli_path)
+
+
+@dataclass(slots=True)
 class BashCliPreset:
     name: str
     command: str = ""
@@ -242,6 +259,7 @@ class RunConfig:
     runtime_approvals: RuntimeApprovalConfig = field(default_factory=RuntimeApprovalConfig)
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     delegation: DelegationConfig = field(default_factory=DelegationConfig)
+    eternal_conversation: EternalConversationConfig = field(default_factory=EternalConversationConfig)
 
     def __post_init__(self) -> None:
         self.workspace_root = _abs_path(self.workspace_root)
@@ -282,6 +300,7 @@ class RunConfig:
             ("runtime_capacity", RuntimeCapacityConfig),
             ("runtime_approvals", RuntimeApprovalConfig),
             ("delegation", DelegationConfig),
+            ("eternal_conversation", EternalConversationConfig),
         ):
             value = getattr(self, name)
             if not isinstance(value, cls):

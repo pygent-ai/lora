@@ -70,6 +70,7 @@ def _render_system_path_policy_prompt(ctx: PromptRenderContext) -> str:
             f"- Project Lora root: {project_lora_root}",
             f"- User Lora root: {user_lora_root}",
             "- Bash commands and file tools resolve relative paths from the workspace root.",
+            "- Create temporary reproduction scripts and scratch files inside the workspace (for example under .lora/tmp). Never place /tmp or another outside-workspace path in any tool argument, including shell redirects, pipeline output files, test reproducers, or result-collection files.",
             "- Project Lora resources belong to this workspace. User Lora resources are reusable across projects.",
             "- When the same resource exists at both levels, the project-level resource is selected and the user-level resource is shadowed.",
         ]
@@ -86,6 +87,7 @@ def _render_system_coding_rules_prompt(ctx: PromptRenderContext) -> str | None:
             "- Add comments only when they explain a non-obvious constraint or decision. Prefer clear code over explanatory noise.",
             "- Preserve user work. If existing changes are present, work with them and do not revert unrelated files.",
             "- When changing behavior, run the most relevant available checks. If a check cannot be run, report that plainly.",
+            "- For an open-ended defect audit, time-box exploration. Once a plausible user-visible defect or meaningful test gap can be reproduced, stop cycling through alternatives: write the failing regression test, implement the smallest sound fix, run the relevant checks, and record the evidence the user requested.",
             "- Security-sensitive code should be handled conservatively; avoid introducing injection, path traversal, unsafe deserialization, or credential exposure.",
         ]
     )

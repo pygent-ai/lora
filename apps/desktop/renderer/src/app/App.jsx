@@ -667,6 +667,7 @@ function Workbench({
 
 function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, approvals, api, onSendMessage, onApproval }) {
   const [draft, setDraft] = useState("");
+  const chatTitle = activeSession?.title || "Select or create a chat session";
 
   function submit() {
     const text = draft.trim();
@@ -681,7 +682,7 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
     <section className="chat" aria-label="Chat">
       <header className="chat-header">
         <div className="chat-title">
-          <h2>{activeSession?.title || "Select or create a chat session"}</h2>
+          <h2 title={chatTitle}>{chatTitle}</h2>
           <p>
             {settings.agent || "default"} / {primaryModel(settings)} / max_steps {settings.max_steps}
             {" / "}

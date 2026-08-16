@@ -25,6 +25,7 @@ from pygent.tool import ToolSideEffect
 from lora.core.io import plain_data
 from lora.runtime.context import LoraContext
 from lora.runtime.context_compression import ContextCompressionModelResult, ContextCompressionRunner
+from lora.runtime.eternal_conversation import render_memory_context
 from lora.runtime.file_effects import DeferredFileEffectBatch, FILE_EFFECT_TOOL_SPEC
 from lora.runtime.tools import ToolObserver
 from lora.schema import RunConfig
@@ -191,7 +192,10 @@ class DynamicPromptModule(Module[PygentMessage, PygentMessage]):
             context=context,
             tool_names=[definition.name for definition in context.tools],
         )
-        return message, replace(context, system_prompt=prompt.text)
+        text = prompt.text
+        if context.eternal_memory_enabled:
+            text = f"{text}\n\n{render_memory_context(_session_dir_for_run(Path(context.run_dir)), dict(thaw_json(context.memory_projection)))}"
+        return message, replace(context, system_prompt=text)
 
 
 class ContextCompressionModule(Module[PygentMessage, PygentMessage]):
@@ -210,6 +214,8 @@ class ContextCompressionModule(Module[PygentMessage, PygentMessage]):
         self, message: PygentMessage, context: LoraContext
     ) -> tuple[PygentMessage, LoraContext]:
         if context.model_context_compacted:
+            return message, context
+        if self.config.eternal_conversation.enabled:
             return message, context
         session = SessionManager(self.config).load(context.session_id)
         compression = await ContextCompressionRunner(

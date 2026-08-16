@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from lora.core.io import append_jsonl, read_json, utc_now, validate_path_id, write_json
-from lora.core.redaction import redact_secrets
 from lora.schema import AgentSession, CaseRunRef, RunConfig, SessionRef, SessionSpec
 
 
@@ -77,7 +76,16 @@ class SessionManager:
         case_id = source_meta.get("case_id", "fork")
         target = self.create(case_id=case_id, mode="fork")
         target_dir = Path(target.session_dir)
-        for name in ("session.json", "context", "state"):
+        # A fork is a semantic continuation at the source cursor. Copy every
+        # durable conversation layer, not only the foreground context mirror.
+        for name in (
+            "session.json",
+            "context",
+            "state",
+            "memory",
+            "raw-history",
+            "agent-history",
+        ):
             src = source_dir / name
             dst = target_dir / name
             if src.is_dir():
@@ -177,8 +185,7 @@ class SessionManager:
     def _save_session(self, session: AgentSession) -> None:
         validate_path_id(session.session_id, "session_id")
         session_dir = self._session_dir(session.session_id)
-        session_data = redact_secrets(session.to_dict())
-        write_json(session_dir / "session.json", session_data)
+        write_json(session_dir / "session.json", session.to_dict())
 
     def _session_dir(self, session_id: str) -> Path:
         validate_path_id(session_id, "session_id")

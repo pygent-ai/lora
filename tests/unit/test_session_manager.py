@@ -57,7 +57,7 @@ class SessionManagerTests(unittest.TestCase):
 
             self.assertEqual(found, run)
 
-    def test_save_redacts_secrets_from_session_files(self) -> None:
+    def test_save_preserves_model_visible_history_verbatim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             manager = SessionManager(RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora"))
             ref = manager.create("case-a")
@@ -75,8 +75,8 @@ class SessionManagerTests(unittest.TestCase):
             manager.save(session)
 
             lora_session_text = (Path(ref.session_dir) / "session.json").read_text(encoding="utf-8")
-            self.assertNotIn(secret, lora_session_text)
-            self.assertIn("DEEPSEEK_API_KEY=[REDACTED]", lora_session_text)
+            self.assertIn(secret, lora_session_text)
+            self.assertIn(f"DEEPSEEK_API_KEY={secret}", lora_session_text)
             self.assertFalse((Path(tmp) / "sessions").exists())
 
     def test_load_or_create_resume_requires_session_id(self) -> None:
@@ -89,11 +89,23 @@ class SessionManagerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             manager = SessionManager(RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora"))
             source = manager.create("case-a")
+            source_dir = Path(source.session_dir)
+            inherited = {
+                "memory/memory.sqlite3": "formal-memory",
+                "raw-history/events.jsonl": "raw-evidence",
+                "agent-history/extractor/conversation.jsonl": "extractor-history",
+            }
+            for name, content in inherited.items():
+                path = source_dir / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
             forked = manager.fork(source.session_id)
             loaded = manager.load(forked.session_id)
 
             self.assertEqual(loaded.metadata["forked_from"], source.session_id)
             self.assertNotEqual(forked.session_id, source.session_id)
+            for name, content in inherited.items():
+                self.assertEqual((Path(forked.session_dir) / name).read_text(encoding="utf-8"), content)
 
 
 if __name__ == "__main__":

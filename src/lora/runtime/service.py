@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from pygent import (
+    Context as PygentContext,
     FallbackPolicy,
     ModelGroupConfig,
     ModelRoute,
     ToolKit,
     UserMessage,
+    freeze_json_object,
     thaw_json,
 )
 from pygent.llm import ModelResourceRef
@@ -67,6 +69,7 @@ from .file_effects import (
     FILE_EFFECT_TOOL_SPEC,
     FileEffectToolExecutor,
 )
+from .eternal_conversation import EternalConversationHarness, load_projection
 
 _DELEGATION_DEPTH: ContextVar[int] = ContextVar("lora_delegation_depth", default=0)
 
@@ -218,7 +221,11 @@ class LoraRuntimeService:
         self._initialized = False
         self._initializing_task: asyncio.Task[None] | None = None
         self._closed = False
-        template = LoraAgent(config, managed_model=True)
+        self.memory_harness = EternalConversationHarness(
+            config.eternal_conversation,
+            call_agent=self._call_memory_agent,
+        )
+        template = LoraAgent(config, managed_model=True, memory_harness=self.memory_harness)
         self._agent_definitions: dict[tuple[int, bool], LoraAgent] = {
             (id(config), False): template
         } if config.resolved_agent is not None else {}
@@ -336,6 +343,7 @@ class LoraRuntimeService:
             managed_model=True,
             interactive_approvals=interactive_approvals,
             model_invoker=invoker,
+            memory_harness=self.memory_harness,
         )
         if resolved is not None and agent.llm is not None:
             self._model_invokers.setdefault(resolved.alias, agent.llm)
@@ -587,9 +595,16 @@ class LoraRuntimeService:
         session: Any | None = None,
     ) -> tuple[UserMessage, LoraContext]:
         session = session or manager.load(run_ref.session_id)
+        memory_projection = load_projection(session.session_dir)
+        covered_through = int(memory_projection.get("covered_through") or 0)
+        portable_history = (
+            session.history[covered_through:]
+            if config.eternal_conversation.enabled
+            else session.history
+        )
         full_history = tuple(
             converted
-            for item in session.history
+            for item in portable_history
             if (converted := _to_pygent_message(item)) is not None
         )
         lora_context = LoraContext(
@@ -601,6 +616,10 @@ class LoraRuntimeService:
             turn_id=turn_id,
             system_prompt=session.system_prompt,
             full_history=full_history,
+            eternal_memory_enabled=config.eternal_conversation.enabled,
+            memory_covered_through=covered_through,
+            memory_projection=freeze_json_object(memory_projection),
+            raw_history_location=str(Path(session.session_dir) / "raw-history" / "events.jsonl"),
         )
         wrapped = _wrap_user_message(message, config.user_identity)
         reminder = agent.render_initial_user_reminder(lora_context)
@@ -634,6 +653,38 @@ class LoraRuntimeService:
             value={"approved": approved, "comment": comment},
         )
 
+    async def _call_memory_agent(self, alias: str, system_prompt: str, request: str) -> str:
+        child_config = load_run_config(
+            workspace_root=self.config.workspace_root,
+            agent_alias=alias,
+        )
+        agent = LoraAgent(child_config, managed_model=False)
+        try:
+            layer = agent.new_model_layer()
+            if agent.llm is None:
+                raise RuntimeError(f"background memory Agent {alias!r} has no configured model")
+            # Background memory work is intentionally independent of a foreground
+            # Runtime execution. Invoke the provider operation directly instead of
+            # calling a Module child from an unregistered asyncio task.
+            execution = agent.llm.execute(
+                model_group=layer.model_group,
+                retry_policy=layer.retry_policy,
+                generation=replace(
+                    layer.generation,
+                    tool_choice="none",
+                    max_output_tokens=8192,
+                ),
+                message=UserMessage(content=request),
+                context=PygentContext(system_prompt=system_prompt),
+                tools=(),
+            )
+            answer = (await execution.result()).message
+            if answer.tool_calls:
+                raise RuntimeError("background memory Agent attempted a tool call")
+            return answer.content
+        finally:
+            await agent.aclose()
+
     async def get_task(self, task_id: str) -> Any:
         return await self.runtime.get_tool_task(task_id)
 
@@ -644,6 +695,7 @@ class LoraRuntimeService:
         if self._closed:
             return
         self._closed = True
+        await self.memory_harness.close()
         await self.runtime.close(cancel=cancel)
         for invoker in {id(value): value for value in self._model_invokers.values()}.values():
             close = getattr(invoker, "aclose", None)

@@ -7,6 +7,7 @@ from typing import Any
 from lora.schema import (
     BashCliPreset,
     DelegationConfig,
+    EternalConversationConfig,
     MCPServerConfig,
     ModelRetryConfig,
     ModelRouteConfig,
@@ -136,6 +137,7 @@ def load_run_config(
         runtime_approvals=_resolve_runtime_approvals(config_data),
         mcp_servers=_resolve_mcp_servers(config_data, root),
         delegation=_resolve_delegation(config_data),
+        eternal_conversation=_resolve_eternal_conversation(config_data, resolved_agent.alias, root),
     )
 
 
@@ -167,7 +169,7 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
         {
             "lora_root", "max_steps", "session_id", "allow_read_outside_workspace",
             "context_window", "agent", "agents", "user", "cli", "context_compression",
-            "runtime", "mcp", "delegation",
+            "runtime", "mcp", "delegation", "eternal_conversation",
         },
         "config",
     )
@@ -211,6 +213,11 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
         data.get("delegation"),
         {"allowed_agents", "max_depth", "max_parallel", "background_enabled"},
         "delegation",
+    )
+    _validate_mapping(
+        data.get("eternal_conversation"),
+        {"enabled", "extractor_agent_alias", "builder_agent_alias", "dynamic_memory_cli_path"},
+        "eternal_conversation",
     )
     agents = data.get("agents")
     if agents is not None and not isinstance(agents, list):
@@ -388,6 +395,22 @@ def _resolve_delegation(data: dict[str, Any]) -> DelegationConfig:
         background_enabled=_bool_config(
             _dig(data, "delegation.background_enabled"), default=True
         ),
+    )
+
+
+def _resolve_eternal_conversation(
+    data: dict[str, Any], default_alias: str, root: Path
+) -> EternalConversationConfig:
+    configured_path = _dig(data, "eternal_conversation.dynamic_memory_cli_path")
+    cli_path = None
+    if configured_path:
+        candidate = Path(str(configured_path)).expanduser()
+        cli_path = str((candidate if candidate.is_absolute() else root / candidate).resolve())
+    return EternalConversationConfig(
+        enabled=_bool_config(_dig(data, "eternal_conversation.enabled"), default=False),
+        extractor_agent_alias=_non_empty(_dig(data, "eternal_conversation.extractor_agent_alias")) or default_alias,
+        builder_agent_alias=_non_empty(_dig(data, "eternal_conversation.builder_agent_alias")) or default_alias,
+        dynamic_memory_cli_path=cli_path,
     )
 
 

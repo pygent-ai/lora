@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 
@@ -299,3 +300,49 @@ async def test_one_agent_definition_is_reused_with_isolated_run_contexts() -> No
             manager.finish_case_run(first_run, "passed")
             manager.finish_case_run(second_run, "passed")
             await service.close()
+
+
+def test_eternal_turn_context_carries_only_uncovered_history_suffix() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = load_run_config(workspace_root=Path(tmp))
+        config.eternal_conversation.enabled = True
+        manager = SessionManager(config)
+        session_ref = manager.create(case_id="chat", mode="agent")
+        session = manager.load(session_ref.session_id)
+        session.history = [
+            {"role": "user", "content": "covered user"},
+            {"role": "assistant", "content": "covered answer"},
+            {"role": "user", "content": "working user"},
+            {"role": "assistant", "content": "working answer"},
+        ]
+        manager.save(session)
+        state_dir = Path(session.session_dir) / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "eternal-conversation.json").write_text(
+            json.dumps({"covered_through": 2, "snapshot": {}}),
+            encoding="utf-8",
+        )
+        run_ref = manager.start_case_run(session.session_id, "chat", run_config=config)
+        service = LoraRuntimeService(config)
+        try:
+            agent = service.new_agent(interactive_approvals=False)
+            _, context = service._prepare_turn(
+                agent=agent,
+                manager=manager,
+                run_ref=run_ref,
+                message="next",
+                config=config,
+                turn_id="turn-next",
+            )
+
+            assert context.memory_covered_through == 2
+            assert [item["content"] for item in context.history] == [
+                "working user",
+                "working answer",
+            ]
+            assert [item.content for item in context.messages] == [
+                "working user",
+                "working answer",
+            ]
+        finally:
+            manager.finish_case_run(run_ref, "passed")

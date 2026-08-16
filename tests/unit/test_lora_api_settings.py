@@ -86,7 +86,12 @@ def test_update_settings_can_clear_context_window_override(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    context = ApiContext(workspace_root=str(workspace), agent_alias="dev", context_window=64000)
+    context = ApiContext(
+        workspace_root=str(workspace),
+        agent_alias="dev",
+        context_window=64000,
+        state_path=str(tmp_path / "state.json"),
+    )
 
     response = asyncio.run(update_settings(UpdateSettingsRequest(context_window=None), context=context))
 

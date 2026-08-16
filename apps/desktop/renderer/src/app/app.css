@@ -584,8 +584,11 @@ button:focus-visible {
 
 .chat-title h2 {
   margin: 0;
+  overflow: hidden;
   font-size: 17px;
   line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-title p {

@@ -74,6 +74,42 @@ def test_project_list_omits_missing_recent_directories(tmp_path: Path) -> None:
     assert [item.scope_id for item in response.projects] == [f"project:{project.resolve()}"]
 
 
+def test_session_groups_omit_invalid_remembered_project(tmp_path: Path) -> None:
+    from lora_api.routers.sessions import list_session_groups
+
+    active_project = tmp_path / "active-project"
+    invalid_project = tmp_path / "invalid-project"
+    _create_titled_chat(active_project, "Active chat")
+    invalid_project.mkdir()
+    (invalid_project / "lora.yaml").write_text(
+        "\n".join(
+            [
+                "agents:",
+                "  - alias: dev",
+                "    model_request:",
+                "      routes:",
+                "        - id: primary",
+                "          provider: openai",
+                "          model_name: test-model",
+                "          base_url: https://example.test",
+                "          api_key_env: TEST_KEY",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    context = ApiContext(workspace_root=str(active_project), state_path=str(tmp_path / "state.json"))
+    context.remember_project(invalid_project)
+    context.remember_project(active_project)
+
+    response = list_session_groups(context=context)
+
+    assert [group.scope.scope_id for group in response.groups] == [
+        f"project:{active_project.resolve()}",
+        "conversation",
+    ]
+
+
 def test_session_list_uses_first_user_message_as_title_when_metadata_title_is_missing(tmp_path: Path) -> None:
     manager = SessionManager(
         RunConfig(
