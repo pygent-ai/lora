@@ -85,6 +85,7 @@ def load_run_config(
     resolved_agent = _resolve_agent_config(
         config_data=config_data,
         cli_agent_alias=agent_alias,
+        user_lora_root=user_lora_root,
     )
     agent_profile = _agent_profile(config_data, resolved_agent.alias)
     model_request = agent_profile.get("model_request") if isinstance(agent_profile.get("model_request"), dict) else {}
@@ -268,13 +269,17 @@ def _resolve_agent_config(
     *,
     config_data: dict[str, Any],
     cli_agent_alias: str | None,
+    user_lora_root: Path,
 ) -> ResolvedAgentConfig:
     alias = _non_empty(cli_agent_alias) or _non_empty(_dig(config_data, "agent.default_alias")) or "default"
     profile = _agent_profile(config_data, alias)
     model_request = profile.get("model_request") if isinstance(profile.get("model_request"), dict) else {}
     assert isinstance(model_request, dict)
 
-    routes = _resolve_model_routes(model_request)
+    routes = _resolve_model_routes(
+        model_request,
+        user_lora_root=user_lora_root,
+    )
     fallback = model_request.get("fallback")
     if fallback is None:
         fallback = [route.id for route in routes]
@@ -294,6 +299,8 @@ def _resolve_agent_config(
 
 def _resolve_model_routes(
     model_request: dict[str, Any],
+    *,
+    user_lora_root: Path,
 ) -> list[ModelRouteConfig]:
     raw_routes = model_request.get("routes")
     if raw_routes is None:
@@ -305,7 +312,10 @@ def _resolve_model_routes(
         if not isinstance(item, dict):
             raise ValueError(f"model_request.routes[{index}] must be a mapping")
         env_name = _non_empty(item.get("api_key_env")) or DEFAULT_API_KEY_ENV
-        key, source = lookup_credential(env_name)
+        key, source = lookup_credential(
+            env_name,
+            user_lora_root=user_lora_root,
+        )
         routes.append(
             ModelRouteConfig(
                 id=_required_config(item.get("id"), f"model_request.routes[{index}].id"),

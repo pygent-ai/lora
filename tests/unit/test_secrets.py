@@ -103,12 +103,12 @@ class SecretsTests(unittest.TestCase):
             os.environ.pop("DEV_API_KEY", None)
             config = load_run_config(workspace_root=root, agent_alias="dev")
 
-        self.assertEqual(config.resolved_agent.routes[0].api_key_source, "env:DEV_API_KEY")  # type: ignore[union-attr]
+        self.assertEqual(config.resolved_agent.routes[0].api_key_source, "user-file:DEV_API_KEY")  # type: ignore[union-attr]
         self.assertEqual(config.resolved_agent.routes[0].api_key, "from-user-file")  # type: ignore[union-attr]
         self.assertEqual(config.resolved_agent.routes[0].api_key_env, "DEV_API_KEY")  # type: ignore[union-attr]
 
     def test_default_api_key_env_is_deepseek(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch("lora.config.Path.home", return_value=Path(tmp)):
             root = Path(tmp)
             (root / "lora.yaml").write_text("agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: m\n          base_url: https://example.test/v1\n          api_key_env: DEEPSEEK_API_KEY\n", encoding="utf-8")
             os.environ["DEEPSEEK_API_KEY"] = "fallback"
@@ -119,6 +119,27 @@ class SecretsTests(unittest.TestCase):
 
         self.assertEqual(config.resolved_agent.routes[0].api_key_env, DEFAULT_API_KEY_ENV)  # type: ignore[union-attr]
         self.assertEqual(config.resolved_agent.routes[0].api_key_source, "env:DEEPSEEK_API_KEY")  # type: ignore[union-attr]
+
+    def test_user_credentials_file_wins_over_process_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch("lora.config.Path.home", return_value=Path(tmp)):
+            root = Path(tmp) / "workspace"
+            user_root = Path(tmp) / ".lora"
+            root.mkdir()
+            user_root.mkdir()
+            (root / "lora.yaml").write_text(
+                "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: m\n          base_url: https://example.test/v1\n          api_key_env: DEV_API_KEY\n",
+                encoding="utf-8",
+            )
+            (user_root / "credentials.env").write_text("DEV_API_KEY=file-key\n", encoding="utf-8")
+            os.environ["DEV_API_KEY"] = "stale-process-key"
+            try:
+                config = load_run_config(workspace_root=root, agent_alias="dev")
+            finally:
+                os.environ.pop("DEV_API_KEY", None)
+
+        route = config.resolved_agent.routes[0]  # type: ignore[union-attr]
+        self.assertEqual(route.api_key, "file-key")
+        self.assertEqual(route.api_key_source, "user-file:DEV_API_KEY")
 
 
 if __name__ == "__main__":

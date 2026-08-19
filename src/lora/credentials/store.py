@@ -52,7 +52,17 @@ def resolve_api_key_env_name(model_request: dict[str, object] | None) -> str:
     return DEFAULT_API_KEY_ENV
 
 
-def lookup_credential(env_name: str) -> tuple[str | None, str]:
+def lookup_credential(
+    env_name: str,
+    *,
+    user_lora_root: str | Path | None = None,
+) -> tuple[str | None, str]:
+    if user_lora_root is not None:
+        value = _non_empty(
+            read_env_entries(user_credentials_path(user_lora_root)).get(env_name)
+        )
+        if value:
+            return value, f"user-file:{env_name}"
     value = _non_empty(os.environ.get(env_name))
     if value:
         return value, f"env:{env_name}"

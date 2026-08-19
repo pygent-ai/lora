@@ -65,7 +65,7 @@ def test_update_settings_saves_api_key_and_reloads_runtime_config(tmp_path: Path
     assert response.max_steps == 7
     assert response.context_window == 64000
     assert response.routes[0]["api_key_env"] == "GUI_TEST_KEY"
-    assert response.routes[0]["api_key_source"] == "env:GUI_TEST_KEY"
+    assert response.routes[0]["api_key_source"] == "user-file:GUI_TEST_KEY"
     assert context.manager is not before_manager
 
 
