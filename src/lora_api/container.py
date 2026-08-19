@@ -91,7 +91,11 @@ class ApiContext:
             runtime = self._runtime_service
             self._runtime_service = None
         if runtime is not None:
-            await runtime.close(cancel=True)
+            registry = self._chat_registry
+            if registry is not None and hasattr(registry, "retire_runtime"):
+                await registry.retire_runtime(runtime)
+            else:
+                await runtime.close(cancel=True)
         return self.reload(overrides)
 
     def reload(self, overrides: dict[str, Any] | None = None) -> RunConfig:

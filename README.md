@@ -48,7 +48,9 @@ uv run lora credentials validate
 
 ## 项目配置
 
-项目 `lora.yaml` 只保存 Runtime、MCP、delegation 等项目行为：
+工具批准策略也属于用户级配置，可放在 `~/.lora/config.yaml` 的 `runtime.approvals` 下，对所有项目生效。`preauthorized_tools` 中列出的工具会自动放行；`enabled: false` 会放行所有高风险工具，请谨慎使用。
+
+项目 `lora.yaml` 保存 durability、capacity、MCP、delegation 等项目行为；未配置用户级批准策略时，仍兼容项目中的 `runtime.approvals`：
 
 ```yaml
 runtime:

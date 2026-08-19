@@ -50,7 +50,8 @@ async def stream_chat_turn(
 
 @dataclass(slots=True)
 class ActiveChatRun:
-    context: ApiContext
+    runtime_service: Any
+    manager: Any
     request: ChatTurnRequest
     run_ref: CaseRunRef
     registry: ChatRunRegistry
@@ -122,9 +123,8 @@ class ActiveChatRun:
         status = "error"
         try:
             async with self.registry.session_execution(self.run_ref.session_id):
-                service = self.context.runtime_service
-                self.execution_handle = await service.start_turn(
-                    manager=self.context.manager,
+                self.execution_handle = await self.runtime_service.start_turn(
+                    manager=self.manager,
                     message=self.request.message or "",
                     run_ref=self.run_ref,
                     turn_id=self.request.turn_id or f"turn-{self.run_ref.case_run_id[-8:]}",
@@ -146,7 +146,7 @@ class ActiveChatRun:
             self.done = True
             self.status = status if status in {"passed", "failed", "error", "skipped"} else "error"
             self.ready.set()
-            self.context.manager.finish_case_run(self.run_ref, self.status)
+            self.manager.finish_case_run(self.run_ref, self.status)
             await self.registry.remove(self)
 
     def _schedule_disconnect_cancel_locked(self) -> None:
@@ -160,7 +160,8 @@ class ActiveChatRun:
 
     async def _cancel_after_disconnect_grace(self) -> None:
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.sleep(self.registry.disconnect_grace_seconds)
+            approval_timeout = self.runtime_service.config.runtime_approvals.timeout_seconds
+            await asyncio.sleep(max(self.registry.disconnect_grace_seconds, approval_timeout))
             async with self.lock:
                 should_cancel = not self.done and self.subscribers == 0
             if should_cancel and self.execution_handle is not None:
@@ -181,6 +182,8 @@ class ChatRunRegistry:
     def __init__(self, *, disconnect_grace_seconds: float = CHAT_DISCONNECT_GRACE_SECONDS) -> None:
         self.disconnect_grace_seconds = disconnect_grace_seconds
         self._runs: dict[str, ActiveChatRun] = {}
+        self._case_runs: dict[str, ActiveChatRun] = {}
+        self._retired_runtimes: set[Any] = set()
         self._session_gates: dict[str, _SessionGate] = {}
         self._lock = asyncio.Lock()
 
@@ -221,11 +224,14 @@ class ChatRunRegistry:
         service.save_title_from_user_input(session_id, request.message)
         run_ref = context.manager.start_case_run(session_id, request.case_id, run_config=context.config)
         active = ActiveChatRun(
-            context=context,
+            runtime_service=context.runtime_service,
+            manager=context.manager,
             request=request.model_copy(update={"session_id": session_id}),
             run_ref=run_ref,
             registry=self,
         )
+        async with self._lock:
+            self._case_runs[run_ref.case_run_id] = active
         await active.start()
         return active
 
@@ -235,21 +241,66 @@ class ChatRunRegistry:
                 self._runs[active.execution_id] = active
 
     async def remove(self, active: ActiveChatRun) -> None:
-        if active.execution_id is not None:
-            async with self._lock:
-                if self._runs.get(active.execution_id) is active:
-                    del self._runs[active.execution_id]
+        runtime_to_close = None
+        async with self._lock:
+            if active.execution_id is not None and self._runs.get(active.execution_id) is active:
+                del self._runs[active.execution_id]
+            if self._case_runs.get(active.run_ref.case_run_id) is active:
+                del self._case_runs[active.run_ref.case_run_id]
+            if active.runtime_service in self._retired_runtimes and not self._runtime_in_use_locked(
+                active.runtime_service
+            ):
+                self._retired_runtimes.remove(active.runtime_service)
+                runtime_to_close = active.runtime_service
+        if runtime_to_close is not None:
+            await runtime_to_close.close(cancel=False)
+
+    async def deliver_approval(
+        self,
+        context: ApiContext,
+        approval_id: str,
+        *,
+        approved: bool,
+        comment: str,
+    ) -> bool:
+        case_run_id = approval_id.split(":", 1)[0]
+        async with self._lock:
+            active = self._case_runs.get(case_run_id)
+        runtime = context.runtime_service if active is None else active.runtime_service
+        return await runtime.deliver_approval(
+            approval_id,
+            approved=approved,
+            comment=comment,
+        )
+
+    async def retire_runtime(self, runtime: Any) -> None:
+        async with self._lock:
+            if self._runtime_in_use_locked(runtime):
+                self._retired_runtimes.add(runtime)
+                return
+        await runtime.close(cancel=False)
+
+    def _runtime_in_use_locked(self, runtime: Any) -> bool:
+        return any(not run.done and run.runtime_service is runtime for run in self._case_runs.values())
 
     async def close(self) -> None:
         async with self._lock:
-            runs = tuple(self._runs.values())
+            runs = tuple(self._case_runs.values())
             self._runs.clear()
+            self._case_runs.clear()
+            retired_runtimes = tuple(self._retired_runtimes)
+            self._retired_runtimes.clear()
         for run in runs:
             if run.task is not None and not run.task.done():
                 run.task.cancel()
         if runs:
             await asyncio.gather(
                 *(run.task for run in runs if run.task is not None),
+                return_exceptions=True,
+            )
+        if retired_runtimes:
+            await asyncio.gather(
+                *(runtime.close(cancel=True) for runtime in retired_runtimes),
                 return_exceptions=True,
             )
 

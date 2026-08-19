@@ -130,22 +130,24 @@ class LoraToolAuthorization(Module[ToolAuthorizationRequest, ToolAuthorizationDe
                 ),
                 context,
             )
-        await self.emit(
-            kind="lora.approval.requested",
-            data={
-                "approval_id": approval_id,
-                "call_id": request.call.call_id,
-                "tool_name": name,
-                "tool_id": request.spec.tool_id,
-                "side_effect": request.spec.side_effect.value,
-                "arguments": plain_data(thaw_json(request.call.arguments)),
-            },
-        )
-        decision = await self.wait_external(
-            kind="tool-approval",
-            key=approval_id,
-            request={"tool_name": name, "call_id": request.call.call_id},
-            timeout=self.timeout_seconds,
+        decision, _ = await self.gather(
+            self.wait_external(
+                kind="tool-approval",
+                key=approval_id,
+                request={"tool_name": name, "call_id": request.call.call_id},
+                timeout=self.timeout_seconds,
+            ),
+            self.emit(
+                kind="lora.approval.requested",
+                data={
+                    "approval_id": approval_id,
+                    "call_id": request.call.call_id,
+                    "tool_name": name,
+                    "tool_id": request.spec.tool_id,
+                    "side_effect": request.spec.side_effect.value,
+                    "arguments": plain_data(thaw_json(request.call.arguments)),
+                },
+            ),
         )
         approved = bool(decision.get("approved"))
         return (

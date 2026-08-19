@@ -10,9 +10,21 @@ from lora_api.dependencies import ApiContext
 class _RecordingChatRegistry:
     def __init__(self) -> None:
         self.closed = False
+        self.retired = []
 
     async def close(self) -> None:
         self.closed = True
+
+    async def retire_runtime(self, runtime) -> None:
+        self.retired.append(runtime)
+
+
+class _RecordingRuntime:
+    def __init__(self) -> None:
+        self.closed = []
+
+    async def close(self, *, cancel: bool) -> None:
+        self.closed.append(cancel)
 
 def test_update_settings_saves_api_key_and_reloads_runtime_config(tmp_path: Path) -> None:
     from lora_api.models.requests import UpdateSettingsRequest
@@ -170,3 +182,20 @@ def test_update_settings_preserves_application_chat_registry(tmp_path: Path) -> 
 
     assert context.chat_registry is registry
     assert registry.closed is False
+
+
+def test_update_settings_retires_runtime_without_breaking_active_waiters(tmp_path: Path) -> None:
+    workspace_a = tmp_path / "workspace-a"
+    workspace_b = tmp_path / "workspace-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+    context = ApiContext(workspace_root=str(workspace_a), state_path=str(tmp_path / "state.json"))
+    registry = _RecordingChatRegistry()
+    runtime = _RecordingRuntime()
+    context.attach_chat_registry(registry)
+    context._runtime_service = runtime
+
+    asyncio.run(context.areload({"workspace_root": str(workspace_b)}))
+
+    assert registry.retired == [runtime]
+    assert runtime.closed == []

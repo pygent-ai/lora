@@ -28,3 +28,9 @@ agents:
           model_name: deepseek-v4-flash
           base_url: https://api.deepseek.com
       fallback: [primary]
+
+runtime:
+  approvals:
+    enabled: true
+    timeout_seconds: 300
+    preauthorized_tools: []

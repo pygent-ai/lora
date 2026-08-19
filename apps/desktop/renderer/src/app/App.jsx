@@ -335,6 +335,9 @@ export function App() {
                   setActivityCollapseToken((value) => value + 1);
                 }
               }
+              if (["execution.completed", "execution.failed", "execution.deadline_exceeded", "execution.cancelled"].includes(eventKind)) {
+                setApprovals((items) => items.filter((item) => item.session_id !== streamSessionId));
+              }
             },
           },
         );
@@ -434,6 +437,7 @@ export function App() {
       );
       setApprovals((items) => items.filter((item) => item.approval_id !== approval.approval_id));
     } catch (approvalError) {
+      setApprovals((items) => items.filter((item) => item.approval_id !== approval.approval_id));
       setError(String(approvalError?.message || approvalError));
     }
   }

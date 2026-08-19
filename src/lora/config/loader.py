@@ -69,7 +69,7 @@ def load_run_config(
     project_config = _read_config(config_path if config_path.exists() else None)
     user_config_path = user_lora_root / USER_CONFIG_FILENAME
     user_config = _read_config(user_config_path if user_config_path.exists() else None)
-    config_data = _apply_user_agent_config(project_config, user_config)
+    config_data = _apply_user_config(project_config, user_config)
     _validate_config_shape(config_data)
 
     configured_lora_root = _dig(config_data, "lora_root") or os.environ.get("LORA_ROOT") or ".lora"
@@ -159,20 +159,30 @@ def _read_config(path: Path | None) -> dict[str, Any]:
         raise ValueError(f"Cannot read config file {path}: {exc}") from exc
 
 
-def _apply_user_agent_config(
+def _apply_user_config(
     project_config: dict[str, Any],
     user_config: dict[str, Any],
 ) -> dict[str, Any]:
     if not user_config:
         return project_config
-    _require_known_keys(user_config, {"agent", "agents"}, "user config")
+    _require_known_keys(user_config, {"agent", "agents", "runtime"}, "user config")
     _validate_config_shape(user_config)
+    user_runtime = user_config.get("runtime")
+    if isinstance(user_runtime, dict):
+        _require_known_keys(user_runtime, {"approvals"}, "user runtime")
     merged = dict(project_config)
-    merged.pop("agent", None)
-    merged.pop("agents", None)
-    for key in ("agent", "agents"):
-        if key in user_config:
-            merged[key] = user_config[key]
+    if "agent" in user_config or "agents" in user_config:
+        merged.pop("agent", None)
+        merged.pop("agents", None)
+        for key in ("agent", "agents"):
+            if key in user_config:
+                merged[key] = user_config[key]
+    if isinstance(user_runtime, dict) and "approvals" in user_runtime:
+        project_runtime = dict(merged.get("runtime") or {})
+        project_approvals = dict(project_runtime.get("approvals") or {})
+        project_approvals.update(user_runtime["approvals"] or {})
+        project_runtime["approvals"] = project_approvals
+        merged["runtime"] = project_runtime
     return merged
 
 

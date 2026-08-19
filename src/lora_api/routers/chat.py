@@ -25,7 +25,8 @@ async def deliver_approval(
     context: ApiContext = Depends(get_api_context),
 ) -> dict[str, object]:
     try:
-        delivered = await context.runtime_service.deliver_approval(
+        delivered = await context.chat_registry.deliver_approval(
+            context,
             approval_id,
             approved=request.approved,
             comment=request.comment,

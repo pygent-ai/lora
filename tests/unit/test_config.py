@@ -143,14 +143,42 @@ def test_project_model_config_remains_compatible_without_user_config(tmp_path: P
     assert config.resolved_agent.routes[0].model_name == "model-a"
 
 
-def test_user_config_rejects_project_only_settings(tmp_path: Path) -> None:
+def test_user_approval_config_is_shared_and_preserves_project_runtime(tmp_path: Path) -> None:
     home = tmp_path / "home"
     user_root = home / ".lora"
     user_root.mkdir(parents=True)
-    (user_root / "config.yaml").write_text("runtime:\n  approvals:\n    enabled: false\n", encoding="utf-8")
+    (user_root / "config.yaml").write_text(
+        "runtime:\n  approvals:\n    timeout_seconds: 900\n    preauthorized_tools: [write]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "lora.yaml").write_text(
+        ROUTES_CONFIG
+        + "\n"
+        "runtime:\n"
+        "  durability:\n    mode: required\n"
+        "  approvals:\n    enabled: true\n    timeout_seconds: 30\n",
+        encoding="utf-8",
+    )
+
+    with patch("lora.config.loader.Path.home", return_value=home):
+        config = load_run_config(workspace_root=tmp_path)
+
+    assert config.runtime_durability.mode == "required"
+    assert config.resolved_agent is not None
+    assert config.resolved_agent.routes[0].model_name == "model-a"
+    assert config.runtime_approvals.enabled is True
+    assert config.runtime_approvals.timeout_seconds == 900
+    assert config.runtime_approvals.preauthorized_tools == ("write",)
+
+
+def test_user_config_rejects_non_approval_runtime_settings(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    user_root = home / ".lora"
+    user_root.mkdir(parents=True)
+    (user_root / "config.yaml").write_text("runtime:\n  capacity:\n    scope: deployment\n", encoding="utf-8")
 
     with patch("lora.config.loader.Path.home", return_value=home), pytest.raises(
         ValueError,
-        match=r"user config contains unknown fields: runtime",
+        match=r"user runtime contains unknown fields: capacity",
     ):
         load_run_config(workspace_root=tmp_path)
