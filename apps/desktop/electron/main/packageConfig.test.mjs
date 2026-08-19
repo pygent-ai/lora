@@ -5,6 +5,7 @@ import test from "node:test";
 const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
 const rootPackageJson = JSON.parse(await readFile(new URL("../../../../package.json", import.meta.url), "utf8"));
 const electronMain = await readFile(new URL("./main.mjs", import.meta.url), "utf8");
+const electronPreload = await readFile(new URL("../preload/preload.mjs", import.meta.url), "utf8");
 const desktopBuildScript = await readFile(new URL("../../../../scripts/package/build-desktop.ps1", import.meta.url), "utf8");
 const pythonBuildScript = await readFile(new URL("../../../../scripts/package/build-python-api.ps1", import.meta.url), "utf8");
 const cliPathInstallerScript = await readFile(new URL("../../installer/cli-path.nsh", import.meta.url), "utf8");
@@ -21,6 +22,13 @@ test("workspace development command launches the full Electron stack", () => {
   assert.equal(packageJson.scripts.dev, "node scripts/dev.mjs");
   assert.equal(packageJson.scripts["dev:renderer"], "vite --host 127.0.0.1");
   assert.match(electronMain, /lora:dev-shutdown/);
+});
+
+test("Choose Project uses the native directory picker", () => {
+  assert.match(electronMain, /dialog\.showOpenDialog/);
+  assert.match(electronMain, /properties: \["openDirectory", "createDirectory"\]/);
+  assert.match(electronPreload, /chooseProjectDirectory/);
+  assert.match(electronPreload, /project:choose-directory/);
 });
 
 test("electron-builder bundles the PyInstaller lora-api output", () => {

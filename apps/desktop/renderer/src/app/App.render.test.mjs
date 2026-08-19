@@ -54,6 +54,22 @@ test("new chat stays enabled while another session is running", () => {
   assert.doesNotMatch(html, /class="primary-action"[^>]*disabled/);
 });
 
+test("switching workspace clears an unchanged agent override", () => {
+  const draft = {
+    workspaceRoot: "E:/Projects/other",
+    agent: "dev",
+  };
+
+  assert.deepEqual(
+    appModule.settingsForSave(draft, { workspace_root: "E:/Projects/lora", agent: "dev" }),
+    { workspaceRoot: "E:/Projects/other", agent: "" },
+  );
+  assert.equal(
+    appModule.settingsForSave({ ...draft, agent: "other" }, { workspace_root: "E:/Projects/lora", agent: "dev" }).agent,
+    "other",
+  );
+});
+
 test("native Pygent events project to the same completed turn as persisted history", () => {
   const toolResult = JSON.stringify({
     status: "success",

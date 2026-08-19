@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,6 +109,13 @@ async function createWindow() {
 }
 
 ipcMain.handle("backend:status", () => backendStatus);
+ipcMain.handle("project:choose-directory", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory", "createDirectory"],
+    title: "Choose Project",
+  });
+  return result.canceled ? null : result.filePaths[0] || null;
+});
 
 app.whenReady().then(async () => {
   await startBackend();

@@ -366,7 +366,7 @@ export function App() {
       try {
         setError("");
         setStatus("Reloading");
-        const nextSettings = await api.updateSettings(draft);
+        const nextSettings = await api.updateSettings(settingsForSave(draft, settings));
         setSettings(nextSettings);
         setSettingsOpen(false);
         setActiveSession(null);
@@ -380,8 +380,30 @@ export function App() {
         setError(readableError(err));
       }
     },
-    [api, refreshWorkbench],
+    [api, refreshWorkbench, settings],
   );
+
+  const handleChooseProject = useCallback(async () => {
+    const chooseDirectory = globalThis.window?.loraDesktop?.chooseProjectDirectory;
+    if (typeof chooseDirectory !== "function") {
+      setSettingsOpen(true);
+      return;
+    }
+    try {
+      const workspaceRoot = await chooseDirectory();
+      if (!workspaceRoot) {
+        return;
+      }
+      await handleSaveSettings({
+        ...settingsToDraft(settings),
+        workspaceRoot,
+        agent: "",
+      });
+    } catch (err) {
+      setStatus("Error");
+      setError(readableError(err));
+    }
+  }, [handleSaveSettings, settings]);
 
   const appClassName = [
     "app-shell",
@@ -416,6 +438,8 @@ export function App() {
         onCreateSession={handleCreateSession}
         onDeleteSession={handleDeleteSession}
         onSelectSession={handleSelectSession}
+        onChooseProject={handleChooseProject}
+        chooseProjectDisabled={hasRunningSessions}
         onOpenSettings={() => setSettingsOpen(true)}
         onToggle={() => setLayout(toggleHistory)}
       />
@@ -461,6 +485,8 @@ export function SessionSidebar({
   onCreateSession,
   onDeleteSession,
   onSelectSession,
+  onChooseProject,
+  chooseProjectDisabled = false,
   onOpenSettings,
   onToggle,
 }) {
@@ -553,7 +579,13 @@ export function SessionSidebar({
             <span>{primaryModel(settings)}</span>
             <span>{projects.length ? `${projects.length} workspace` : "active workspace only"}</span>
           </div>
-          <button className="plain-action" title="Switch workspace" type="button" onClick={onOpenSettings}>
+          <button
+            className="plain-action"
+            disabled={chooseProjectDisabled}
+            title="Switch workspace"
+            type="button"
+            onClick={onChooseProject}
+          >
             <SlidersHorizontal aria-hidden="true" />
             <span className="plain-action-label">Choose Project</span>
           </button>
@@ -1754,6 +1786,12 @@ function settingsToDraft(settings) {
     contextWindow: Number.isFinite(settings.context_window) ? String(settings.context_window) : "",
     apiKey: "",
   };
+}
+
+export function settingsForSave(draft, settings) {
+  const workspaceChanged = draft.workspaceRoot.trim() !== (settings.workspace_root || "").trim();
+  const keptPreviousAgent = draft.agent.trim() === (settings.agent || "").trim();
+  return workspaceChanged && keptPreviousAgent ? { ...draft, agent: "" } : draft;
 }
 
 function primaryModel(settings) {
