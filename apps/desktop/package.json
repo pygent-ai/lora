@@ -5,15 +5,16 @@
   "type": "module",
   "main": "electron/main/main.mjs",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "node scripts/dev.mjs",
+    "dev:renderer": "vite --host 127.0.0.1",
     "build": "vite build",
     "start": "electron .",
     "package:python": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-python-api.ps1",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-desktop.ps1 -Target nsis",
     "package:dir": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-desktop.ps1 -Target dir",
     "dist": "npm run package:win",
-    "lint": "node --test renderer/src/**/*.test.mjs electron/main/*.test.mjs",
-    "test": "node --test renderer/src/**/*.test.mjs electron/main/*.test.mjs",
+    "lint": "node --test renderer/src/**/*.test.mjs electron/main/*.test.mjs scripts/*.test.mjs",
+    "test": "node --test renderer/src/**/*.test.mjs electron/main/*.test.mjs scripts/*.test.mjs",
     "typecheck": "vite build"
   },
   "dependencies": {

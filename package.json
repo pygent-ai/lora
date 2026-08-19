@@ -2,6 +2,7 @@
   "name": "lora-workspace",
   "private": true,
   "scripts": {
+    "dev": "npm --prefix apps/desktop run dev",
     "desktop": "npm --prefix apps/desktop run dev",
     "desktop:package": "npm --prefix apps/desktop run package:win",
     "desktop:package:dir": "npm --prefix apps/desktop run package:dir",

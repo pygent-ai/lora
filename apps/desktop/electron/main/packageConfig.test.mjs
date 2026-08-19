@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
+const rootPackageJson = JSON.parse(await readFile(new URL("../../../../package.json", import.meta.url), "utf8"));
+const electronMain = await readFile(new URL("./main.mjs", import.meta.url), "utf8");
 const desktopBuildScript = await readFile(new URL("../../../../scripts/package/build-desktop.ps1", import.meta.url), "utf8");
 const pythonBuildScript = await readFile(new URL("../../../../scripts/package/build-python-api.ps1", import.meta.url), "utf8");
 const cliPathInstallerScript = await readFile(new URL("../../installer/cli-path.nsh", import.meta.url), "utf8");
@@ -12,6 +14,13 @@ test("desktop package exposes Windows exe packaging scripts", () => {
   assert.match(packageJson.scripts["package:python"], /build-python-api\.ps1/);
   assert.match(packageJson.scripts["package:win"], /build-desktop\.ps1 -Target nsis/);
   assert.match(packageJson.scripts["package:dir"], /build-desktop\.ps1 -Target dir/);
+});
+
+test("workspace development command launches the full Electron stack", () => {
+  assert.equal(rootPackageJson.scripts.dev, "npm --prefix apps/desktop run dev");
+  assert.equal(packageJson.scripts.dev, "node scripts/dev.mjs");
+  assert.equal(packageJson.scripts["dev:renderer"], "vite --host 127.0.0.1");
+  assert.match(electronMain, /lora:dev-shutdown/);
 });
 
 test("electron-builder bundles the PyInstaller lora-api output", () => {

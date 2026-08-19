@@ -72,8 +72,10 @@ uv run lora credentials validate
 uv run lora chat --message "分析当前项目"
 uv run lora --agent dev case run cases/example.yaml
 uv run lora-api --workspace-root E:\Projects\lora
-npm run desktop
+npm run dev
 ```
+
+`npm run dev` 会启动 Vite 和 Electron；Electron 会自动启动并在退出时关闭本地 `lora-api`。只调试浏览器 renderer 时可运行 `npm --prefix apps/desktop run dev:renderer`。
 
 直接运行 Pygent ReAct 示例：
 

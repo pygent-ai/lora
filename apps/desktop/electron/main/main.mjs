@@ -18,6 +18,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow;
 let backendProcess;
 let backendStatus = { state: "starting", error: null };
+let quitting = false;
+
+process.on("message", (message) => {
+  if (message?.type === "lora:dev-shutdown") {
+    app.quit();
+  }
+});
 
 async function startBackend() {
   const preferredPort = Number(process.env.LORA_API_PORT || DEFAULT_API_PORT);
@@ -105,6 +112,9 @@ ipcMain.handle("backend:status", () => backendStatus);
 
 app.whenReady().then(async () => {
   await startBackend();
+  if (quitting) {
+    return;
+  }
   await createWindow();
 
   app.on("activate", async () => {
@@ -121,6 +131,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  quitting = true;
   backendStatus = { state: "stopping", error: null };
   stopBackendProcess(backendProcess);
 });
