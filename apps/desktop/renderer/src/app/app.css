@@ -1147,10 +1147,16 @@ input {
   background: var(--input-bg);
 }
 
-input:focus,
-textarea:focus {
+input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(127, 144, 157, 0.12);
+}
+
+.composer-box textarea:focus,
+.composer-box textarea:focus-visible {
+  border-color: transparent;
+  outline: 0;
+  box-shadow: none;
 }
 
 .send {

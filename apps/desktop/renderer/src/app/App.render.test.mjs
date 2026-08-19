@@ -70,6 +70,45 @@ test("switching workspace clears an unchanged agent override", () => {
   );
 });
 
+test("composer sends on Enter and keeps Shift+Enter for a newline", () => {
+  assert.equal(appModule.shouldSubmitComposer({ key: "Enter", shiftKey: false, nativeEvent: {} }), true);
+  assert.equal(appModule.shouldSubmitComposer({ key: "Enter", shiftKey: true, nativeEvent: {} }), false);
+  assert.equal(appModule.shouldSubmitComposer({ key: "Enter", shiftKey: false, nativeEvent: { isComposing: true } }), false);
+  assert.equal(appModule.shouldSubmitComposer({ key: "a", shiftKey: false, nativeEvent: {} }), false);
+});
+
+test("initial workbench load retries transient fetch failures", async () => {
+  let calls = 0;
+  const result = await appModule.initializeWorkbench(
+    async () => {
+      calls += 1;
+      if (calls < 3) {
+        throw new TypeError("Failed to fetch");
+      }
+      return "ready";
+    },
+    { attempts: 3, retryDelay: async () => {} },
+  );
+
+  assert.equal(result, "ready");
+  assert.equal(calls, 3);
+});
+
+test("initial workbench load does not hide configuration errors", async () => {
+  let calls = 0;
+  await assert.rejects(
+    appModule.initializeWorkbench(
+      async () => {
+        calls += 1;
+        throw new Error("Agent alias is not configured");
+      },
+      { attempts: 3, retryDelay: async () => {} },
+    ),
+    /Agent alias is not configured/,
+  );
+  assert.equal(calls, 1);
+});
+
 test("native Pygent events project to the same completed turn as persisted history", () => {
   const toolResult = JSON.stringify({
     status: "success",

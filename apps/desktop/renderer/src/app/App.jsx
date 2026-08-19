@@ -169,10 +169,22 @@ export function App() {
   );
 
   useEffect(() => {
-    refreshWorkbench({ selectFirst: true }).catch((err) => {
-      setStatus("Offline");
-      setError(readableError(err));
+    let cancelled = false;
+    setStatus("Connecting");
+    initializeWorkbench(() => {
+      if (cancelled) {
+        return undefined;
+      }
+      return refreshWorkbench({ selectFirst: true });
+    }).catch((err) => {
+      if (!cancelled) {
+        setStatus("Offline");
+        setError(readableError(err));
+      }
     });
+    return () => {
+      cancelled = true;
+    };
   }, [refreshWorkbench]);
 
   const handleCreateSession = useCallback(async () => {
@@ -758,7 +770,8 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+              if (shouldSubmitComposer(event)) {
+                event.preventDefault();
                 submit();
               }
             }}
@@ -1792,6 +1805,37 @@ export function settingsForSave(draft, settings) {
   const workspaceChanged = draft.workspaceRoot.trim() !== (settings.workspace_root || "").trim();
   const keptPreviousAgent = draft.agent.trim() === (settings.agent || "").trim();
   return workspaceChanged && keptPreviousAgent ? { ...draft, agent: "" } : draft;
+}
+
+export function shouldSubmitComposer(event) {
+  return event.key === "Enter" && !event.shiftKey && !event.nativeEvent?.isComposing;
+}
+
+export async function initializeWorkbench(
+  refresh,
+  {
+    attempts = 20,
+    retryDelay = () => new Promise((resolve) => globalThis.setTimeout(resolve, 250)),
+  } = {},
+) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await refresh();
+    } catch (err) {
+      lastError = err;
+      if (!isTransientFetchError(err) || attempt === attempts - 1) {
+        throw err;
+      }
+      await retryDelay();
+    }
+  }
+  throw lastError;
+}
+
+function isTransientFetchError(error) {
+  const message = String(error?.message || error).toLowerCase();
+  return message.includes("failed to fetch") || message.includes("fetch failed") || message.includes("networkerror");
 }
 
 function primaryModel(settings) {
