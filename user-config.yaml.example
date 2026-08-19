@@ -1,0 +1,30 @@
+agent:
+  default_alias: dev
+
+agents:
+  - alias: dev
+    model_request:
+      profile: default
+      routes:
+        - id: primary
+          provider: openai
+          api_key_env: DEEPSEEK_API_KEY
+          model_name: deepseek-v4-flash
+          base_url: https://api.deepseek.com
+      fallback: [primary]
+      retry:
+        max_attempts_per_route: 2
+        attempt_timeout_seconds: 60
+        backoff_initial: 0.5
+        backoff_maximum: 4
+        backoff_multiplier: 2
+  - alias: fast-check
+    model_request:
+      profile: fast-check
+      routes:
+        - id: primary
+          provider: openai
+          api_key_env: DEEPSEEK_API_KEY
+          model_name: deepseek-v4-flash
+          base_url: https://api.deepseek.com
+      fallback: [primary]

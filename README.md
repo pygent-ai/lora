@@ -11,9 +11,14 @@ uv sync
 npm install
 ```
 
-## 配置
+## 用户模型配置
 
-Lora 只支持 routes-based 模型配置，不再接受旧的 `model_name/base_url/api_key_env` 单模型配置或 `--model` 覆盖。
+模型配置属于当前操作系统用户，统一保存在 `~/.lora/config.yaml`。所有项目和会话共用这套配置。首次迁移可以复制仓库示例：
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.lora"
+Copy-Item .\user-config.yaml.example "$HOME\.lora\config.yaml"
+```
 
 ```yaml
 agent:
@@ -30,13 +35,22 @@ agents:
           base_url: https://api.deepseek.com
           api_key_env: DEEPSEEK_API_KEY
       fallback: [primary]
-      retry:
-        max_attempts_per_route: 2
-        attempt_timeout_seconds: 60
-        backoff_initial: 0.5
-        backoff_maximum: 4
-        backoff_multiplier: 2
+```
 
+API key 保存在同一用户目录下的凭据文件：
+
+```powershell
+uv run lora credentials set DEEPSEEK_API_KEY
+uv run lora credentials validate
+```
+
+如果 `~/.lora/config.yaml` 尚不存在，Lora 会兼容读取项目 `lora.yaml` 中原有的 `agent/agents` 配置；创建用户配置后，项目中的模型配置不再生效。
+
+## 项目配置
+
+项目 `lora.yaml` 只保存 Runtime、MCP、delegation 等项目行为：
+
+```yaml
 runtime:
   durability:
     mode: preferred
@@ -57,13 +71,6 @@ delegation:
   max_depth: 4
   max_parallel: 4
   background_enabled: true
-```
-
-API key 建议写入用户凭据文件：
-
-```powershell
-uv run lora credentials set DEEPSEEK_API_KEY
-uv run lora credentials validate
 ```
 
 ## 使用

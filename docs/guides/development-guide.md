@@ -13,7 +13,7 @@ API / CLI / case runner
 
 ## 配置
 
-模型配置只有一种形式：
+模型配置只有一种形式，并统一位于用户级 `~/.lora/config.yaml`：
 
 ```yaml
 agents:
@@ -32,7 +32,7 @@ agents:
         attempt_timeout_seconds: 60
 ```
 
-旧单模型字段、`runtime.model`、顶层 `model/base_url` 与 CLI `--model` 均不支持。新增模型能力应扩展 route/profile，而不是添加新的兼容解析顺序。
+所有项目共用用户级 `agent/agents`。项目 `lora.yaml` 中的同名配置只在用户配置不存在时作为迁移兼容。旧单模型字段、`runtime.model`、顶层 `model/base_url` 与 CLI `--model` 均不支持。
 
 ## Agent Module
 

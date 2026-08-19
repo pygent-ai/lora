@@ -27,6 +27,7 @@ from .yaml_subset import parse_yaml_subset
 
 DEFAULT_MODEL_NAME = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
+USER_CONFIG_FILENAME = "config.yaml"
 DEFAULT_CLI_BASH_PRESETS = [
     BashCliPreset(
         name="rg",
@@ -65,7 +66,10 @@ def load_run_config(
     config_path = Path(config_file or root / "lora.yaml").expanduser()
     if not config_path.is_absolute():
         config_path = root / config_path
-    config_data = _read_config(config_path if config_path.exists() else None)
+    project_config = _read_config(config_path if config_path.exists() else None)
+    user_config_path = user_lora_root / USER_CONFIG_FILENAME
+    user_config = _read_config(user_config_path if user_config_path.exists() else None)
+    config_data = _apply_user_agent_config(project_config, user_config)
     _validate_config_shape(config_data)
 
     configured_lora_root = _dig(config_data, "lora_root") or os.environ.get("LORA_ROOT") or ".lora"
@@ -153,6 +157,23 @@ def _read_config(path: Path | None) -> dict[str, Any]:
         return load_mapping_file(path)
     except OSError as exc:
         raise ValueError(f"Cannot read config file {path}: {exc}") from exc
+
+
+def _apply_user_agent_config(
+    project_config: dict[str, Any],
+    user_config: dict[str, Any],
+) -> dict[str, Any]:
+    if not user_config:
+        return project_config
+    _require_known_keys(user_config, {"agent", "agents"}, "user config")
+    _validate_config_shape(user_config)
+    merged = dict(project_config)
+    merged.pop("agent", None)
+    merged.pop("agents", None)
+    for key in ("agent", "agents"):
+        if key in user_config:
+            merged[key] = user_config[key]
+    return merged
 
 
 def _dig(data: dict[str, Any], dotted_key: str) -> Any:

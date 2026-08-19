@@ -9,7 +9,7 @@ uv run lora chat --new
 uv run lora chat --session <session_id>
 ```
 
-模型只能通过 `agents[].model_request.routes` 配置。CLI 不再提供 `--model`，也不会读取旧的单模型字段。
+模型通过用户级 `~/.lora/config.yaml` 中的 `agents[].model_request.routes` 配置，所有项目共用。CLI 不再提供 `--model`，也不会读取旧的单模型字段。用户配置不存在时，会兼容读取项目 `lora.yaml` 中原有的 `agent/agents`。
 
 交互模式直接订阅 Pygent execution journal：
 
