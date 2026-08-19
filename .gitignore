@@ -20,9 +20,13 @@ lora.local.yaml
 .idea/
 
 # Local Lora runtime state
+.lora/
 .lora/sessions/
 .superpowers/
 /sessions/
+/workspace/
+/logs/
+/lora.yaml
 
 # Frontend local dependencies and runtime output
 node_modules/

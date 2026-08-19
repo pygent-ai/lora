@@ -50,7 +50,7 @@ def _configure_stdio() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lora", description="Agent self-optimization harness CLI")
     parser.add_argument("--workspace-root", default=None, help="Workspace root. Defaults to cwd or LORA_WORKSPACE_ROOT.")
-    parser.add_argument("--config", default=None, help="Path to lora.yaml.")
+    parser.add_argument("--config", default=None, help="Path to config.yaml.")
     parser.add_argument("--agent", dest="agent_alias", default=None, help="Agent profile alias.")
     parser.add_argument("--max-steps", type=int, default=None, help="Maximum agent steps; -1 means unlimited.")
 

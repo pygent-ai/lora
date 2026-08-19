@@ -63,13 +63,16 @@ def load_run_config(
     root = Path(workspace_root or os.environ.get("LORA_WORKSPACE_ROOT") or Path.cwd()).expanduser().resolve()
     user_lora_root = (Path.home() / ".lora").expanduser().resolve()
     load_credentials(user_lora_root=user_lora_root, workspace_root=root)
-    config_path = Path(config_file or root / "lora.yaml").expanduser()
+    user_config_path = user_lora_root / USER_CONFIG_FILENAME
+    config_path = (
+        Path(config_file).expanduser()
+        if config_file is not None
+        else user_config_path
+    )
     if not config_path.is_absolute():
         config_path = root / config_path
-    project_config = _read_config(config_path if config_path.exists() else None)
-    user_config_path = user_lora_root / USER_CONFIG_FILENAME
-    user_config = _read_config(user_config_path if user_config_path.exists() else None)
-    config_data = _apply_user_config(project_config, user_config)
+    file_config = _read_config(config_path if config_path.exists() else None)
+    config_data = _merge_config(_default_config(), file_config)
     _validate_config_shape(config_data)
 
     configured_lora_root = _dig(config_data, "lora_root") or os.environ.get("LORA_ROOT") or ".lora"
@@ -158,31 +161,85 @@ def _read_config(path: Path | None) -> dict[str, Any]:
     except OSError as exc:
         raise ValueError(f"Cannot read config file {path}: {exc}") from exc
 
+def _default_config() -> dict[str, Any]:
+    return {
+        "lora_root": ".lora",
+        "max_steps": -1,
+        "session_id": None,
+        "allow_read_outside_workspace": True,
+        "context_window": None,
+        "agent": {"default_alias": "default"},
+        "agents": [],
+        "user": {"identity": "default"},
+        "cli": {
+            "bash": {
+                "presets": [
+                    {
+                        "name": "rg",
+                        "command": "rg --help",
+                        "description": "Fast recursive text search. Prefer it for code and file text search.",
+                    },
+                    {
+                        "name": "pyright",
+                        "command": "pyright --help",
+                        "description": "Python type checker. Use it for static type validation when available.",
+                    },
+                    {
+                        "name": "lora-chat",
+                        "command": "uv run lora chat --help",
+                        "description": (
+                            'Project chat CLI. Use `uv run lora chat --new -m "<task>"` to start a new sub-agent session, '
+                            'or `uv run lora chat --session <session_id> -m "<task>"` to continue one.'
+                        ),
+                    },
+                ],
+                "full_output_allowlist": [],
+            }
+        },
+        "context_compression": {
+            "enabled": True,
+            "trigger_ratio": 0.9,
+            "file_read_count": 5,
+            "file_read_max_chars": 5000,
+        },
+        "runtime": {
+            "durability": {
+                "mode": "preferred",
+                "history_path": ".lora/runtime/executions-v1.sqlite3",
+            },
+            "capacity": {
+                "scope": "runtime_instance",
+                "coordinator_path": ".lora/runtime/capacity-v1.sqlite3",
+            },
+            "approvals": {
+                "enabled": True,
+                "timeout_seconds": 300.0,
+                "preauthorized_tools": [],
+            },
+        },
+        "mcp": {"servers": []},
+        "delegation": {
+            "allowed_agents": [],
+            "max_depth": 4,
+            "max_parallel": 4,
+            "background_enabled": True,
+        },
+        "eternal_conversation": {
+            "enabled": False,
+            "extractor_agent_alias": None,
+            "builder_agent_alias": None,
+            "dynamic_memory_cli_path": None,
+        },
+    }
 
-def _apply_user_config(
-    project_config: dict[str, Any],
-    user_config: dict[str, Any],
-) -> dict[str, Any]:
-    if not user_config:
-        return project_config
-    _require_known_keys(user_config, {"agent", "agents", "runtime"}, "user config")
-    _validate_config_shape(user_config)
-    user_runtime = user_config.get("runtime")
-    if isinstance(user_runtime, dict):
-        _require_known_keys(user_runtime, {"approvals"}, "user runtime")
-    merged = dict(project_config)
-    if "agent" in user_config or "agents" in user_config:
-        merged.pop("agent", None)
-        merged.pop("agents", None)
-        for key in ("agent", "agents"):
-            if key in user_config:
-                merged[key] = user_config[key]
-    if isinstance(user_runtime, dict) and "approvals" in user_runtime:
-        project_runtime = dict(merged.get("runtime") or {})
-        project_approvals = dict(project_runtime.get("approvals") or {})
-        project_approvals.update(user_runtime["approvals"] or {})
-        project_runtime["approvals"] = project_approvals
-        merged["runtime"] = project_runtime
+
+def _merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_config(merged[key], value)  # type: ignore[arg-type]
+        else:
+            merged[key] = value
     return merged
 
 

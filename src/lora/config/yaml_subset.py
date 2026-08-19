@@ -4,7 +4,7 @@ from typing import Any
 
 
 def parse_yaml_subset(text: str) -> dict[str, Any]:
-    """Parse the small YAML subset used by lora.yaml and MVP case files."""
+    """Parse the small YAML subset used by `.lora/config.yaml` and MVP case files."""
 
     text = text.lstrip("\ufeff")
     lines = []

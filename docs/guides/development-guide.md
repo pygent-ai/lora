@@ -32,7 +32,8 @@ agents:
         attempt_timeout_seconds: 60
 ```
 
-所有项目共用用户级 `agent/agents`。项目 `lora.yaml` 中的同名配置只在用户配置不存在时作为迁移兼容。旧单模型字段、`runtime.model`、顶层 `model/base_url` 与 CLI `--model` 均不支持。
+所有项目共用用户级 `agent/agents`，不再有项目级模型配置文件读取与回退。
+旧单模型字段、`runtime.model`、顶层 `model/base_url` 与 CLI `--model` 均不支持。
 
 ## Agent Module
 

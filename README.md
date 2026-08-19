@@ -44,13 +44,11 @@ uv run lora credentials set DEEPSEEK_API_KEY
 uv run lora credentials validate
 ```
 
-如果 `~/.lora/config.yaml` 尚不存在，Lora 会兼容读取项目 `lora.yaml` 中原有的 `agent/agents` 配置；创建用户配置后，项目中的模型配置不再生效。
+如果 `~/.lora/config.yaml` 尚未建立，系统将使用内置默认配置（含内置模型别名与持久化策略）。
 
-## 项目配置
+## 用户配置
 
-工具批准策略也属于用户级配置，可放在 `~/.lora/config.yaml` 的 `runtime.approvals` 下，对所有项目生效。`preauthorized_tools` 中列出的工具会自动放行；`enabled: false` 会放行所有高风险工具，请谨慎使用。
-
-项目 `lora.yaml` 保存 durability、capacity、MCP、delegation 等项目行为；未配置用户级批准策略时，仍兼容项目中的 `runtime.approvals`：
+`~/.lora/config.yaml` 同时承载模型、运行时和工具审批策略（`runtime.approvals`）配置，对所有项目共用。`preauthorized_tools` 中列出的工具会自动放行；`runtime.approvals.enabled: false` 会放行所有高风险工具，请谨慎使用。
 
 ```yaml
 runtime:
@@ -73,6 +71,12 @@ delegation:
   max_depth: 4
   max_parallel: 4
   background_enabled: true
+
+eternal_conversation:
+  enabled: false
+  extractor_agent_alias: dev
+  builder_agent_alias: fast-check
+  dynamic_memory_cli_path: .lora/skills/dynamic-memory-cli/scripts/dynamic_memory_cli.py
 ```
 
 ## 使用

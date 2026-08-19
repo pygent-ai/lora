@@ -188,7 +188,7 @@ def _render_initial_user_system_reminder(ctx: PromptRenderContext) -> str | None
         lines.extend(
             [
                 "<time>",
-                f"  褰撳墠绯荤粺鏃堕棿涓猴細{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
+                f"  Current system time: {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
                 "</time>",
                 "",
             ]
@@ -243,7 +243,7 @@ def _render_tool_system_reminder(
     lines = [
         "<system-reminder>",
         "<time>",
-        f"  褰撳墠绯荤粺鏃堕棿涓猴細{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"  Current system time: {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
         "</time>",
         "",
         *sections,

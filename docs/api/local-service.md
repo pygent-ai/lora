@@ -49,4 +49,4 @@ DELETE /runtime/tasks/{task_id}
 
 ## Settings
 
-`GET /settings` 返回用户级 agent profile 及 routes，不返回原始 API key。`PATCH /settings` 可以切换 workspace、agent、步数和 context window。模型在 `~/.lora/config.yaml` 中声明并由所有项目共用；用户配置不存在时才兼容项目 `lora.yaml` 中原有的 `agent/agents`。
+`GET /settings` 返回用户级 agent profile 及 routes，不返回原始 API key。`PATCH /settings` 可以切换 workspace、agent、步数和 context window。模型在 `~/.lora/config.yaml` 中声明并由所有项目共用。
