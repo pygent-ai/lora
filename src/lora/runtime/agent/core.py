@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,21 @@ from .prompts import PromptRegistry
 
 
 MODEL_MAX_OUTPUT_TOKENS = 4096
+PYGENT_VERIFY_SSL_ENV = "PYGENT_VERIFY_SSL"
+
+
+def _verify_ssl_from_env() -> bool | None:
+    raw_value = os.environ.get(PYGENT_VERIFY_SSL_ENV)
+    if raw_value is None or not raw_value.strip():
+        return None
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        f"{PYGENT_VERIFY_SSL_ENV} must be one of: 1, 0, true, false, yes, no, on, off"
+    )
 
 
 class _DeepSeekAdapter(OpenAICompatibleAdapter):
@@ -134,6 +150,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
 
     def _build_model_invoker(self) -> DefaultModelInvoker:
         routes = self._resolved_routes()
+        verify_ssl = _verify_ssl_from_env()
         providers = {route.provider for route in routes}
         adapters = {}
         for provider in providers:
@@ -147,7 +164,11 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         return DefaultModelInvoker(
             adapters=adapters,
             clients={
-                route.id: OpenAICompatibleClient(base_url=route.base_url, api_key=route.api_key or "")
+                route.id: OpenAICompatibleClient(
+                    base_url=route.base_url,
+                    api_key=route.api_key or "",
+                    verify_ssl=verify_ssl,
+                )
                 for route in routes
             },
             capabilities={
