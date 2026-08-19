@@ -155,8 +155,8 @@ def _first_user_message_title(session_dir: Path) -> str:
 
 
 def _first_user_message_from_events(session_dir: Path) -> str:
-    candidates: list[tuple[str, str]] = []
-    for events_path in (session_dir / "cases").glob("*/runs/*/events.jsonl"):
+    events_paths = sorted((session_dir / "cases").glob("*/runs/*/events.jsonl"))
+    for events_path in events_paths:
         for row in EventStore.iter_jsonl(events_path):
             if not isinstance(row, dict) or row.get("type") != "conversation.user_message":
                 continue
@@ -165,10 +165,8 @@ def _first_user_message_from_events(session_dir: Path) -> str:
                 continue
             title = _title_from_user_payload(payload)
             if title:
-                candidates.append((str(row.get("timestamp") or ""), title))
-    if not candidates:
-        return ""
-    return sorted(candidates, key=lambda item: item[0])[0][1]
+                return title
+    return ""
 
 
 def _first_user_message_from_history_log(session_dir: Path) -> str:

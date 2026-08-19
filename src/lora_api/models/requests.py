@@ -16,6 +16,7 @@ class ChatTurnRequest(BaseModel):
     turn_id: str | None = None
     execution_id: str | None = None
     after_sequence: int | None = None
+    log_model_text_deltas: bool = False
 
     @model_validator(mode="after")
     def validate_start_or_resume(self) -> "ChatTurnRequest":

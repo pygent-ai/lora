@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from unittest.mock import patch
 
 from lora.core.io import read_json, write_json
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
+from lora.tracing.events import EventStore
 from lora_api.dependencies import ApiContext
-from lora_api.services.session_service import SessionService
+from lora_api.services.session_service import SessionService, _first_user_message_from_events
 
 
 def test_session_groups_are_partitioned_by_remembered_project(tmp_path: Path) -> None:
@@ -74,7 +76,7 @@ def test_project_list_omits_missing_recent_directories(tmp_path: Path) -> None:
     assert [item.scope_id for item in response.projects] == [f"project:{project.resolve()}"]
 
 
-def test_session_groups_omit_invalid_remembered_project(tmp_path: Path) -> None:
+def test_session_groups_ignore_project_lora_yaml(tmp_path: Path) -> None:
     from lora_api.routers.sessions import list_session_groups
 
     active_project = tmp_path / "active-project"
@@ -106,6 +108,7 @@ def test_session_groups_omit_invalid_remembered_project(tmp_path: Path) -> None:
 
     assert [group.scope.scope_id for group in response.groups] == [
         f"project:{active_project.resolve()}",
+        f"project:{invalid_project.resolve()}",
         "conversation",
     ]
 
@@ -128,6 +131,32 @@ def test_session_list_uses_first_user_message_as_title_when_metadata_title_is_mi
     records = SessionService(manager).list_chat_sessions()
 
     assert records[0].title == "Build a LoRA training script with resume support"
+
+
+def test_title_lookup_stops_after_first_historical_user_message(tmp_path: Path) -> None:
+    first = tmp_path / "cases" / "chat" / "runs" / "run-001" / "events.jsonl"
+    later = tmp_path / "cases" / "chat" / "runs" / "run-002" / "events.jsonl"
+    first.parent.mkdir(parents=True)
+    later.parent.mkdir(parents=True)
+    first.touch()
+    later.touch()
+
+    def iter_events(path: Path):
+        if path == later:
+            raise AssertionError("title lookup scanned a later run after finding the title")
+        return iter(
+            [
+                {
+                    "type": "conversation.user_message",
+                    "payload": {"raw_content": "First historical message"},
+                }
+            ]
+        )
+
+    with patch.object(EventStore, "iter_jsonl", side_effect=iter_events) as mocked:
+        assert _first_user_message_from_events(tmp_path) == "First historical message"
+
+    mocked.assert_called_once_with(first)
 
 
 def _create_titled_chat(workspace_root: Path, title: str) -> str:

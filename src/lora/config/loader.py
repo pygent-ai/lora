@@ -169,7 +169,6 @@ def _default_config() -> dict[str, Any]:
         "allow_read_outside_workspace": True,
         "context_window": None,
         "agent": {"default_alias": "default"},
-        "agents": [],
         "user": {"identity": "default"},
         "cli": {
             "bash": {

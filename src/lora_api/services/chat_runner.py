@@ -5,10 +5,12 @@ import contextlib
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from pygent import thaw_json
 
+from lora.core.io import append_jsonl
 from lora.schema import CaseRunRef
 from lora_api.container import ApiContext
 from lora_api.models.events import ExecutionEvent
@@ -44,7 +46,10 @@ async def stream_chat_turn(
             )
         )
         return
-    async for event in run.events(after=request.after_sequence):
+    async for event in run.events(
+        after=request.after_sequence,
+        log_model_text_deltas=request.log_model_text_deltas,
+    ):
         yield _sse(event)
 
 
@@ -73,7 +78,12 @@ class ActiveChatRun:
         self.task = asyncio.create_task(self._run_turn(), name=f"chat-run:{self.run_ref.case_run_id}")
         await self.ready.wait()
 
-    async def events(self, *, after: int | None) -> AsyncIterator[ExecutionEvent]:
+    async def events(
+        self,
+        *,
+        after: int | None,
+        log_model_text_deltas: bool = False,
+    ) -> AsyncIterator[ExecutionEvent]:
         if self.startup_error is not None and self.execution_handle is None:
             yield ExecutionEvent(
                 schema_version="1",
@@ -112,7 +122,13 @@ class ActiveChatRun:
                         continue
                     except StopAsyncIteration:
                         break
-                    yield _execution_event(raw)
+                    event = _execution_event(raw)
+                    if log_model_text_deltas:
+                        _append_model_text_delta(
+                            event,
+                            stream_dir=Path(self.run_ref.run_dir),
+                        )
+                    yield event
         finally:
             async with self.lock:
                 self.subscribers -= 1
@@ -171,11 +187,23 @@ class ActiveChatRun:
 @dataclass(slots=True)
 class AttachedExecutionRun:
     execution_handle: Any
+    run_ref: CaseRunRef | None = None
 
-    async def events(self, *, after: int | None) -> AsyncIterator[ExecutionEvent]:
+    async def events(
+        self,
+        *,
+        after: int | None,
+        log_model_text_deltas: bool = False,
+    ) -> AsyncIterator[ExecutionEvent]:
         async with self.execution_handle.subscribe(after=after) as events:
             async for raw in events:
-                yield _execution_event(raw)
+                event = _execution_event(raw)
+                if log_model_text_deltas and self.run_ref is not None:
+                    _append_model_text_delta(
+                        event,
+                        stream_dir=Path(self.run_ref.run_dir),
+                    )
+                yield event
 
 
 class ChatRunRegistry:
@@ -330,6 +358,24 @@ def _execution_event(raw: Any) -> ExecutionEvent:
             "data": thaw_json(raw.data),
         }
     return ExecutionEvent.model_validate(value)
+
+
+def _append_model_text_delta(event: ExecutionEvent, *, stream_dir: Path) -> None:
+    if event.kind != "model.text.delta":
+        return
+    text = event.data.get("text")
+    if not isinstance(text, str) or not text:
+        return
+    append_jsonl(
+        stream_dir / "streams" / "model_text_deltas.jsonl",
+        {
+            "execution_id": event.execution_id,
+            "sequence": event.sequence,
+            "timestamp_unix_ns": event.timestamp_unix_ns,
+            "module_path": event.module_path,
+            "text": text,
+        },
+    )
 
 
 def _sse(event: ExecutionEvent) -> str:
