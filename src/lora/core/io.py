@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,11 +26,28 @@ def write_json(path: str | Path, data: dict[str, Any]) -> None:
     json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def append_jsonl(path: str | Path, data: dict[str, Any]) -> None:
+def write_json_atomic(path: str | Path, data: dict[str, Any]) -> None:
+    json_path = Path(path)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = json_path.with_name(f".{json_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, json_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def append_jsonl(path: str | Path, data: dict[str, Any], *, durable: bool = False) -> None:
     jsonl_path = Path(path)
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     with jsonl_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(data, ensure_ascii=False, sort_keys=True) + "\n")
+        if durable:
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def validate_path_id(value: str, field_name: str) -> None:

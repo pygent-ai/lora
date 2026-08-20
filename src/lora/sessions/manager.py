@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import sqlite3
 import shutil
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from lora.core.io import append_jsonl, read_json, utc_now, validate_path_id, write_json
+from lora.core.io import (
+    append_jsonl,
+    read_json,
+    utc_now,
+    validate_path_id,
+    write_json,
+    write_json_atomic,
+)
 from lora.schema import AgentSession, CaseRunRef, RunConfig, SessionRef, SessionSpec
 
 
@@ -34,7 +44,7 @@ class SessionManager:
             updated_at=now,
             metadata={"active_case_id": case_id, "mode": mode},
         )
-        write_json(session_dir / "session.json", session.to_dict())
+        write_json_atomic(session_dir / "session.json", session.to_dict())
         write_json(
             session_dir / "metadata.json",
             {
@@ -55,7 +65,7 @@ class SessionManager:
             raise FileNotFoundError(f"Session {session_id!r} does not exist")
         data = read_json(path)
         data["session_dir"] = str(session_dir)
-        return AgentSession.from_dict(data)
+        return self._apply_history_checkpoints(AgentSession.from_dict(data))
 
     def load_or_create(self, spec: SessionSpec) -> AgentSession:
         if spec.mode in {"resume", "shared"}:
@@ -164,7 +174,51 @@ class SessionManager:
 
     def save(self, session: AgentSession) -> None:
         session.updated_at = utc_now()
+        self._apply_history_checkpoints(session)
         self._save_session(session)
+
+    def append_history_checkpoint(
+        self,
+        case_run_ref: CaseRunRef,
+        *,
+        turn_id: str | None,
+        checkpoint_id: str,
+        message: dict[str, Any],
+        include_in_session: bool = True,
+    ) -> bool:
+        """Durably append one raw conversation boundary exactly once."""
+
+        validate_path_id(case_run_ref.session_id, "session_id")
+        database_path = self._checkpoint_database_path(case_run_ref.session_id)
+        with closing(self._checkpoint_connection(database_path)) as connection:
+            with connection:
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO conversation_checkpoints (
+                        checkpoint_id,
+                        session_id,
+                        case_id,
+                        case_run_id,
+                        turn_id,
+                        role,
+                        message_json,
+                        include_in_session,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        checkpoint_id,
+                        case_run_ref.session_id,
+                        case_run_ref.case_id,
+                        case_run_ref.case_run_id,
+                        turn_id,
+                        str(message.get("role") or "user"),
+                        json.dumps(message, ensure_ascii=False, sort_keys=True),
+                        int(include_in_session),
+                        utc_now(),
+                    ),
+                )
+                return cursor.rowcount == 1
 
     def find_case_run(self, session_id: str, case_run_id: str) -> CaseRunRef:
         session_dir = self._session_dir(session_id)
@@ -185,7 +239,60 @@ class SessionManager:
     def _save_session(self, session: AgentSession) -> None:
         validate_path_id(session.session_id, "session_id")
         session_dir = self._session_dir(session.session_id)
-        write_json(session_dir / "session.json", session.to_dict())
+        write_json_atomic(session_dir / "session.json", session.to_dict())
+
+    def _apply_history_checkpoints(self, session: AgentSession) -> AgentSession:
+        database_path = self._checkpoint_database_path(session.session_id)
+        if not database_path.exists():
+            return session
+        cursor_sequence = int(session.metadata.get("history_checkpoint_seq") or 0)
+        with closing(self._checkpoint_connection(database_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT sequence, message_json, include_in_session
+                FROM conversation_checkpoints
+                WHERE sequence > ?
+                ORDER BY sequence
+                """,
+                (cursor_sequence,),
+            ).fetchall()
+        for sequence, message_json, include_in_session in rows:
+            cursor_sequence = int(sequence)
+            if include_in_session:
+                message = json.loads(message_json)
+                if not isinstance(message, dict):
+                    raise ValueError("conversation checkpoint message must be a JSON object")
+                session.history.append(message)
+        if rows:
+            session.metadata["history_checkpoint_seq"] = cursor_sequence
+        return session
+
+    def _checkpoint_database_path(self, session_id: str) -> Path:
+        return self._session_dir(session_id) / "context" / "conversation-checkpoints.sqlite3"
+
+    @staticmethod
+    def _checkpoint_connection(path: Path) -> sqlite3.Connection:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path, timeout=30)
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=FULL")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_checkpoints (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                checkpoint_id TEXT NOT NULL UNIQUE,
+                session_id TEXT NOT NULL,
+                case_id TEXT NOT NULL,
+                case_run_id TEXT NOT NULL,
+                turn_id TEXT,
+                role TEXT NOT NULL,
+                message_json TEXT NOT NULL,
+                include_in_session INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        return connection
 
     def _session_dir(self, session_id: str) -> Path:
         validate_path_id(session_id, "session_id")

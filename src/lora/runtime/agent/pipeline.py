@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ from pygent import (
     thaw_json,
 )
 from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
+from pygent.runtime.codec import message_to_dict
 from pygent.tool import ToolSideEffect
 
 from lora.core.io import plain_data
@@ -49,6 +52,80 @@ from .prompt_sources import (
 )
 
 MAX_EMPTY_TOOL_FOLLOWUP_RETRIES = 5
+
+
+def checkpoint_conversation_message(
+    config: RunConfig,
+    context: LoraContext,
+    message: PygentMessage,
+    *,
+    boundary: str,
+) -> None:
+    checkpoint_id = f"{context.case_run_id}:{context.turn_id}:{boundary}"
+    payload = message_to_dict(message)
+    metadata = plain_data(thaw_json(context.metadata))
+    include_in_session = not (
+        isinstance(metadata, dict)
+        and metadata.get("persist_conversation_history") is False
+    )
+    manager = SessionManager(config)
+    inserted = manager.append_history_checkpoint(
+        context.case_run_ref,
+        turn_id=context.turn_id,
+        checkpoint_id=checkpoint_id,
+        message=payload,
+        include_in_session=include_in_session,
+    )
+    if inserted:
+        store = EventStore(context.case_run_ref)
+        event_type = {
+            "assistant": "conversation.assistant_message",
+            "tool": "conversation.tool_message",
+        }.get(message.role, "conversation.user_message")
+        event_payload = {
+            **payload,
+            "checkpoint_id": checkpoint_id,
+            "message": payload,
+        }
+        if message.role == "user":
+            message_data = plain_data(thaw_json(message.data))
+            raw_content = (
+                message_data.get("raw_content")
+                if isinstance(message_data, dict)
+                else None
+            )
+            event_payload.update(
+                {
+                    "raw_content": raw_content if isinstance(raw_content, str) else message.content,
+                    "user_identity": config.user_identity,
+                    "wrapped": True,
+                }
+            )
+        store.append(
+            event_type,
+            actor=message.role,
+            payload=event_payload,
+            turn_id=context.turn_id,
+        )
+
+
+def _message_boundary(
+    context: PygentContext,
+    *,
+    phase: str,
+    current: PygentMessage,
+    output: PygentMessage,
+) -> str:
+    material = {
+        "phase": phase,
+        "history": [message_to_dict(item) for item in context.messages],
+        "current": message_to_dict(current),
+        "output": message_to_dict(output),
+    }
+    digest = hashlib.sha256(
+        json.dumps(material, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:24]
+    return f"{phase}-{digest}"
 
 
 class InvalidProviderResponseError(RuntimeError):
@@ -335,6 +412,32 @@ class PreparedModelModule(Module[PygentMessage, AIMessage]):
         raise AssertionError("unreachable")
 
 
+class ConversationCheckpointModelModule(Module[PygentMessage, AIMessage]):
+    trusted_live_resource_attributes = ("config", "inner")
+
+    def __init__(self, config: RunConfig, inner: Module[PygentMessage, AIMessage]) -> None:
+        super().__init__()
+        self.config = config
+        self.inner = inner
+
+    async def forward(
+        self, message: PygentMessage, context: LoraContext
+    ) -> tuple[AIMessage, LoraContext]:
+        answer, next_context = await self.inner(message, context)
+        checkpoint_conversation_message(
+            self.config,
+            next_context,
+            answer,
+            boundary=_message_boundary(
+                context,
+                phase="model",
+                current=message,
+                output=answer,
+            ),
+        )
+        return answer, next_context
+
+
 class ToolAuditModule(Module[ToolMessage, ToolMessage]):
     trusted_live_resource_attributes = ("config",)
 
@@ -508,3 +611,29 @@ class PreparedToolModule(Module[AIMessage, ToolMessage]):
             tool_context,
             pending_file_effects=projection_context.pending_file_effects,
         )
+
+
+class ConversationCheckpointToolModule(Module[AIMessage, ToolMessage]):
+    trusted_live_resource_attributes = ("config", "inner")
+
+    def __init__(self, config: RunConfig, inner: Module[AIMessage, ToolMessage]) -> None:
+        super().__init__()
+        self.config = config
+        self.inner = inner
+
+    async def forward(
+        self, message: AIMessage, context: LoraContext
+    ) -> tuple[ToolMessage, LoraContext]:
+        tool_message, next_context = await self.inner(message, context)
+        checkpoint_conversation_message(
+            self.config,
+            next_context,
+            tool_message,
+            boundary=_message_boundary(
+                context,
+                phase="tool",
+                current=message,
+                output=tool_message,
+            ),
+        )
+        return tool_message, next_context

@@ -135,8 +135,14 @@ class EventStore:
             return
         with jsonl_path.open("r", encoding="utf-8") as handle:
             for line in handle:
-                if line.strip():
+                if not line.strip():
+                    continue
+                try:
                     yield json.loads(line)
+                except json.JSONDecodeError:
+                    # JSONL files are audit projections, not recovery state. A
+                    # torn row must not make later valid audit rows unreadable.
+                    continue
 
     def _append_event(self, event: ContextEvent) -> None:
         persisted_source = _clone_event(event)
@@ -173,7 +179,7 @@ class EventStore:
             return
         path = self.session_dir / "context" / "history.jsonl"
         row = {"seq": _next_jsonl_seq(path), **record}
-        append_jsonl(path, row)
+        append_jsonl(path, row, durable=record.get("checkpoint_id") is not None)
 
     def _append_session_log(self, name: str, record: dict[str, Any]) -> None:
         if self.session_dir is None:
@@ -291,7 +297,7 @@ def _clone_event(event: ContextEvent) -> ContextEvent:
 
 
 def _message_record(event: ContextEvent) -> dict[str, Any]:
-    return {
+    record = {
         "event_id": event.id,
         "session_id": event.session_id,
         "case_id": event.case_id,
@@ -301,6 +307,11 @@ def _message_record(event: ContextEvent) -> dict[str, Any]:
         "content": event.payload.get("content", ""),
         "created_at": event.timestamp,
     }
+    if event.payload.get("checkpoint_id") is not None:
+        record["checkpoint_id"] = event.payload.get("checkpoint_id")
+    if isinstance(event.payload.get("message"), dict):
+        record["message"] = event.payload.get("message")
+    return record
 
 
 def _tool_result_record(event: ContextEvent) -> dict[str, Any]:

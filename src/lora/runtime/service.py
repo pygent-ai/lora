@@ -16,6 +16,8 @@ from pygent import (
     FallbackPolicy,
     ModelGroupConfig,
     ModelRoute,
+    ToolMessage,
+    ToolResult,
     ToolKit,
     UserMessage,
     freeze_json_object,
@@ -55,9 +57,10 @@ from lora.config import load_run_config
 from lora.core.io import read_json, write_json
 from lora.sessions import SessionManager
 from lora.tracing import DIFF_TOOL_SPEC, DiffTool
-from pygent.runtime.codec import invocation_from_dict
+from pygent.runtime.codec import invocation_from_dict, message_to_dict
 
 from .agent import LoraAgent, _initial_lora_context, _session_dir_for_run, _to_pygent_message
+from .agent.pipeline import checkpoint_conversation_message
 from .context import LORA_CONTEXT_CODEC, LoraContext
 from .delegation import (
     DELEGATE_BACKGROUND_TOOL_SPEC,
@@ -83,6 +86,40 @@ def _wrap_user_message(message: str, identity: str) -> str:
             "</user-context>",
         )
     )
+
+
+def _interrupted_tool_message(history: list[dict[str, Any]]) -> ToolMessage | None:
+    if not history or history[-1].get("role") != "assistant":
+        return None
+    tool_calls = history[-1].get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return None
+    results = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        call_id = call.get("call_id")
+        name = call.get("name")
+        if not isinstance(call_id, str) or not call_id or not isinstance(name, str) or not name:
+            continue
+        results.append(
+            ToolResult(
+                call_id=call_id,
+                name=name,
+                status="unknown",
+                error="Previous execution ended before a durable tool result was recorded.",
+                error_kind="InterruptedExecution",
+                retryable=False,
+                side_effect_committed=None,
+                tool_id=call.get("tool_id") if isinstance(call.get("tool_id"), str) else None,
+                tool_version=(
+                    call.get("tool_version")
+                    if isinstance(call.get("tool_version"), str)
+                    else None
+                ),
+            )
+        )
+    return ToolMessage(results=tuple(results)) if results else None
 
 
 def _managed_child_budget(config: RunConfig) -> int:
@@ -532,7 +569,6 @@ class LoraRuntimeService:
         store = EventStore(run_ref)
         store.append("case.started", actor="system", payload={"title": case.title}, turn_id="turn-0001")
         carry_context = case.session.get("carry_context") is not False
-        original_history = list(session.history)
         if not carry_context:
             session.history = []
         inputs = case.input.get("messages")
@@ -543,9 +579,27 @@ class LoraRuntimeService:
         )
         messages = [item for item in messages if item]
         current_message = messages[-1] if messages else ""
-        for prior in messages[:-1]:
-            session.history.append({"role": "user", "content": prior})
-            store.append("conversation.user_message", actor="user", payload={"role": "user", "content": prior}, turn_id="turn-0001")
+        checkpoint_context = LoraContext(
+            session_id=run_ref.session_id,
+            case_id=run_ref.case_id,
+            case_run_id=run_ref.case_run_id,
+            run_dir=run_ref.run_dir,
+            turn_id="turn-0001",
+            system_prompt=session.system_prompt,
+            metadata={"persist_conversation_history": carry_context},
+        )
+        for index, prior in enumerate(messages[:-1]):
+            prior_message = UserMessage(content=prior)
+            checkpoint_conversation_message(
+                self.config,
+                checkpoint_context,
+                prior_message,
+                boundary=f"case-input-{index}",
+            )
+            if not carry_context:
+                session.history.append(message_to_dict(prior_message))
+        if carry_context and messages[:-1]:
+            session = manager.load(run_ref.session_id)
         agent = self.new_agent(interactive_approvals=False)
         turn_message, turn_context = self._prepare_turn(
             agent=agent,
@@ -555,6 +609,7 @@ class LoraRuntimeService:
             config=self.config,
             turn_id="turn-0001",
             session=session,
+            carry_context=carry_context,
         )
         bound = await self.bind(agent, agent)
         handle = await bound.start(
@@ -569,9 +624,6 @@ class LoraRuntimeService:
         )
         output, _ = await handle.result()
         result = dict(thaw_json(output.data).get("result") or {})
-        if not carry_context:
-            session.history = [*original_history, *session.history]
-            manager.save(session)
         result["event_count"] = len(store.list_by_run())
         store.append(
             "case.finished",
@@ -593,9 +645,28 @@ class LoraRuntimeService:
         config: RunConfig,
         turn_id: str,
         session: Any | None = None,
+        carry_context: bool = True,
     ) -> tuple[UserMessage, LoraContext]:
         session = session or manager.load(run_ref.session_id)
-        memory_projection = load_projection(session.session_dir)
+        incomplete_tool_message = _interrupted_tool_message(session.history)
+        if incomplete_tool_message is not None:
+            call_ids = ",".join(result.call_id for result in incomplete_tool_message.results)
+            checkpoint_conversation_message(
+                config,
+                LoraContext(
+                    session_id=session.session_id,
+                    case_id=run_ref.case_id,
+                    case_run_id=run_ref.case_run_id,
+                    run_dir=run_ref.run_dir,
+                    turn_id=turn_id,
+                    system_prompt=session.system_prompt,
+                    metadata={"persist_conversation_history": carry_context},
+                ),
+                incomplete_tool_message,
+                boundary=f"interrupted-tools-{hashlib.sha256(call_ids.encode()).hexdigest()[:24]}",
+            )
+            session = manager.load(run_ref.session_id)
+        memory_projection = load_projection(session.session_dir) if carry_context else {}
         covered_through = int(memory_projection.get("covered_through") or 0)
         portable_history = (
             session.history[covered_through:]
@@ -633,7 +704,11 @@ class LoraRuntimeService:
             UserMessage(content=wrapped, kind="lora.chat.turn", data={"raw_content": message}),
             replace(
                 history,
-                metadata={"session_id": run_ref.session_id, "case_run_id": run_ref.case_run_id},
+                metadata={
+                    "session_id": run_ref.session_id,
+                    "case_run_id": run_ref.case_run_id,
+                    "persist_conversation_history": carry_context,
+                },
             ),
         )
 

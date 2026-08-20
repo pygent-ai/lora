@@ -536,6 +536,9 @@ class AgentSession:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentSession":
+        version = str(data.get("version") or "1.0")
+        if version != "1.0":
+            raise ValueError(f"unsupported AgentSession version: {version}")
         return cls(
             session_id=data["session_id"],
             workspace_root=data["workspace_root"],

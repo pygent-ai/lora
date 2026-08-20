@@ -8,8 +8,7 @@ from html import escape
 from pathlib import Path
 from typing import Any, Literal
 
-from lora.core.io import append_jsonl, read_json, utc_now, write_json
-from lora.core.redaction import redact_secrets
+from lora.core.io import append_jsonl, read_json, utc_now, write_json, write_json_atomic
 from lora.schema import AgentSession, RunConfig
 from lora.tracing import EventStore
 
@@ -597,6 +596,5 @@ def _render_continuation_user_message(
 
 def _persist_session(session: AgentSession) -> None:
     session.updated_at = utc_now()
-    data = redact_secrets(session.to_dict())
     session_dir = Path(session.session_dir)
-    write_json(session_dir / "session.json", data)
+    write_json_atomic(session_dir / "session.json", session.to_dict())

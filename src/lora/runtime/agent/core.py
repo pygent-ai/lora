@@ -40,9 +40,10 @@ from lora.runtime.context import LoraContext
 from lora.runtime.eternal_conversation import EternalConversationHarness
 from lora.runtime.file_effects import FILE_EFFECT_TOOL_SPEC
 
-from .common import _pygent_context_messages
 from .pipeline import (
     ContextCompressionModule,
+    ConversationCheckpointModelModule,
+    ConversationCheckpointToolModule,
     DynamicPromptModule,
     LoraToolAuthorization,
     PersistedDiffModule,
@@ -50,6 +51,7 @@ from .pipeline import (
     PreparedToolModule,
     SkillReminderModule,
     ToolAuditModule,
+    checkpoint_conversation_message,
     _context_manager,
     _model_tool_definition,
 )
@@ -255,16 +257,22 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             model = self.new_model_layer()
             compression_model = self.new_model_layer()
             compression = ContextCompressionModule(self.config, compression_model)
-            prepared_model = PreparedModelModule(
-                prompt=self.prompt,
-                compression=compression,
-                model=model,
+            prepared_model = ConversationCheckpointModelModule(
+                self.config,
+                PreparedModelModule(
+                    prompt=self.prompt,
+                    compression=compression,
+                    model=model,
+                ),
             )
-            prepared_tools = PreparedToolModule(
-                tools=self.new_tool_layer(),
-                audit=ToolAuditModule(self.config),
-                reminders=SkillReminderModule(self.config, self.prompt_registry),
-                persisted_diff=PersistedDiffModule(self.workspace_root, diff_tasks),
+            prepared_tools = ConversationCheckpointToolModule(
+                self.config,
+                PreparedToolModule(
+                    tools=self.new_tool_layer(),
+                    audit=ToolAuditModule(self.config),
+                    reminders=SkillReminderModule(self.config, self.prompt_registry),
+                    persisted_diff=PersistedDiffModule(self.workspace_root, diff_tasks),
+                ),
             )
             self.react = ReActLayer(
                 model=prepared_model,
@@ -296,20 +304,13 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             (message_data.get("raw_content") if isinstance(message_data, dict) else None)
             or message.content
         )
-        store.append(
-            "conversation.user_message",
-            actor="user",
-            payload={
-                "role": "user",
-                "content": message.content,
-                "raw_content": raw_content,
-                "user_identity": self.config.user_identity,
-                "wrapped": True,
-            },
-            turn_id=turn_id,
+        checkpoint_conversation_message(
+            self.config,
+            context,
+            message,
+            boundary="user-input",
         )
         execution_context = context.append_history(message)
-        durable_history_start = len(context.full_history)
         await self.emit(kind="lora.chat.started", data=context.case_run_ref.to_dict())
         store.append(
             "model.request",
@@ -339,6 +340,12 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                     )
                 )
                 next_context = visible + message + answer
+                checkpoint_conversation_message(
+                    self.config,
+                    next_context,
+                    answer,
+                    boundary="local-answer",
+                )
             else:
                 answer, next_context = await self.react(message, visible)
             current_index = max(
@@ -350,19 +357,8 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 default=-1,
             )
             output_messages = next_context.messages[current_index + 1 :]
-            outputs = _pygent_context_messages(replace(next_context, messages=output_messages))
             next_context = next_context.append_history(*output_messages)
             execution_context = next_context
-            for payload in outputs:
-                role = str(payload.get("role") or "assistant")
-                if role == "user":
-                    continue
-                store.append(
-                    "conversation.tool_message" if role == "tool" else "conversation.assistant_message",
-                    actor="tool" if role == "tool" else "assistant",
-                    payload=payload,
-                    turn_id=turn_id,
-                )
             result = {
                 "session_id": context.session_id,
                 "case_id": context.case_id,
@@ -371,7 +367,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 "status": status,
                 "final_answer": answer.content,
                 "error": None,
-                "message_count": 1 + len(outputs),
+                "message_count": 1 + len(output_messages),
             }
             return replace(answer, kind="lora.chat.result", data={"result": result}), next_context
         except asyncio.CancelledError:
@@ -384,11 +380,9 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             raise
         finally:
             session = manager.load(context.session_id)
-            # Raw History and Session history remain complete durable evidence,
-            # but the portable execution context contains only the uncovered
-            # working-memory suffix. Append this turn's delta instead of
-            # replacing the complete Session history with that suffix.
-            session.history.extend(execution_context.history[durable_history_start:])
+            # Stable user/model/tool boundaries are already persisted as
+            # idempotent conversation checkpoints. Loading the session merges
+            # any raw checkpoint written before the latest session snapshot.
             session.system_prompt = execution_context.system_prompt
             session.metadata.update(
                 {
