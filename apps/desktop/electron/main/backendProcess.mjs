@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -26,12 +26,8 @@ export function resolveBackendLaunch({
 
   const resolvedRepoRoot = repoRoot || path.resolve(appPath, "..", "..");
   return {
-    command: "uv",
-    args: backendArgs({
-      port,
-      workspaceRoot: resolvedRepoRoot,
-      prefix: ["run", "--no-sync", "lora-api"],
-    }),
+    command: developmentBackendPath(resolvedRepoRoot, platform),
+    args: backendArgs({ port, workspaceRoot: resolvedRepoRoot }),
     cwd: resolvedRepoRoot,
   };
 }
@@ -40,8 +36,18 @@ export function backendExecutableName(platform = process.platform) {
   return platform === "win32" ? "lora-api.exe" : "lora-api";
 }
 
+function developmentBackendPath(repoRoot, platform) {
+  const pathImpl = platform === "win32" ? path.win32 : path.posix;
+  const binDirectory = platform === "win32" ? "Scripts" : "bin";
+  return pathImpl.join(repoRoot, ".venv", binDirectory, backendExecutableName(platform));
+}
+
 export function apiBaseUrl(port = DEFAULT_API_PORT) {
   return `http://${DEFAULT_API_HOST}:${port}`;
+}
+
+export function resolveUserDataPath(homePath) {
+  return path.resolve(homePath, ".lora", "desktop");
 }
 
 export async function findAvailablePort(
@@ -140,11 +146,29 @@ export async function waitForBackend({
   throw lastError instanceof Error ? lastError : new Error("Timed out waiting for lora-api");
 }
 
-export function stopBackendProcess(child) {
+export function stopBackendProcess(
+  child,
+  { platform = process.platform, killProcessTree = killWindowsProcessTree } = {},
+) {
   if (!child || child.killed || child.exitCode !== null) {
     return;
   }
+
+  if (platform === "win32" && Number.isInteger(child.pid)) {
+    const result = killProcessTree(child.pid);
+    if (!result?.error && result?.status === 0) {
+      return;
+    }
+  }
+
   child.kill();
+}
+
+function killWindowsProcessTree(pid) {
+  return spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
 }
 
 function backendArgs({ port, workspaceRoot, prefix = [] }) {

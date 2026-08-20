@@ -18,7 +18,7 @@ class CredentialsCliTests(unittest.TestCase):
             user_root = Path(tmp) / ".lora"
             root.mkdir()
             user_root.mkdir()
-            (root / "lora.yaml").write_text(
+            (user_root / "config.yaml").write_text(
                 "\n".join(
                     [
                         "agent:",
@@ -77,9 +77,11 @@ class CredentialsCliTests(unittest.TestCase):
             self.assertEqual(read_env_entries(user_root / "credentials.env"), {})
 
     def test_credentials_validate_reports_missing_key(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch("lora.config.Path.home", return_value=Path(tmp)):
             root = Path(tmp)
-            (root / "lora.yaml").write_text(
+            user_root = root / ".lora"
+            user_root.mkdir()
+            (user_root / "config.yaml").write_text(
                 "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          api_key_env: DEV_API_KEY\n          model_name: profile-model\n          base_url: https://example.test/v1\n",
                 encoding="utf-8",
             )

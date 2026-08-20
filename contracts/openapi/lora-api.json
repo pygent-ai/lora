@@ -31,6 +31,11 @@
             ],
             "title": "Execution Id"
           },
+          "log_model_text_deltas": {
+            "default": false,
+            "title": "Log Model Text Deltas",
+            "type": "boolean"
+          },
           "message": {
             "anyOf": [
               {
@@ -578,17 +583,6 @@
               }
             ],
             "title": "Api Key"
-          },
-          "config_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Config Path"
           },
           "context_window": {
             "anyOf": [

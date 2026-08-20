@@ -53,7 +53,6 @@ DEFAULT_CLI_BASH_PRESETS = [
 def load_run_config(
     *,
     workspace_root: str | Path | None = None,
-    config_file: str | Path | None = None,
     session_id: str | None = None,
     case_file: str | Path | None = None,
     agent_alias: str | None = None,
@@ -62,15 +61,8 @@ def load_run_config(
 ) -> RunConfig:
     root = Path(workspace_root or os.environ.get("LORA_WORKSPACE_ROOT") or Path.cwd()).expanduser().resolve()
     user_lora_root = (Path.home() / ".lora").expanduser().resolve()
-    load_credentials(user_lora_root=user_lora_root, workspace_root=root)
-    user_config_path = user_lora_root / USER_CONFIG_FILENAME
-    config_path = (
-        Path(config_file).expanduser()
-        if config_file is not None
-        else user_config_path
-    )
-    if not config_path.is_absolute():
-        config_path = root / config_path
+    load_credentials(user_lora_root=user_lora_root)
+    config_path = user_lora_root / USER_CONFIG_FILENAME
     file_config = _read_config(config_path if config_path.exists() else None)
     config_data = _merge_config(_default_config(), file_config)
     _validate_config_shape(config_data)

@@ -30,7 +30,6 @@ class ChatTurnRequest(BaseModel):
 class UpdateSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_root: str | None = None
-    config_path: str | None = None
     agent_alias: str | None = None
     max_steps: int | None = None
     context_window: int | None = None

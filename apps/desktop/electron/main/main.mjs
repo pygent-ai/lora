@@ -8,12 +8,15 @@ import {
   apiBaseUrl,
   findAvailablePort,
   resolveBackendLaunch,
+  resolveUserDataPath,
   startBackendProcess,
   stopBackendProcess,
   waitForBackend,
 } from "./backendProcess.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+app.setPath("userData", resolveUserDataPath(app.getPath("home")));
 
 let mainWindow;
 let backendProcess;

@@ -20,7 +20,6 @@ class ApiContext:
     """Application container shared by the HTTP composition root."""
 
     workspace_root: str | None = None
-    config_path: str | None = None
     agent_alias: str | None = None
     max_steps: int | None = None
     context_window: int | None = None
@@ -100,7 +99,7 @@ class ApiContext:
 
     def reload(self, overrides: dict[str, Any] | None = None) -> RunConfig:
         if overrides:
-            for key in ("workspace_root", "config_path", "agent_alias", "max_steps", "context_window"):
+            for key in ("workspace_root", "agent_alias", "max_steps", "context_window"):
                 if key in overrides:
                     setattr(self, key, overrides[key])
         with self._lock:
@@ -123,7 +122,6 @@ class ApiContext:
             )
         return load_run_config(
             workspace_root=scope.workspace_root,
-            config_file=self.config_path,
             agent_alias=self.agent_alias,
             max_steps=self.max_steps,
             context_window=self.context_window,
@@ -132,7 +130,6 @@ class ApiContext:
     def _load_config(self) -> RunConfig:
         return load_run_config(
             workspace_root=self.workspace_root,
-            config_file=self.config_path,
             agent_alias=self.agent_alias,
             max_steps=self.max_steps,
             context_window=self.context_window,

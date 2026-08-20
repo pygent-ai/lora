@@ -96,7 +96,6 @@ def credentials_delete(args: argparse.Namespace) -> dict[str, Any]:
 def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
     config = load_run_config(
         workspace_root=args.workspace_root,
-        config_file=args.config,
         agent_alias=args.agent_alias,
         max_steps=args.max_steps,
     )
@@ -130,7 +129,6 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
 def _base_config(args: argparse.Namespace):
     return load_run_config(
         workspace_root=args.workspace_root,
-        config_file=args.config,
         agent_alias=args.agent_alias,
         max_steps=args.max_steps,
     )

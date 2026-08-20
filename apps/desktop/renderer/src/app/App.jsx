@@ -1188,10 +1188,6 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
             <input value={draft.workspaceRoot} onChange={(event) => setField("workspaceRoot", event.target.value)} />
           </label>
           <label>
-            <span>Config path</span>
-            <input value={draft.configPath} onChange={(event) => setField("configPath", event.target.value)} />
-          </label>
-          <label>
             <span>Agent</span>
             <input value={draft.agent} onChange={(event) => setField("agent", event.target.value)} />
           </label>
@@ -1797,7 +1793,6 @@ function scopeIdFromWorkspace(workspaceRoot) {
 function settingsToDraft(settings) {
   return {
     workspaceRoot: settings.workspace_root || "",
-    configPath: "",
     agent: settings.agent || "",
     maxSteps: Number.isFinite(settings.max_steps) ? settings.max_steps : -1,
     contextWindow: Number.isFinite(settings.context_window) ? String(settings.context_window) : "",

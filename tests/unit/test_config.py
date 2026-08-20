@@ -31,11 +31,20 @@ runtime:
 """
 
 
+def write_user_config(tmp_path: Path, content: str) -> Path:
+    home = tmp_path / "home"
+    user_root = home / ".lora"
+    user_root.mkdir(parents=True)
+    (user_root / "config.yaml").write_text(content, encoding="utf-8")
+    return home
+
+
 def test_routes_are_the_only_model_configuration(tmp_path: Path) -> None:
-    (tmp_path / "lora.yaml").write_text(ROUTES_CONFIG, encoding="utf-8")
+    home = write_user_config(tmp_path, ROUTES_CONFIG)
     os.environ["TEST_ROUTE_KEY"] = "secret"
     try:
-        config = load_run_config(workspace_root=tmp_path)
+        with patch("lora.config.loader.Path.home", return_value=home):
+            config = load_run_config(workspace_root=tmp_path)
     finally:
         os.environ.pop("TEST_ROUTE_KEY", None)
     agent = config.resolved_agent
@@ -48,38 +57,44 @@ def test_routes_are_the_only_model_configuration(tmp_path: Path) -> None:
 
 
 def test_unknown_model_request_field_is_rejected(tmp_path: Path) -> None:
-    (tmp_path / "lora.yaml").write_text(
+    home = write_user_config(
+        tmp_path,
         "agents:\n  - alias: dev\n    model_request:\n      model_name: old-model\n",
-        encoding="utf-8",
     )
-    with pytest.raises(ValueError, match=r"model_request contains unknown fields: model_name"):
+    with patch("lora.config.loader.Path.home", return_value=home), pytest.raises(
+        ValueError, match=r"model_request contains unknown fields: model_name"
+    ):
         load_run_config(workspace_root=tmp_path, agent_alias="dev")
 
 
 def test_route_fields_are_required(tmp_path: Path) -> None:
-    (tmp_path / "lora.yaml").write_text(
+    home = write_user_config(
+        tmp_path,
         "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n",
-        encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="provider is required"):
+    with patch("lora.config.loader.Path.home", return_value=home), pytest.raises(
+        ValueError, match="provider is required"
+    ):
         load_run_config(workspace_root=tmp_path, agent_alias="dev")
 
 
 def test_default_configuration_is_routes_based(tmp_path: Path) -> None:
-    config = load_run_config(workspace_root=tmp_path)
+    with patch("lora.config.loader.Path.home", return_value=tmp_path / "home"):
+        config = load_run_config(workspace_root=tmp_path)
     assert config.resolved_agent is not None
     assert config.resolved_agent.routes[0].id == "primary"
     assert config.resolved_agent.routes[0].model_name == "deepseek-v4-flash"
 
 
 def test_runtime_and_context_settings_are_loaded(tmp_path: Path) -> None:
-    (tmp_path / "lora.yaml").write_text(
+    home = write_user_config(
+        tmp_path,
         ROUTES_CONFIG
         + "\ncontext_window: 64000\ncontext_compression:\n  enabled: false\n"
         + "runtime:\n  capacity:\n    scope: deployment\n    coordinator_path: .state/capacity.sqlite3\n",
-        encoding="utf-8",
     )
-    config = load_run_config(workspace_root=tmp_path)
+    with patch("lora.config.loader.Path.home", return_value=home):
+        config = load_run_config(workspace_root=tmp_path)
     assert config.context_window == 64000
     assert config.context_compression_enabled is False
     assert config.runtime_capacity.scope == "deployment"
@@ -87,8 +102,8 @@ def test_runtime_and_context_settings_are_loaded(tmp_path: Path) -> None:
 
 
 def test_missing_agent_alias_is_rejected(tmp_path: Path) -> None:
-    (tmp_path / "lora.yaml").write_text(ROUTES_CONFIG, encoding="utf-8")
-    with pytest.raises(ValueError, match="not configured"):
+    home = write_user_config(tmp_path, ROUTES_CONFIG)
+    with patch("lora.config.loader.Path.home", return_value=home), pytest.raises(ValueError, match="not configured"):
         load_run_config(workspace_root=tmp_path, agent_alias="missing")
 
 
@@ -112,11 +127,9 @@ def test_user_model_config_is_shared_across_project_workspaces(tmp_path: Path) -
         encoding="utf-8",
     )
     (user_root / "credentials.env").write_text("USER_MODEL_KEY=user-secret\n", encoding="utf-8")
-    project_config = ROUTES_CONFIG.replace("model-a", "project-model")
     workspaces = [tmp_path / "project-a", tmp_path / "project-b"]
     for workspace in workspaces:
         workspace.mkdir()
-        (workspace / "lora.yaml").write_text(project_config, encoding="utf-8")
 
     with patch("lora.config.loader.Path.home", return_value=home):
         configs = [load_run_config(workspace_root=workspace) for workspace in workspaces]
@@ -130,7 +143,7 @@ def test_user_model_config_is_shared_across_project_workspaces(tmp_path: Path) -
         assert config.resolved_agent.routes[0].api_key_source == "user-file:USER_MODEL_KEY"
 
 
-def test_project_model_config_remains_compatible_without_user_config(tmp_path: Path) -> None:
+def test_project_config_is_not_a_configuration_source(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -140,24 +153,17 @@ def test_project_model_config_remains_compatible_without_user_config(tmp_path: P
         config = load_run_config(workspace_root=workspace)
 
     assert config.resolved_agent is not None
-    assert config.resolved_agent.routes[0].model_name == "model-a"
+    assert config.resolved_agent.routes[0].model_name == "deepseek-v4-flash"
 
 
-def test_user_approval_config_is_shared_and_preserves_project_runtime(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    user_root = home / ".lora"
-    user_root.mkdir(parents=True)
-    (user_root / "config.yaml").write_text(
-        "runtime:\n  approvals:\n    timeout_seconds: 900\n    preauthorized_tools: [write]\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "lora.yaml").write_text(
+def test_user_config_owns_runtime_and_approval_settings(tmp_path: Path) -> None:
+    home = write_user_config(
+        tmp_path,
         ROUTES_CONFIG
         + "\n"
         "runtime:\n"
         "  durability:\n    mode: required\n"
-        "  approvals:\n    enabled: true\n    timeout_seconds: 30\n",
-        encoding="utf-8",
+        "  approvals:\n    enabled: true\n    timeout_seconds: 900\n    preauthorized_tools: [write]\n",
     )
 
     with patch("lora.config.loader.Path.home", return_value=home):
@@ -171,14 +177,10 @@ def test_user_approval_config_is_shared_and_preserves_project_runtime(tmp_path: 
     assert config.runtime_approvals.preauthorized_tools == ("write",)
 
 
-def test_user_config_rejects_non_approval_runtime_settings(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    user_root = home / ".lora"
-    user_root.mkdir(parents=True)
-    (user_root / "config.yaml").write_text("runtime:\n  capacity:\n    scope: deployment\n", encoding="utf-8")
+def test_user_config_accepts_runtime_capacity_settings(tmp_path: Path) -> None:
+    home = write_user_config(tmp_path, "runtime:\n  capacity:\n    scope: deployment\n")
 
-    with patch("lora.config.loader.Path.home", return_value=home), pytest.raises(
-        ValueError,
-        match=r"user runtime contains unknown fields: capacity",
-    ):
-        load_run_config(workspace_root=tmp_path)
+    with patch("lora.config.loader.Path.home", return_value=home):
+        config = load_run_config(workspace_root=tmp_path)
+
+    assert config.runtime_capacity.scope == "deployment"

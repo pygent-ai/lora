@@ -78,7 +78,6 @@ export function settingsPayload(settings) {
   const contextWindow = settingsNumber(settings.contextWindow);
   return compactObject({
     workspace_root: settingsString(settings.workspaceRoot),
-    config_path: settingsString(settings.configPath),
     agent_alias: settingsString(settings.agent),
     max_steps: Number.isFinite(settings.maxSteps) ? settings.maxSteps : undefined,
     context_window: contextWindow !== undefined ? contextWindow : null,

@@ -5,6 +5,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from lora.evaluation import CaseManager
 from lora.config import load_mapping_file, load_run_config
@@ -34,14 +35,19 @@ class DocumentationRegressionFindingTests(unittest.TestCase):
 
 
 class ConfigParserRegressionFindingTests(unittest.TestCase):
-    def test_relative_config_file_is_resolved_from_workspace_root(self) -> None:
+    def test_config_is_loaded_from_the_user_lora_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "lora.yaml").write_text("agents:\n  - alias: default\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: workspace-model\n          base_url: https://example.test/v1\n          api_key_env: TEST_KEY\n", encoding="utf-8")
+            home = Path(tmp) / "home"
+            root = Path(tmp) / "workspace"
+            user_root = home / ".lora"
+            root.mkdir()
+            user_root.mkdir(parents=True)
+            (user_root / "config.yaml").write_text("agents:\n  - alias: default\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: user-model\n          base_url: https://example.test/v1\n          api_key_env: TEST_KEY\n", encoding="utf-8")
 
-            config = load_run_config(workspace_root=root, config_file="lora.yaml")
+            with patch("lora.config.loader.Path.home", return_value=home):
+                config = load_run_config(workspace_root=root)
 
-        self.assertEqual(config.resolved_agent.routes[0].model_name, "workspace-model")  # type: ignore[union-attr]
+        self.assertEqual(config.resolved_agent.routes[0].model_name, "user-model")  # type: ignore[union-attr]
 
     def test_yaml_parser_preserves_hash_inside_quoted_scalar(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

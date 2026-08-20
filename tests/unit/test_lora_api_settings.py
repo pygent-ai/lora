@@ -26,6 +26,12 @@ class _RecordingRuntime:
     async def close(self, *, cancel: bool) -> None:
         self.closed.append(cancel)
 
+
+def write_user_config(home: Path, lines: list[str]) -> None:
+    user_root = home / ".lora"
+    user_root.mkdir(parents=True)
+    (user_root / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 def test_update_settings_saves_api_key_and_reloads_runtime_config(tmp_path: Path) -> None:
     from lora_api.models.requests import UpdateSettingsRequest
     from lora_api.routers.settings import update_settings
@@ -33,26 +39,20 @@ def test_update_settings_saves_api_key_and_reloads_runtime_config(tmp_path: Path
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "lora.yaml").write_text(
-        "\n".join(
-            [
-                "agent:",
-                "  default_alias: dev",
-                "agents:",
-                "  - alias: dev",
-                "    model_request:",
-                "      context_window: 32000",
-                "      routes:",
-                "        - id: primary",
-                "          provider: openai",
-                "          api_key_env: GUI_TEST_KEY",
-                "          model_name: original-model",
-                "          base_url: https://example.test",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    write_user_config(home, [
+        "agent:",
+        "  default_alias: dev",
+        "agents:",
+        "  - alias: dev",
+        "    model_request:",
+        "      context_window: 32000",
+        "      routes:",
+        "        - id: primary",
+        "          provider: openai",
+        "          api_key_env: GUI_TEST_KEY",
+        "          model_name: original-model",
+        "          base_url: https://example.test",
+    ])
 
     with patch("lora.config.loader.Path.home", return_value=home):
         context = ApiContext(workspace_root=str(workspace), agent_alias="dev")
@@ -85,26 +85,21 @@ def test_update_settings_can_clear_context_window_override(tmp_path: Path) -> No
     from lora_api.models.requests import UpdateSettingsRequest
     from lora_api.routers.settings import update_settings
 
+    home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "lora.yaml").write_text(
-        "\n".join(
-            [
-                "agents:",
-                "  - alias: dev",
-                "    model_request:",
-                "      context_window: 32000",
-                "      routes:",
-                "        - id: primary",
-                "          provider: openai",
-                "          model_name: original-model",
-                "          base_url: https://example.test",
-                "          api_key_env: GUI_TEST_KEY",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    write_user_config(home, [
+        "agents:",
+        "  - alias: dev",
+        "    model_request:",
+        "      context_window: 32000",
+        "      routes:",
+        "        - id: primary",
+        "          provider: openai",
+        "          model_name: original-model",
+        "          base_url: https://example.test",
+        "          api_key_env: GUI_TEST_KEY",
+    ])
 
     context = ApiContext(
         workspace_root=str(workspace),
@@ -113,7 +108,8 @@ def test_update_settings_can_clear_context_window_override(tmp_path: Path) -> No
         state_path=str(tmp_path / "state.json"),
     )
 
-    response = asyncio.run(update_settings(UpdateSettingsRequest(context_window=None), context=context))
+    with patch("lora.config.loader.Path.home", return_value=home):
+        response = asyncio.run(update_settings(UpdateSettingsRequest(context_window=None), context=context))
 
     assert response.context_window == 32000
     assert context.context_window is None
@@ -128,23 +124,19 @@ def test_update_settings_switches_workspace_and_rebuilds_session_manager(tmp_pat
     workspace_b = tmp_path / "workspace-b"
     workspace_a.mkdir()
     workspace_b.mkdir()
-    (workspace_b / "lora.yaml").write_text(
-        "\n".join(
-            [
-                "agents:",
-                "  - alias: other",
-                "    model_request:",
-                "      routes:",
-                "        - id: primary",
-                "          provider: openai",
-                "          api_key_env: OTHER_GUI_KEY",
-                "          model_name: workspace-b-model",
-                "          base_url: https://example.test",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    write_user_config(home, [
+        "agent:",
+        "  default_alias: other",
+        "agents:",
+        "  - alias: other",
+        "    model_request:",
+        "      routes:",
+        "        - id: primary",
+        "          provider: openai",
+        "          api_key_env: OTHER_GUI_KEY",
+        "          model_name: user-model",
+        "          base_url: https://example.test",
+    ])
 
     with patch("lora.config.loader.Path.home", return_value=home):
         context = ApiContext(workspace_root=str(workspace_a))
@@ -158,7 +150,7 @@ def test_update_settings_switches_workspace_and_rebuilds_session_manager(tmp_pat
     assert response.workspace_root == str(workspace_b.resolve())
     assert response.lora_root == str((workspace_b / ".lora").resolve())
     assert response.agent == "other"
-    assert response.routes[0]["model_name"] == "workspace-b-model"
+    assert response.routes[0]["model_name"] == "user-model"
     assert response.routes[0]["api_key_env"] == "OTHER_GUI_KEY"
     assert Path(context.manager.sessions_root) == (workspace_b / ".lora" / "sessions").resolve()
 

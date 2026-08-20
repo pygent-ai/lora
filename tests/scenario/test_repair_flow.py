@@ -13,7 +13,12 @@ class RepairFlowScenarioTests(unittest.TestCase):
     def test_repair_plan_apply_and_gate_cli_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(Path.cwd() / "src"),
+                "HOME": str(root / "home"),
+                "USERPROFILE": str(root / "home"),
+            }
             _write_no_api_config(root)
             (root / ".lora").mkdir()
             (root / ".lora" / "repair.json").write_text(
@@ -131,7 +136,9 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
 
 
 def _write_no_api_config(root: Path) -> None:
-    (root / "lora.yaml").write_text(
+    config_path = root / "home" / ".lora" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
         "\n".join(
             [
                 "agent:",

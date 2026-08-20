@@ -13,13 +13,11 @@ from lora_api.services.chat_runner import ChatRunRegistry
 def create_app(
     *,
     workspace_root: str | None = None,
-    config_path: str | None = None,
     agent_alias: str | None = None,
     max_steps: int | None = None,
 ) -> FastAPI:
     context = ApiContext(
         workspace_root=workspace_root,
-        config_path=config_path,
         agent_alias=agent_alias,
         max_steps=max_steps,
     )

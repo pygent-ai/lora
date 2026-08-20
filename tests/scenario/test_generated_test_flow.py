@@ -30,7 +30,12 @@ class GeneratedTestFlowScenarioTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            env = {**os.environ, "PYTHONPATH": str(Path.cwd() / "src")}
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(Path.cwd() / "src"),
+                "HOME": str(root / "home"),
+                "USERPROFILE": str(root / "home"),
+            }
 
             run = _lora(root, env, "case", "run", str(case_file))
             self.assertEqual(run["status"], "failed")
@@ -77,7 +82,9 @@ def _lora(root: Path, env: dict[str, str], *args: str) -> dict[str, object]:
 
 
 def _write_no_api_config(root: Path) -> None:
-    (root / "lora.yaml").write_text(
+    config_path = root / "home" / ".lora" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
         "\n".join(
             [
                 "agent:",

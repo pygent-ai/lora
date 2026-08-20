@@ -20,7 +20,6 @@ test("api client updates settings with backend snake_case fields", async () => {
 
   const response = await client.updateSettings({
     workspaceRoot: "E:/Projects/lora",
-    configPath: "",
     agent: "dev",
     maxSteps: 7,
     contextWindow: "64000",
@@ -33,7 +32,6 @@ test("api client updates settings with backend snake_case fields", async () => {
   assert.equal(calls[0].init.method, "PATCH");
   assert.deepEqual(JSON.parse(calls[0].init.body), {
     workspace_root: "E:/Projects/lora",
-    config_path: "",
     agent_alias: "dev",
     max_steps: 7,
     context_window: 64000,
@@ -58,7 +56,6 @@ test("api client sends blank runtime fields so settings can clear overrides", as
 
   await client.updateSettings({
     workspaceRoot: "E:/Projects/lora",
-    configPath: "",
     agent: "default",
     maxSteps: -1,
     contextWindow: "",
@@ -67,7 +64,6 @@ test("api client sends blank runtime fields so settings can clear overrides", as
 
   assert.deepEqual(JSON.parse(calls[0].init.body), {
     workspace_root: "E:/Projects/lora",
-    config_path: "",
     agent_alias: "default",
     max_steps: -1,
     context_window: null,

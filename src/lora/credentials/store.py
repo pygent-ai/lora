@@ -27,19 +27,14 @@ def ensure_user_lora_root(user_lora_root: str | Path) -> Path:
     return root
 
 
-def load_credentials(*, user_lora_root: str | Path, workspace_root: str | Path) -> list[str]:
+def load_credentials(*, user_lora_root: str | Path) -> list[str]:
     """Load credential files into ``os.environ`` without overriding existing variables."""
     loaded: list[str] = []
     user_root = ensure_user_lora_root(user_lora_root)
-    workspace = Path(workspace_root).expanduser().resolve()
 
     user_path = user_root / USER_CREDENTIALS_FILENAME
     if _load_env_file_quiet(user_path):
         loaded.append(f"file:{user_path}")
-
-    local_path = workspace / ".env.local"
-    if _load_env_file_quiet(local_path):
-        loaded.append(f"file:{local_path}")
 
     return loaded
 

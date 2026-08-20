@@ -30,7 +30,7 @@ class SecretsTests(unittest.TestCase):
             (user_root / "credentials.env").write_text("DEEPSEEK_API_KEY=file-key\n", encoding="utf-8")
             os.environ["DEEPSEEK_API_KEY"] = "process-key"
             try:
-                load_credentials(user_lora_root=user_root, workspace_root=root)
+                load_credentials(user_lora_root=user_root)
                 value, source = lookup_credential("DEEPSEEK_API_KEY")
             finally:
                 os.environ.pop("DEEPSEEK_API_KEY", None)
@@ -38,21 +38,22 @@ class SecretsTests(unittest.TestCase):
         self.assertEqual(value, "process-key")
         self.assertEqual(source, "env:DEEPSEEK_API_KEY")
 
-    def test_load_credentials_merges_user_and_project_files(self) -> None:
+    def test_load_credentials_uses_only_the_user_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             user_root = root / "user"
             user_root.mkdir()
             (user_root / "credentials.env").write_text("DEEPSEEK_API_KEY=user-key\n", encoding="utf-8")
             (root / ".env.local").write_text("OPENAI_API_KEY=project-key\n", encoding="utf-8")
-            sources = load_credentials(user_lora_root=user_root, workspace_root=root)
+            os.environ.pop("OPENAI_API_KEY", None)
+            sources = load_credentials(user_lora_root=user_root)
             self.assertIn("file:" + str(user_root / "credentials.env"), sources)
-            self.assertIn("file:" + str(root / ".env.local"), sources)
+            self.assertNotIn("file:" + str(root / ".env.local"), sources)
 
             value, source = lookup_credential("DEEPSEEK_API_KEY")
             self.assertEqual(value, "user-key")
             self.assertEqual(source, "env:DEEPSEEK_API_KEY")
-            self.assertEqual(os.environ.get("OPENAI_API_KEY"), "project-key")
+            self.assertIsNone(os.environ.get("OPENAI_API_KEY"))
 
     def test_set_and_delete_user_credential_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -82,7 +83,7 @@ class SecretsTests(unittest.TestCase):
             user_root = Path(tmp) / ".lora"
             root.mkdir()
             user_root.mkdir()
-            (root / "lora.yaml").write_text(
+            (user_root / "config.yaml").write_text(
                 "\n".join(
                     [
                         "agents:",
@@ -110,7 +111,9 @@ class SecretsTests(unittest.TestCase):
     def test_default_api_key_env_is_deepseek(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("lora.config.Path.home", return_value=Path(tmp)):
             root = Path(tmp)
-            (root / "lora.yaml").write_text("agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: m\n          base_url: https://example.test/v1\n          api_key_env: DEEPSEEK_API_KEY\n", encoding="utf-8")
+            user_root = root / ".lora"
+            user_root.mkdir()
+            (user_root / "config.yaml").write_text("agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: m\n          base_url: https://example.test/v1\n          api_key_env: DEEPSEEK_API_KEY\n", encoding="utf-8")
             os.environ["DEEPSEEK_API_KEY"] = "fallback"
             try:
                 config = load_run_config(workspace_root=root, agent_alias="dev")
@@ -126,7 +129,7 @@ class SecretsTests(unittest.TestCase):
             user_root = Path(tmp) / ".lora"
             root.mkdir()
             user_root.mkdir()
-            (root / "lora.yaml").write_text(
+            (user_root / "config.yaml").write_text(
                 "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: m\n          base_url: https://example.test/v1\n          api_key_env: DEV_API_KEY\n",
                 encoding="utf-8",
             )

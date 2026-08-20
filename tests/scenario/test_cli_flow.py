@@ -25,6 +25,12 @@ def _isolated_cli_env(root: Path) -> dict[str, str]:
     return env
 
 
+def _write_user_config(root: Path, content: str) -> None:
+    config_path = root / "home" / ".lora" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(content, encoding="utf-8")
+
+
 class CliScenarioTests(unittest.TestCase):
     def test_session_create_show_and_case_run_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -494,7 +500,8 @@ class CliScenarioTests(unittest.TestCase):
     def test_chat_agent_alias_records_safe_profile_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "lora.yaml").write_text(
+            _write_user_config(
+                root,
                 "\n".join(
                     [
                         "agents:",
@@ -509,7 +516,6 @@ class CliScenarioTests(unittest.TestCase):
                         "",
                     ]
                 ),
-                encoding="utf-8",
             )
             env = _isolated_cli_env(root)
             env.pop("DEEPSEEK_API_KEY", None)
@@ -547,9 +553,9 @@ class CliScenarioTests(unittest.TestCase):
     def test_missing_agent_alias_returns_exit_code_2(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "lora.yaml").write_text(
+            _write_user_config(
+                root,
                 "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: dev-model\n          base_url: https://example.test/v1\n          api_key_env: DEV_KEY\n",
-                encoding="utf-8",
             )
             env = _isolated_cli_env(root)
             run = subprocess.run(

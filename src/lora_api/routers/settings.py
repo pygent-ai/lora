@@ -25,7 +25,6 @@ async def update_settings(
     overrides = _settings_overrides(request)
     target_config = load_run_config(
         workspace_root=overrides.get("workspace_root", context.workspace_root),
-        config_file=overrides.get("config_path", context.config_path),
         agent_alias=overrides.get("agent_alias", context.agent_alias),
         max_steps=overrides.get("max_steps", context.max_steps),
         context_window=overrides.get("context_window", context.context_window),
@@ -45,7 +44,6 @@ def _settings_overrides(request: UpdateSettingsRequest) -> dict[str, object | No
     overrides: dict[str, object | None] = {}
     for request_field, context_field in (
         ("workspace_root", "workspace_root"),
-        ("config_path", "config_path"),
         ("agent_alias", "agent_alias"),
     ):
         if request_field not in request.model_fields_set:

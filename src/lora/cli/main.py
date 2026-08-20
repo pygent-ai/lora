@@ -50,7 +50,6 @@ def _configure_stdio() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lora", description="Agent self-optimization harness CLI")
     parser.add_argument("--workspace-root", default=None, help="Workspace root. Defaults to cwd or LORA_WORKSPACE_ROOT.")
-    parser.add_argument("--config", default=None, help="Path to config.yaml.")
     parser.add_argument("--agent", dest="agent_alias", default=None, help="Agent profile alias.")
     parser.add_argument("--max-steps", type=int, default=None, help="Maximum agent steps; -1 means unlimited.")
 
@@ -148,7 +147,6 @@ def _session_show(args: argparse.Namespace) -> dict[str, Any]:
 def _case_run(args: argparse.Namespace) -> dict[str, Any]:
     config = load_run_config(
         workspace_root=args.workspace_root,
-        config_file=args.config,
         session_id=getattr(args, "session_id", None),
         case_file=args.case_file,
         agent_alias=args.agent_alias,
@@ -254,7 +252,6 @@ def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
 async def _chat_async(args: argparse.Namespace) -> dict[str, Any] | None:
     config = load_run_config(
         workspace_root=args.workspace_root,
-        config_file=args.config,
         session_id=getattr(args, "session_id", None),
         agent_alias=args.agent_alias,
         max_steps=args.max_steps,
@@ -361,7 +358,6 @@ def _manager(args: argparse.Namespace) -> SessionManager:
     return SessionManager(
         load_run_config(
             workspace_root=args.workspace_root,
-            config_file=args.config,
             agent_alias=args.agent_alias,
             max_steps=args.max_steps,
         )

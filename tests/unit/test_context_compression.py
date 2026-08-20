@@ -7,6 +7,7 @@ import unittest
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from lora.config import load_run_config
 from lora.core.io import append_jsonl
@@ -113,7 +114,10 @@ class ContextCompressionPureTests(unittest.TestCase):
     def test_context_compression_config_resolves_from_model_and_runtime_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "lora.yaml").write_text(
+            home = root / "home"
+            user_root = home / ".lora"
+            user_root.mkdir(parents=True)
+            (user_root / "config.yaml").write_text(
                 "\n".join(
                     [
                         "agent:",
@@ -139,7 +143,8 @@ class ContextCompressionPureTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = load_run_config(workspace_root=root)
+            with patch("lora.config.loader.Path.home", return_value=home):
+                config = load_run_config(workspace_root=root)
 
             self.assertEqual(config.context_window, 32000)
             self.assertTrue(config.context_compression_enabled)
