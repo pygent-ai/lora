@@ -3,7 +3,19 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from pygent import ModelErrorKind
+from pygent import (
+    Context,
+    GenerationConfig,
+    ModelErrorKind,
+    ModelRoute,
+    UserMessage,
+    freeze_json_object,
+)
+from pygent.llm import (
+    ModelProviderError,
+    ModelProviderRequest,
+    OpenAICompatibleAdapter,
+)
 
 from lora.runtime import agent
 from lora.runtime.agent import LoraAgent, PromptRenderContext, _render_available_tools_prompt
@@ -64,6 +76,34 @@ def test_model_retry_policy_retries_incomplete_provider_responses() -> None:
     assert ModelErrorKind.INVALID_RESPONSE in retry_policy.retry_on
     assert ModelErrorKind.AUTHENTICATION not in retry_policy.retry_on
     assert ModelErrorKind.INVALID_REQUEST not in retry_policy.retry_on
+
+
+def test_pygent_adapter_classifies_invalid_tool_calls_for_model_retry() -> None:
+    adapter = OpenAICompatibleAdapter()
+    request = ModelProviderRequest(
+        route=ModelRoute("primary", provider="openai", model="test-model"),
+        message=UserMessage(content="inspect the workspace"),
+        context=Context(),
+        generation=GenerationConfig(),
+    )
+    payload = freeze_json_object(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{"type": "function", "function": {}}],
+                    }
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(ModelProviderError) as caught:
+        adapter.parse_response(request, payload)
+
+    assert caught.value.kind is ModelErrorKind.INVALID_RESPONSE
+    assert caught.value.kind in MODEL_RETRYABLE_ERROR_KINDS
 
 
 @pytest.mark.parametrize(

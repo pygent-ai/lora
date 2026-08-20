@@ -175,35 +175,6 @@ def _message_boundary(
     return f"{phase}-{digest}"
 
 
-class InvalidProviderResponseError(RuntimeError):
-    pass
-
-
-def _validate_ai_message(message: AIMessage) -> None:
-    if not isinstance(message.content, (str, bytes, type(None))):
-        # Accept object-like wrappers used by pygent content models.
-        if not hasattr(message.content, "data"):
-            raise InvalidProviderResponseError(
-                "invalid_provider_response: assistant content has invalid type"
-            )
-
-    tool_calls = message.tool_calls
-    if tool_calls is None:
-        return
-    if not isinstance(tool_calls, (tuple, list)):
-        raise InvalidProviderResponseError(
-            "invalid_provider_response: assistant tool_calls has invalid type"
-        )
-    for tool_call in tool_calls:
-        if not isinstance(tool_call, ToolCall):
-            raise InvalidProviderResponseError(
-                "invalid_provider_response: assistant tool call has invalid shape"
-            )
-
-
-def _is_empty_followup_answer(answer: AIMessage) -> bool:
-    return not _message_content(answer) and not bool(answer.tool_calls)
-
 _READ_PARAMETER_DESCRIPTIONS = {
     "limit": "Maximum number of text lines to return from the starting offset.",
     "offset": "One-based text line number at which to start reading.",
@@ -481,13 +452,8 @@ class PreparedModelModule(Module[PygentMessage, AIMessage]):
             current, history = await self.prompt(current, history)
             current, history = await self.compression(current, history)
             answer, model_context = await self.model(current, history)
-            _validate_ai_message(answer)
             if not isinstance(message, ToolMessage) or answer.content or answer.tool_calls:
                 return answer, model_context
-            if not _is_empty_followup_answer(answer):
-                raise InvalidProviderResponseError(
-                    "invalid_provider_response: invalid assistant response after tool result"
-                )
             if retry == MAX_EMPTY_TOOL_FOLLOWUP_RETRIES:
                 raise RuntimeError(
                     "empty assistant response after tool result "
