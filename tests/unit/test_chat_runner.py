@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,7 +10,8 @@ from pygent import AIMessage, Context
 
 from lora.schema import CaseRunRef
 from lora_api.models.requests import ChatTurnRequest
-from lora_api.services.chat_runner import ChatRunRegistry
+from lora_api.services import chat_runner
+from lora_api.services.chat_runner import ActiveChatRun, ChatRunRegistry, _sse
 
 
 class _Runtime:
@@ -28,6 +31,73 @@ class _Runtime:
     ) -> bool:
         self.approvals.append((approval_id, approved, comment))
         return True
+
+
+@pytest.mark.asyncio
+async def test_keepalive_preserves_pending_runtime_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_event = asyncio.Event()
+    raw_event = {
+        "schema_version": "1",
+        "event_id": "event-1",
+        "execution_id": "execution-1",
+        "attempt_id": "attempt-1",
+        "trace_id": "trace-1",
+        "span_id": "span-1",
+        "parent_span_id": None,
+        "sequence": 8,
+        "timestamp_unix_ns": 123,
+        "module_path": "agent.model",
+        "kind": "model.text.delta",
+        "data": {"text": "finished waiting"},
+    }
+
+    class _Handle:
+        execution_id = "execution-1"
+
+        @contextlib.asynccontextmanager
+        async def subscribe(self, *, after: int | None):
+            assert after == 7
+
+            async def delayed_events():
+                await release_event.wait()
+                yield raw_event
+
+            yield delayed_events()
+
+    run = ActiveChatRun(
+        runtime_service=SimpleNamespace(),
+        manager=SimpleNamespace(),
+        request=ChatTurnRequest(message="hello"),
+        run_ref=CaseRunRef(
+            session_id="session-1",
+            case_id="chat",
+            case_run_id="run-1",
+            run_dir=str((Path.cwd() / ".test-runs" / "run-1").resolve()),
+        ),
+        registry=ChatRunRegistry(),
+        done=True,
+        execution_handle=_Handle(),
+    )
+    monkeypatch.setattr(chat_runner, "CHAT_KEEPALIVE_SECONDS", 0.01)
+
+    events = run.events(after=7)
+    keepalive = await asyncio.wait_for(anext(events), 0.2)
+
+    assert keepalive.kind == "lora.transport.keepalive"
+    assert keepalive.execution_id == "execution-1"
+    assert keepalive.sequence == 7
+    assert keepalive.module_path == "lora.transport"
+    assert _sse(keepalive) == ": keep-alive\n\n"
+
+    release_event.set()
+    model_event = await asyncio.wait_for(anext(events), 0.2)
+
+    assert model_event.event_id == "event-1"
+    assert model_event.data == {"text": "finished waiting"}
+    await events.aclose()
+    assert run.subscribers == 0
 
 
 @pytest.mark.asyncio

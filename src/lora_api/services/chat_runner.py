@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -111,25 +112,34 @@ class ActiveChatRun:
             self._cancel_disconnect_timer_locked()
         try:
             async with handle.subscribe(after=after) as execution_events:
-                while True:
-                    try:
-                        raw = await asyncio.wait_for(anext(execution_events), CHAT_KEEPALIVE_SECONDS)
-                    except TimeoutError:
-                        yield ExecutionEvent(
-                            execution_id=handle.execution_id,
-                            sequence=after or 0,
-                            kind="lora.transport.keepalive",
-                        )
-                        continue
-                    except StopAsyncIteration:
-                        break
-                    event = _execution_event(raw)
-                    if log_model_text_deltas:
-                        _append_model_text_delta(
-                            event,
-                            stream_dir=Path(self.run_ref.run_dir),
-                        )
-                    yield event
+                pending_event: asyncio.Task[Any] | None = None
+                try:
+                    while True:
+                        if pending_event is None:
+                            pending_event = asyncio.create_task(anext(execution_events))
+                        try:
+                            raw = await asyncio.wait_for(
+                                asyncio.shield(pending_event),
+                                CHAT_KEEPALIVE_SECONDS,
+                            )
+                        except TimeoutError:
+                            yield _keepalive_event(handle.execution_id, after or 0)
+                            continue
+                        except StopAsyncIteration:
+                            pending_event = None
+                            break
+                        pending_event = None
+                        event = _execution_event(raw)
+                        if log_model_text_deltas:
+                            _append_model_text_delta(
+                                event,
+                                stream_dir=Path(self.run_ref.run_dir),
+                            )
+                        yield event
+                finally:
+                    if pending_event is not None and not pending_event.done():
+                        pending_event.cancel()
+                        await asyncio.gather(pending_event, return_exceptions=True)
         finally:
             async with self.lock:
                 self.subscribers -= 1
@@ -395,6 +405,22 @@ def _execution_event(raw: Any) -> ExecutionEvent:
             "data": thaw_json(raw.data),
         }
     return ExecutionEvent.model_validate(value)
+
+
+def _keepalive_event(execution_id: str, sequence: int) -> ExecutionEvent:
+    timestamp = time.time_ns()
+    return ExecutionEvent(
+        schema_version="1",
+        event_id=f"lora-transport-keepalive-{timestamp}",
+        execution_id=execution_id,
+        attempt_id="transport",
+        trace_id="transport",
+        span_id="transport",
+        sequence=sequence,
+        timestamp_unix_ns=timestamp,
+        module_path="lora.transport",
+        kind="lora.transport.keepalive",
+    )
 
 
 def _append_model_text_delta(event: ExecutionEvent, *, stream_dir: Path) -> None:
