@@ -68,6 +68,7 @@ class ActiveChatRun:
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     subscribers: int = 0
     startup_error: BaseException | None = None
+    recovery_execution_id: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
@@ -139,14 +140,24 @@ class ActiveChatRun:
         status = "error"
         try:
             async with self.registry.session_execution(self.run_ref.session_id):
-                self.execution_handle = await self.runtime_service.start_turn(
-                    manager=self.manager,
-                    message=self.request.message or "",
-                    run_ref=self.run_ref,
-                    turn_id=self.request.turn_id or f"turn-{self.run_ref.case_run_id[-8:]}",
-                    interactive_approvals=True,
-                    deadline=asyncio.get_running_loop().time() + 30 * 60,
-                )
+                deadline = asyncio.get_running_loop().time() + 30 * 60
+                if self.recovery_execution_id is None:
+                    self.execution_handle = await self.runtime_service.start_turn(
+                        manager=self.manager,
+                        message=self.request.message or "",
+                        run_ref=self.run_ref,
+                        turn_id=(
+                            self.request.turn_id
+                            or f"turn-{self.run_ref.case_run_id[-8:]}"
+                        ),
+                        interactive_approvals=True,
+                        deadline=deadline,
+                    )
+                else:
+                    self.execution_handle = await self.runtime_service.recover_turn(
+                        self.recovery_execution_id,
+                        deadline=deadline,
+                    )
                 await self.registry.attach(self)
                 self.ready.set()
                 output, _ = await self.execution_handle.result()
@@ -244,7 +255,33 @@ class ChatRunRegistry:
                 )
             except KeyError:
                 return None
-            return AttachedExecutionRun(handle)
+            snapshot = await handle.snapshot()
+            if snapshot.status.terminal:
+                return AttachedExecutionRun(handle)
+            run_ref = await context.runtime_service.recovery_case_run(
+                request.execution_id
+            )
+            recovered = ActiveChatRun(
+                runtime_service=context.runtime_service,
+                manager=context.manager,
+                request=request,
+                run_ref=run_ref,
+                registry=self,
+                recovery_execution_id=request.execution_id,
+            )
+            existing_recovery = None
+            async with self._lock:
+                active = self._runs.get(request.execution_id)
+                if active is not None:
+                    existing_recovery = active
+                else:
+                    self._runs[request.execution_id] = recovered
+                    self._case_runs[run_ref.case_run_id] = recovered
+            if existing_recovery is not None:
+                await existing_recovery.ready.wait()
+                return existing_recovery
+            await recovered.start()
+            return recovered
         if not request.message:
             raise ValueError("message is required when execution_id is not provided")
         service = SessionService(context.manager)

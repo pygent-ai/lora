@@ -18,7 +18,8 @@ from lora.schema import AgentSession, CaseDefinition
 from lora.sessions import SessionManager
 
 
-def test_interrupted_turn_recovers_completed_conversation_boundaries() -> None:
+@pytest.mark.asyncio
+async def test_interrupted_turn_recovers_completed_conversation_boundaries() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = load_run_config(workspace_root=Path(tmp))
         manager = SessionManager(config)
@@ -56,10 +57,10 @@ def test_interrupted_turn_recovers_completed_conversation_boundaries() -> None:
             ),
         )
 
-        checkpoint_conversation_message(config, context, user, boundary="user-input")
-        checkpoint_conversation_message(config, context, assistant, boundary="model-step-1")
-        checkpoint_conversation_message(config, context, tool, boundary="tool-step-1")
-        checkpoint_conversation_message(config, context, tool, boundary="tool-step-1")
+        await checkpoint_conversation_message(config, context, user, boundary="user-input")
+        await checkpoint_conversation_message(config, context, assistant, boundary="model-step-1")
+        await checkpoint_conversation_message(config, context, tool, boundary="tool-step-1")
+        await checkpoint_conversation_message(config, context, tool, boundary="tool-step-1")
 
         restored = manager.load(session_ref.session_id)
         assert [message["role"] for message in restored.history] == [
@@ -124,7 +125,8 @@ def test_session_load_replays_raw_checkpoint_written_before_session_snapshot() -
         assert manager.load(session_ref.session_id).history == [message]
 
 
-def test_recovery_keeps_raw_secret_while_audit_history_is_redacted() -> None:
+@pytest.mark.asyncio
+async def test_recovery_keeps_raw_secret_while_audit_history_is_redacted() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = load_run_config(workspace_root=Path(tmp))
         manager = SessionManager(config)
@@ -138,7 +140,7 @@ def test_recovery_keeps_raw_secret_while_audit_history_is_redacted() -> None:
             turn_id="turn-secret",
         )
 
-        checkpoint_conversation_message(
+        await checkpoint_conversation_message(
             config,
             context,
             UserMessage(content="password=hunter2"),
@@ -153,7 +155,8 @@ def test_recovery_keeps_raw_secret_while_audit_history_is_redacted() -> None:
         assert "[REDACTED]" in audit
 
 
-def test_transient_checkpoints_do_not_enter_session_history() -> None:
+@pytest.mark.asyncio
+async def test_transient_checkpoints_do_not_enter_session_history() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = load_run_config(workspace_root=Path(tmp))
         manager = SessionManager(config)
@@ -168,7 +171,7 @@ def test_transient_checkpoints_do_not_enter_session_history() -> None:
             metadata={"persist_conversation_history": False},
         )
 
-        checkpoint_conversation_message(
+        await checkpoint_conversation_message(
             config,
             context,
             UserMessage(content="temporary"),
@@ -251,59 +254,3 @@ async def test_execute_case_handles_multi_message_context_policy(
             assert restored.history[2]["data"]["raw_content"] == "second"
         else:
             assert restored.history == [message_to_dict(UserMessage(content="existing"))]
-
-
-def test_next_turn_closes_an_interrupted_tool_call_with_unknown_result() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        config = load_run_config(workspace_root=Path(tmp))
-        manager = SessionManager(config)
-        session_ref = manager.create(case_id="chat", mode="chat")
-        interrupted_run = manager.start_case_run(
-            session_ref.session_id, "chat", run_config=config
-        )
-        interrupted_context = LoraContext(
-            session_id=interrupted_run.session_id,
-            case_id=interrupted_run.case_id,
-            case_run_id=interrupted_run.case_run_id,
-            run_dir=interrupted_run.run_dir,
-            turn_id="turn-interrupted",
-        )
-        checkpoint_conversation_message(
-            config,
-            interrupted_context,
-            AIMessage(
-                content="Checking now.",
-                tool_calls=(
-                    ToolCall(
-                        call_id="write-1",
-                        name="write",
-                        arguments={"file_path": "out.txt", "content": "value"},
-                        tool_id="lora.tool.write",
-                        tool_version="1",
-                    ),
-                ),
-            ),
-            boundary="model-step-1",
-        )
-
-        next_run = manager.start_case_run(session_ref.session_id, "chat", run_config=config)
-        service = LoraRuntimeService(config)
-        agent = service.new_agent(interactive_approvals=False)
-        _, next_context = service._prepare_turn(
-            agent=agent,
-            manager=manager,
-            run_ref=next_run,
-            message="continue safely",
-            config=config,
-            turn_id="turn-next",
-        )
-
-        assert [message.role for message in next_context.full_history] == [
-            "assistant",
-            "tool",
-        ]
-        recovery = next_context.full_history[-1]
-        assert isinstance(recovery, ToolMessage)
-        assert recovery.results[0].status == "unknown"
-        assert recovery.results[0].side_effect_committed is None
-        assert recovery.results[0].error_kind == "InterruptedExecution"

@@ -16,8 +16,6 @@ from pygent import (
     FallbackPolicy,
     ModelGroupConfig,
     ModelRoute,
-    ToolMessage,
-    ToolResult,
     ToolKit,
     UserMessage,
     freeze_json_object,
@@ -30,6 +28,7 @@ from pygent.runtime import (
     DurabilityMode,
     DurabilityPolicy,
     DurableToolTaskManager,
+    ExecutionAdmissionError,
     ExecutionCapacityPolicy,
     LocalRuntime,
     SQLiteCapacityCoordinator,
@@ -75,6 +74,7 @@ from .file_effects import (
 from .eternal_conversation import EternalConversationHarness, load_projection
 
 _DELEGATION_DEPTH: ContextVar[int] = ContextVar("lora_delegation_depth", default=0)
+RECOVERY_CLAIM_WAIT_SECONDS = 31.0
 
 
 def _wrap_user_message(message: str, identity: str) -> str:
@@ -86,40 +86,6 @@ def _wrap_user_message(message: str, identity: str) -> str:
             "</user-context>",
         )
     )
-
-
-def _interrupted_tool_message(history: list[dict[str, Any]]) -> ToolMessage | None:
-    if not history or history[-1].get("role") != "assistant":
-        return None
-    tool_calls = history[-1].get("tool_calls")
-    if not isinstance(tool_calls, list) or not tool_calls:
-        return None
-    results = []
-    for call in tool_calls:
-        if not isinstance(call, dict):
-            continue
-        call_id = call.get("call_id")
-        name = call.get("name")
-        if not isinstance(call_id, str) or not call_id or not isinstance(name, str) or not name:
-            continue
-        results.append(
-            ToolResult(
-                call_id=call_id,
-                name=name,
-                status="unknown",
-                error="Previous execution ended before a durable tool result was recorded.",
-                error_kind="InterruptedExecution",
-                retryable=False,
-                side_effect_committed=None,
-                tool_id=call.get("tool_id") if isinstance(call.get("tool_id"), str) else None,
-                tool_version=(
-                    call.get("tool_version")
-                    if isinstance(call.get("tool_version"), str)
-                    else None
-                ),
-            )
-        )
-    return ToolMessage(results=tuple(results)) if results else None
 
 
 def _managed_child_budget(config: RunConfig) -> int:
@@ -553,6 +519,52 @@ class LoraRuntimeService:
         self._record_execution_id(run_ref, handle.execution_id)
         return handle
 
+    async def recover_turn(
+        self,
+        execution_id: str,
+        *,
+        deadline: float,
+    ) -> Any:
+        """Claim and resume one non-terminal durable Pygent execution."""
+
+        await self.initialize()
+        agent = self.new_agent(interactive_approvals=True)
+        bound = await self.bind(agent, agent)
+        await self.runtime.recover_tool_jobs(bound)
+        lease_wait_deadline = min(
+            deadline,
+            time.monotonic() + RECOVERY_CLAIM_WAIT_SECONDS,
+        )
+        while True:
+            try:
+                return await self.runtime.recover(
+                    bound,
+                    execution_id,
+                    deadline=deadline,
+                )
+            except ExecutionAdmissionError as exc:
+                if (
+                    "owned by another recovery attempt" not in str(exc)
+                    or time.monotonic() >= lease_wait_deadline
+                ):
+                    raise
+                await asyncio.sleep(0.1)
+
+    async def recovery_case_run(self, execution_id: str) -> CaseRunRef:
+        """Recover the application run identity stored with a Pygent invocation."""
+
+        await self.initialize()
+        stored = await self.history.get_execution(execution_id)
+        if stored is None:
+            raise KeyError(f"unknown durable execution {execution_id!r}")
+        _, context = invocation_from_dict(
+            stored.input,
+            registry=self.runtime.context_codec_registry,
+        )
+        if not isinstance(context, LoraContext):
+            raise TypeError("durable Lora execution has an incompatible context")
+        return context.case_run_ref
+
     async def execute_case(
         self,
         *,
@@ -590,7 +602,7 @@ class LoraRuntimeService:
         )
         for index, prior in enumerate(messages[:-1]):
             prior_message = UserMessage(content=prior)
-            checkpoint_conversation_message(
+            await checkpoint_conversation_message(
                 self.config,
                 checkpoint_context,
                 prior_message,
@@ -648,24 +660,6 @@ class LoraRuntimeService:
         carry_context: bool = True,
     ) -> tuple[UserMessage, LoraContext]:
         session = session or manager.load(run_ref.session_id)
-        incomplete_tool_message = _interrupted_tool_message(session.history)
-        if incomplete_tool_message is not None:
-            call_ids = ",".join(result.call_id for result in incomplete_tool_message.results)
-            checkpoint_conversation_message(
-                config,
-                LoraContext(
-                    session_id=session.session_id,
-                    case_id=run_ref.case_id,
-                    case_run_id=run_ref.case_run_id,
-                    run_dir=run_ref.run_dir,
-                    turn_id=turn_id,
-                    system_prompt=session.system_prompt,
-                    metadata={"persist_conversation_history": carry_context},
-                ),
-                incomplete_tool_message,
-                boundary=f"interrupted-tools-{hashlib.sha256(call_ids.encode()).hexdigest()[:24]}",
-            )
-            session = manager.load(run_ref.session_id)
         memory_projection = load_projection(session.session_dir) if carry_context else {}
         covered_through = int(memory_projection.get("covered_through") or 0)
         portable_history = (

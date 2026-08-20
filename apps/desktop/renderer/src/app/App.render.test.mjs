@@ -32,6 +32,46 @@ test("desktop app renders its initial workbench", async () => {
   assert.match(html, /Choose Project/);
 });
 
+test("trace event updates scroll the inspector to the latest item", () => {
+  const traceList = { scrollTop: 24, scrollHeight: 960 };
+
+  appModule.scrollTraceToLatest(traceList);
+
+  assert.equal(traceList.scrollTop, 960);
+  assert.doesNotThrow(() => appModule.scrollTraceToLatest(null));
+});
+
+test("trace tools retain the call name when a result omits it", () => {
+  const events = [
+    { id: "call-1", type: "tool.call", payload: { tool_name: "read", args: { path: "src/app.js" } } },
+    { id: "result-1", type: "tool.result", payload: { tool_call_id: "call-1", status: "success", result: "ok" } },
+  ];
+
+  const [tool] = appModule.traceToolEvents(events);
+
+  assert.equal(tool.payload.tool_name, "read");
+  assert.equal(appModule.eventTitle(tool), "Read");
+  assert.match(appModule.eventSummary(tool), /src\/app\.js/);
+});
+
+test("trace files prioritize the action and path", () => {
+  const event = { type: "file.read", payload: { path: "E:\\Projects\\lora\\src\\app.js", before_hash: null } };
+
+  assert.equal(appModule.eventTitle(event), "Read file");
+  assert.equal(appModule.eventSummary(event), "E:\\Projects\\lora\\src\\app.js");
+});
+
+test("trace config formats model routes without object coercion", () => {
+  assert.equal(
+    appModule.formatConfigValue("routes", [
+      { id: "primary", provider: "openai", model_name: "deepseek-v4-flash" },
+      { id: "backup", provider: "openai", model_name: "gpt-5" },
+    ]),
+    "primary  openai / deepseek-v4-flash\nbackup  openai / gpt-5",
+  );
+  assert.equal(appModule.formatConfigValue("max_steps", 0), "0");
+});
+
 test("new chat stays enabled while another session is running", () => {
   const html = renderToStaticMarkup(
     React.createElement(appModule.SessionSidebar, {
@@ -107,6 +147,18 @@ test("initial workbench load does not hide configuration errors", async () => {
     /Agent alias is not configured/,
   );
   assert.equal(calls, 1);
+});
+
+test("session history survives switching away while another session is running", () => {
+  const persisted = [{ id: "persisted", role: "assistant", content: "Saved answer" }];
+  const live = [
+    { id: "user-live", role: "user", content: "Keep working" },
+    { id: "assistant-live", role: "assistant", content: "Still working", status: "running" },
+  ];
+
+  assert.equal(appModule.selectSessionMessages(live, persisted), live);
+  assert.equal(appModule.selectSessionMessages([], persisted), persisted);
+  assert.equal(appModule.selectSessionMessages(undefined, persisted), persisted);
 });
 
 test("native Pygent events project to the same completed turn as persisted history", () => {

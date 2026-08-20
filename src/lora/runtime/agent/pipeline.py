@@ -22,7 +22,15 @@ from pygent import (
     thaw_json,
 )
 from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
-from pygent.runtime.codec import message_to_dict
+from pygent.core import (
+    EffectIdempotency,
+    EffectRetryPolicy,
+    EffectSideEffect,
+    EffectSpec,
+    active_infrastructure,
+    freeze_json,
+)
+from pygent.runtime.codec import message_from_dict, message_to_dict
 from pygent.tool import ToolSideEffect
 
 from lora.core.io import plain_data
@@ -30,6 +38,7 @@ from lora.runtime.context import LoraContext
 from lora.runtime.context_compression import ContextCompressionModelResult, ContextCompressionRunner
 from lora.runtime.eternal_conversation import render_memory_context
 from lora.runtime.file_effects import DeferredFileEffectBatch, FILE_EFFECT_TOOL_SPEC
+from lora.runtime.file_effect_models import DeferredFileEffectJob
 from lora.runtime.tools import ToolObserver
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
@@ -53,8 +62,17 @@ from .prompt_sources import (
 
 MAX_EMPTY_TOOL_FOLLOWUP_RETRIES = 5
 
+EFFECT_FREE_RECOVERY = ExecutionRequirements(
+    recovery_safety=RecoverySafety.MODULE_BOUNDARY_RETRY,
+    effect_safety=EffectSafety.EFFECT_FREE,
+)
+MANAGED_EFFECT_RECOVERY = ExecutionRequirements(
+    recovery_safety=RecoverySafety.MODULE_BOUNDARY_RETRY,
+    effect_safety=EffectSafety.MANAGED_EFFECTS,
+)
 
-def checkpoint_conversation_message(
+
+async def checkpoint_conversation_message(
     config: RunConfig,
     context: LoraContext,
     message: PygentMessage,
@@ -68,45 +86,74 @@ def checkpoint_conversation_message(
         isinstance(metadata, dict)
         and metadata.get("persist_conversation_history") is False
     )
-    manager = SessionManager(config)
-    inserted = manager.append_history_checkpoint(
-        context.case_run_ref,
-        turn_id=context.turn_id,
-        checkpoint_id=checkpoint_id,
-        message=payload,
-        include_in_session=include_in_session,
-    )
-    if inserted:
-        store = EventStore(context.case_run_ref)
-        event_type = {
-            "assistant": "conversation.assistant_message",
-            "tool": "conversation.tool_message",
-        }.get(message.role, "conversation.user_message")
-        event_payload = {
-            **payload,
+    def persist() -> bool:
+        manager = SessionManager(config)
+        inserted = manager.append_history_checkpoint(
+            context.case_run_ref,
+            turn_id=context.turn_id,
+            checkpoint_id=checkpoint_id,
+            message=payload,
+            include_in_session=include_in_session,
+        )
+        if inserted:
+            store = EventStore(context.case_run_ref)
+            event_type = {
+                "assistant": "conversation.assistant_message",
+                "tool": "conversation.tool_message",
+            }.get(message.role, "conversation.user_message")
+            event_payload = {
+                **payload,
+                "checkpoint_id": checkpoint_id,
+                "message": payload,
+            }
+            if message.role == "user":
+                message_data = plain_data(thaw_json(message.data))
+                raw_content = (
+                    message_data.get("raw_content")
+                    if isinstance(message_data, dict)
+                    else None
+                )
+                event_payload.update(
+                    {
+                        "raw_content": (
+                            raw_content
+                            if isinstance(raw_content, str)
+                            else message.content
+                        ),
+                        "user_identity": config.user_identity,
+                        "wrapped": True,
+                    }
+                )
+            store.append(
+                event_type,
+                actor=message.role,
+                payload=event_payload,
+                turn_id=context.turn_id,
+            )
+        return inserted
+
+    infrastructure = active_infrastructure()
+    if infrastructure is None:
+        persist()
+        return
+
+    async def operation():
+        return freeze_json({"inserted": persist()})
+
+    await infrastructure.execute_effect(
+        spec=EffectSpec(
+            effect_type="lora.conversation.checkpoint",
+            side_effect=EffectSideEffect.WRITE,
+            idempotency=EffectIdempotency.INHERENT,
+            retry_policy=EffectRetryPolicy.REPLAY_SAFE,
+        ),
+        request={
             "checkpoint_id": checkpoint_id,
             "message": payload,
-        }
-        if message.role == "user":
-            message_data = plain_data(thaw_json(message.data))
-            raw_content = (
-                message_data.get("raw_content")
-                if isinstance(message_data, dict)
-                else None
-            )
-            event_payload.update(
-                {
-                    "raw_content": raw_content if isinstance(raw_content, str) else message.content,
-                    "user_identity": config.user_identity,
-                    "wrapped": True,
-                }
-            )
-        store.append(
-            event_type,
-            actor=message.role,
-            payload=event_payload,
-            turn_id=context.turn_id,
-        )
+            "include_in_session": include_in_session,
+        },
+        operation=operation,
+    )
 
 
 def _message_boundary(
@@ -285,6 +332,7 @@ def _context_manager(
 
 
 class DynamicPromptModule(Module[PygentMessage, PygentMessage]):
+    execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("config", "prompt_registry")
 
     def __init__(self, config: RunConfig, prompt_registry: PromptRegistry | None) -> None:
@@ -297,17 +345,52 @@ class DynamicPromptModule(Module[PygentMessage, PygentMessage]):
     ) -> tuple[PygentMessage, LoraContext]:
         if context.model_context_compacted:
             return message, context
-        prompt = _context_manager(self.config, context, self.prompt_registry).build_model_request_prompt(
-            context=context,
-            tool_names=[definition.name for definition in context.tools],
+        tool_names = [definition.name for definition in context.tools]
+        infrastructure = active_infrastructure()
+        if infrastructure is None:  # pragma: no cover - managed graph invariant
+            raise RuntimeError("dynamic prompt requires managed execution")
+
+        async def operation():
+            prompt = _context_manager(
+                self.config,
+                context,
+                self.prompt_registry,
+            ).build_model_request_prompt(
+                context=context,
+                tool_names=tool_names,
+            )
+            text = prompt.text
+            if context.eternal_memory_enabled:
+                text = (
+                    f"{text}\n\n"
+                    f"{render_memory_context(_session_dir_for_run(Path(context.run_dir)), dict(thaw_json(context.memory_projection)))}"
+                )
+            return freeze_json({"text": text})
+
+        effect = await infrastructure.execute_effect(
+            spec=EffectSpec(
+                effect_type="lora.prompt.render",
+                side_effect=EffectSideEffect.WRITE,
+                idempotency=EffectIdempotency.INHERENT,
+                retry_policy=EffectRetryPolicy.REPLAY_SAFE,
+            ),
+            request={
+                "message": message_to_dict(message),
+                "history": context.history,
+                "tool_names": tool_names,
+                "memory_projection": plain_data(thaw_json(context.memory_projection)),
+            },
+            operation=operation,
         )
-        text = prompt.text
-        if context.eternal_memory_enabled:
-            text = f"{text}\n\n{render_memory_context(_session_dir_for_run(Path(context.run_dir)), dict(thaw_json(context.memory_projection)))}"
+        result = thaw_json(effect.value)
+        if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+            raise TypeError("replayed dynamic prompt is invalid")
+        text = result["text"]
         return message, replace(context, system_prompt=text)
 
 
 class ContextCompressionModule(Module[PygentMessage, PygentMessage]):
+    execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("config",)
 
     def __init__(
@@ -376,6 +459,7 @@ class ContextCompressionModule(Module[PygentMessage, PygentMessage]):
 
 
 class PreparedModelModule(Module[PygentMessage, AIMessage]):
+    execution_requirements = EFFECT_FREE_RECOVERY
     def __init__(
         self,
         *,
@@ -413,6 +497,7 @@ class PreparedModelModule(Module[PygentMessage, AIMessage]):
 
 
 class ConversationCheckpointModelModule(Module[PygentMessage, AIMessage]):
+    execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("config", "inner")
 
     def __init__(self, config: RunConfig, inner: Module[PygentMessage, AIMessage]) -> None:
@@ -424,7 +509,7 @@ class ConversationCheckpointModelModule(Module[PygentMessage, AIMessage]):
         self, message: PygentMessage, context: LoraContext
     ) -> tuple[AIMessage, LoraContext]:
         answer, next_context = await self.inner(message, context)
-        checkpoint_conversation_message(
+        await checkpoint_conversation_message(
             self.config,
             next_context,
             answer,
@@ -439,6 +524,7 @@ class ConversationCheckpointModelModule(Module[PygentMessage, AIMessage]):
 
 
 class ToolAuditModule(Module[ToolMessage, ToolMessage]):
+    execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("config",)
 
     def __init__(self, config: RunConfig) -> None:
@@ -448,54 +534,111 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
     async def forward(
         self, message: ToolMessage, context: PygentContext
     ) -> tuple[ToolMessage, PygentContext]:
+        infrastructure = active_infrastructure()
+        if infrastructure is None:  # pragma: no cover - managed graph invariant
+            raise RuntimeError("tool audit requires managed execution")
         assistant = context.messages[-1] if context.messages else None
         calls = {
             call.call_id: call
             for call in assistant.tool_calls
         } if isinstance(assistant, AIMessage) else {}
-        projected: list[PygentToolResult] = []
-        next_context = context
-        observer = ToolObserver(
-            EventStore(context.case_run_ref),
-            workspace_root=self.config.workspace_root,
-            track_file_effects=True,
-            defer_file_effects=True,
-            allow_read_outside_workspace=self.config.allow_read_outside_workspace,
-            bash_full_output_allowlist=self.config.bash_full_output_allowlist,
-        )
-        for result in message.results:
-            call = calls.get(result.call_id)
-            arguments = plain_data(thaw_json(call.arguments)) if call is not None else {}
-            if not isinstance(arguments, dict):
-                arguments = {}
-            payload, deferred_job = observer.record_framework_result(
-                result.name,
-                arguments,
-                context.turn_id,
-                result,
-                available_tools=tuple(definition.name for definition in context.tools),
+
+        async def operation():
+            projected: list[PygentToolResult] = []
+            next_context = context
+            observer = ToolObserver(
+                EventStore(context.case_run_ref),
+                workspace_root=self.config.workspace_root,
+                track_file_effects=True,
+                defer_file_effects=True,
+                allow_read_outside_workspace=self.config.allow_read_outside_workspace,
+                bash_full_output_allowlist=self.config.bash_full_output_allowlist,
             )
-            if deferred_job is not None:
-                next_context = next_context.append_file_effects(deferred_job)
-            await self.emit(
-                kind="lora.runtime.message",
-                data={
-                    "role": "tool",
-                    "content": _serialize_tool_payload_for_model(payload),
-                    "message_type": "conversation.tool_message",
-                    "payload": {
+            for result in message.results:
+                call = calls.get(result.call_id)
+                arguments = (
+                    plain_data(thaw_json(call.arguments))
+                    if call is not None
+                    else {}
+                )
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                payload, deferred_job = observer.record_framework_result(
+                    result.name,
+                    arguments,
+                    context.turn_id,
+                    result,
+                    available_tools=tuple(
+                        definition.name for definition in context.tools
+                    ),
+                )
+                if deferred_job is not None:
+                    next_context = next_context.append_file_effects(deferred_job)
+                await self.emit(
+                    kind="lora.runtime.message",
+                    data={
                         "role": "tool",
-                        "tool_call_id": result.call_id,
-                        "name": result.name,
+                        "content": _serialize_tool_payload_for_model(payload),
+                        "message_type": "conversation.tool_message",
+                        "payload": {
+                            "role": "tool",
+                            "tool_call_id": result.call_id,
+                            "name": result.name,
+                        },
+                        "is_delta": False,
                     },
-                    "is_delta": False,
-                },
+                )
+                projected.append(
+                    replace(
+                        result,
+                        output=_serialize_tool_payload_for_model(payload),
+                    )
+                )
+            return freeze_json(
+                {
+                    "message": message_to_dict(ToolMessage(results=tuple(projected))),
+                    "pending_file_effects": [
+                        plain_data(thaw_json(item))
+                        for item in next_context.pending_file_effects
+                    ],
+                }
             )
-            projected.append(replace(result, output=_serialize_tool_payload_for_model(payload)))
-        return ToolMessage(results=tuple(projected)), next_context
+
+        effect = await infrastructure.execute_effect(
+            spec=EffectSpec(
+                effect_type="lora.tool.audit",
+                side_effect=EffectSideEffect.WRITE,
+                idempotency=EffectIdempotency.INHERENT,
+                retry_policy=EffectRetryPolicy.REPLAY_SAFE,
+            ),
+            request={
+                "message": message_to_dict(message),
+                "assistant": (
+                    message_to_dict(assistant)
+                    if isinstance(assistant, AIMessage)
+                    else None
+                ),
+                "turn_id": context.turn_id,
+                "available_tools": [definition.name for definition in context.tools],
+            },
+            operation=operation,
+        )
+        result = thaw_json(effect.value)
+        if not isinstance(result, dict):
+            raise TypeError("replayed tool audit is invalid")
+        projected_message = message_from_dict(result.get("message"))
+        if not isinstance(projected_message, ToolMessage):
+            raise TypeError("replayed tool audit did not return a ToolMessage")
+        raw_jobs = result.get("pending_file_effects", [])
+        if not isinstance(raw_jobs, list):
+            raise TypeError("replayed tool audit pending effects are invalid")
+        jobs = tuple(DeferredFileEffectJob.from_dict(item) for item in raw_jobs)
+        next_context = replace(context, pending_file_effects=()).append_file_effects(*jobs)
+        return projected_message, next_context
 
 
 class SkillReminderModule(Module[ToolMessage, ToolMessage]):
+    execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("config", "prompt_registry")
 
     def __init__(self, config: RunConfig, prompt_registry: PromptRegistry | None) -> None:
@@ -506,49 +649,95 @@ class SkillReminderModule(Module[ToolMessage, ToolMessage]):
     async def forward(
         self, message: ToolMessage, context: PygentContext
     ) -> tuple[ToolMessage, PygentContext]:
+        infrastructure = active_infrastructure()
+        if infrastructure is None:  # pragma: no cover - managed graph invariant
+            raise RuntimeError("skill reminder requires managed execution")
         assistant = context.messages[-1] if context.messages else None
         calls = {
             call.call_id: call
             for call in assistant.tool_calls
         } if isinstance(assistant, AIMessage) else {}
-        updated: list[PygentToolResult] = []
-        manager = _context_manager(self.config, context, self.prompt_registry)
-        for result in message.results:
-            call = calls.get(result.call_id)
-            arguments = plain_data(thaw_json(call.arguments)) if call is not None else {}
-            if not isinstance(arguments, dict):
-                arguments = {}
-            new_cli: list[dict[str, Any]] = []
-            new_skills: list[dict[str, Any]] = []
-            if result.status == "succeeded" and result.name == "bash":
-                new_cli = _detect_new_bash_cli(
-                    manager.session_dir,
-                    self.config.cli_bash_presets,
-                    command=str(arguments.get("command") or ""),
+
+        async def operation():
+            updated: list[PygentToolResult] = []
+            manager = _context_manager(self.config, context, self.prompt_registry)
+            for result in message.results:
+                call = calls.get(result.call_id)
+                arguments = (
+                    plain_data(thaw_json(call.arguments))
+                    if call is not None
+                    else {}
                 )
-                new_skills = _detect_new_skills_after_file_change(
-                    manager.session_dir,
-                    user_skills_dir=manager.user_skills_dir,
-                    project_skills_dir=manager.project_skills_dir,
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                new_cli: list[dict[str, Any]] = []
+                new_skills: list[dict[str, Any]] = []
+                if result.status == "succeeded" and result.name == "bash":
+                    new_cli = _detect_new_bash_cli(
+                        manager.session_dir,
+                        self.config.cli_bash_presets,
+                        command=str(arguments.get("command") or ""),
+                    )
+                    new_skills = _detect_new_skills_after_file_change(
+                        manager.session_dir,
+                        user_skills_dir=manager.user_skills_dir,
+                        project_skills_dir=manager.project_skills_dir,
+                    )
+                elif result.status == "succeeded" and result.name in {
+                    "write",
+                    "edit",
+                }:
+                    new_skills = _detect_new_skills_after_file_change(
+                        manager.session_dir,
+                        user_skills_dir=manager.user_skills_dir,
+                        project_skills_dir=manager.project_skills_dir,
+                    )
+                reminder = _render_tool_system_reminder(
+                    manager,
+                    context=context,
+                    new_cli_entries=new_cli,
+                    new_skill_entries=new_skills,
                 )
-            elif result.status == "succeeded" and result.name in {"write", "edit"}:
-                new_skills = _detect_new_skills_after_file_change(
-                    manager.session_dir,
-                    user_skills_dir=manager.user_skills_dir,
-                    project_skills_dir=manager.project_skills_dir,
+                output = str(plain_data(thaw_json(result.output)) or "")
+                updated.append(
+                    replace(
+                        result,
+                        output=f"{output}\n\n{reminder}" if reminder else output,
+                    )
                 )
-            reminder = _render_tool_system_reminder(
-                manager,
-                context=context,
-                new_cli_entries=new_cli,
-                new_skill_entries=new_skills,
+            return freeze_json(
+                {"message": message_to_dict(ToolMessage(results=tuple(updated)))}
             )
-            output = str(plain_data(thaw_json(result.output)) or "")
-            updated.append(replace(result, output=f"{output}\n\n{reminder}" if reminder else output))
-        return ToolMessage(results=tuple(updated)), context
+
+        effect = await infrastructure.execute_effect(
+            spec=EffectSpec(
+                effect_type="lora.tool.reminder",
+                side_effect=EffectSideEffect.WRITE,
+                idempotency=EffectIdempotency.INHERENT,
+                retry_policy=EffectRetryPolicy.REPLAY_SAFE,
+            ),
+            request={
+                "message": message_to_dict(message),
+                "assistant": (
+                    message_to_dict(assistant)
+                    if isinstance(assistant, AIMessage)
+                    else None
+                ),
+                "turn_id": context.turn_id,
+            },
+            operation=operation,
+        )
+        replayed = thaw_json(effect.value)
+        if not isinstance(replayed, dict):
+            raise TypeError("replayed skill reminder is invalid")
+        updated_message = message_from_dict(replayed.get("message"))
+        if not isinstance(updated_message, ToolMessage):
+            raise TypeError("replayed skill reminder did not return a ToolMessage")
+        return updated_message, context
 
 
 class PersistedDiffModule(Module[ToolMessage, ToolMessage]):
+    execution_requirements = EFFECT_FREE_RECOVERY
     trusted_live_resource_attributes = ("workspace_root",)
 
     def __init__(self, workspace_root: Path, tasks: ToolCallLayer) -> None:
@@ -585,6 +774,7 @@ class PersistedDiffModule(Module[ToolMessage, ToolMessage]):
 
 
 class PreparedToolModule(Module[AIMessage, ToolMessage]):
+    execution_requirements = EFFECT_FREE_RECOVERY
     def __init__(
         self,
         *,
@@ -614,6 +804,7 @@ class PreparedToolModule(Module[AIMessage, ToolMessage]):
 
 
 class ConversationCheckpointToolModule(Module[AIMessage, ToolMessage]):
+    execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("config", "inner")
 
     def __init__(self, config: RunConfig, inner: Module[AIMessage, ToolMessage]) -> None:
@@ -625,7 +816,7 @@ class ConversationCheckpointToolModule(Module[AIMessage, ToolMessage]):
         self, message: AIMessage, context: LoraContext
     ) -> tuple[ToolMessage, LoraContext]:
         tool_message, next_context = await self.inner(message, context)
-        checkpoint_conversation_message(
+        await checkpoint_conversation_message(
             self.config,
             next_context,
             tool_message,

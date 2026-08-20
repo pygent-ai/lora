@@ -73,14 +73,18 @@ export function App() {
 
   useEffect(() => {
     messagesRef.current = messages;
-    if (activeSessionId && runningSessionIdsRef.current[activeSessionId]) {
-      pendingSessionMessagesRef.current.set(activeSessionId, messages);
-    }
-  }, [activeSessionId, messages]);
+  }, [messages]);
 
-  useEffect(() => {
-    runningSessionIdsRef.current = runningSessionIds;
-  }, [runningSessionIds]);
+  const setSessionRunning = useCallback((sessionId, isRunning) => {
+    if (!sessionId) {
+      return;
+    }
+    const next = isRunning
+      ? { ...runningSessionIdsRef.current, [sessionId]: true }
+      : omitKey(runningSessionIdsRef.current, sessionId);
+    runningSessionIdsRef.current = next;
+    setRunningSessionIds(next);
+  }, []);
 
   const loadTrace = useCallback(
     async (session, token = traceLoadTokenRef.current) => {
@@ -105,11 +109,14 @@ export function App() {
       traceLoadTokenRef.current += 1;
       const traceToken = traceLoadTokenRef.current;
       if (previewSession) {
+        activeSessionIdRef.current = previewSession.session_id || sessionId;
         setActiveSession(previewSession);
       }
       setStatus("Loading");
       const pendingMessages = pendingSessionMessagesRef.current.get(sessionId);
-      setMessages(pendingMessages || []);
+      const previewMessages = selectSessionMessages(pendingMessages, []);
+      messagesRef.current = previewMessages;
+      setMessages(previewMessages);
       setTraceEvents([]);
       setLiveEvents([]);
       const detail = await api.getSession(sessionId);
@@ -121,8 +128,11 @@ export function App() {
         return;
       }
       const latestPendingMessages = pendingSessionMessagesRef.current.get(sessionId);
+      const resolvedMessages = selectSessionMessages(latestPendingMessages, nextMessages);
+      activeSessionIdRef.current = detail.session.session_id || sessionId;
       setActiveSession(detail.session);
-      setMessages(latestPendingMessages || nextMessages);
+      messagesRef.current = resolvedMessages;
+      setMessages(resolvedMessages);
       setActivityCollapseToken((value) => value + 1);
       setStatus("Ready");
       window.setTimeout(() => {
@@ -153,11 +163,14 @@ export function App() {
       const targetSessionId =
         selectSessionId ||
         (selectFirst ? sessionList[0]?.session_id : preserveSessionId);
-      if (targetSessionId && sessionList.some((session) => session.session_id === targetSessionId)) {
-        await loadSession(targetSessionId);
+      const targetSession = sessionList.find((session) => session.session_id === targetSessionId);
+      if (targetSessionId && targetSession) {
+        await loadSession(targetSessionId, targetSession);
       } else {
         sessionLoadTokenRef.current += 1;
         traceLoadTokenRef.current += 1;
+        activeSessionIdRef.current = "";
+        messagesRef.current = [];
         setActiveSession(null);
         setMessages([]);
         setTraceEvents([]);
@@ -239,11 +252,11 @@ export function App() {
   const handleSendMessage = useCallback(
     async (message) => {
       const initialSessionId = activeSessionIdRef.current;
-      if (!message.trim() || (initialSessionId && runningSessionIds[initialSessionId])) {
+      if (!message.trim() || (initialSessionId && runningSessionIdsRef.current[initialSessionId])) {
         return;
       }
       if (initialSessionId) {
-        setRunningSessionIds((items) => ({ ...items, [initialSessionId]: true }));
+        setSessionRunning(initialSessionId, true);
       }
       setStatus("Running");
       setError("");
@@ -252,6 +265,7 @@ export function App() {
       setLiveEvents([]);
       const assistantId = `assistant-${Date.now()}`;
       let streamSessionId = initialSessionId || null;
+      let streamMessages = messagesRef.current;
       const startedWithoutSession = !streamSessionId;
       let finalStatus = "Ready";
 
@@ -264,8 +278,9 @@ export function App() {
         if (!streamSessionId) {
           return;
         }
-        const current = pendingSessionMessagesRef.current.get(streamSessionId) || messagesRef.current;
+        const current = pendingSessionMessagesRef.current.get(streamSessionId) || streamMessages;
         const next = updater(current);
+        streamMessages = next;
         pendingSessionMessagesRef.current.set(streamSessionId, next);
       };
 
@@ -276,26 +291,25 @@ export function App() {
         }
       };
 
-      setMessages((items) => {
-        const nextMessages = [
-          ...items,
-          { id: `user-${Date.now()}`, role: "user", content: message },
-          {
-            id: assistantId,
-            role: "assistant",
-            content: "",
-            status: "running",
-            startedAt: Date.now(),
-            endedAt: null,
-            sections: [],
-          },
-        ];
-        if (initialSessionId) {
-          pendingSessionMessagesRef.current.set(initialSessionId, nextMessages);
-        }
-        messagesRef.current = nextMessages;
-        return nextMessages;
-      });
+      const nextMessages = [
+        ...messagesRef.current,
+        { id: `user-${Date.now()}`, role: "user", content: message },
+        {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+          status: "running",
+          startedAt: Date.now(),
+          endedAt: null,
+          sections: [],
+        },
+      ];
+      if (initialSessionId) {
+        pendingSessionMessagesRef.current.set(initialSessionId, nextMessages);
+      }
+      streamMessages = nextMessages;
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
 
       try {
         await api.streamChat(
@@ -307,8 +321,8 @@ export function App() {
               const eventSessionId = eventKind === "lora.chat.started" ? String(eventData.session_id || "") : "";
               if (eventSessionId && !streamSessionId) {
                 streamSessionId = eventSessionId;
-                setRunningSessionIds((items) => ({ ...items, [eventSessionId]: true }));
-                pendingSessionMessagesRef.current.set(eventSessionId, messagesRef.current);
+                setSessionRunning(eventSessionId, true);
+                pendingSessionMessagesRef.current.set(eventSessionId, streamMessages);
               }
               if (isStreamSessionVisible()) {
                 setLiveEvents((items) => [...items, apiEventToTraceEvent(data)]);
@@ -343,6 +357,7 @@ export function App() {
         );
         const currentSessionId = activeSessionIdRef.current;
         if (streamSessionId) {
+          setSessionRunning(streamSessionId, false);
           pendingSessionMessagesRef.current.delete(streamSessionId);
           await refreshWorkbench({
             selectSessionId: currentSessionId === streamSessionId || !currentSessionId ? streamSessionId : "",
@@ -369,11 +384,11 @@ export function App() {
       } finally {
         const completedSessionId = streamSessionId || initialSessionId;
         if (completedSessionId) {
-          setRunningSessionIds((items) => omitKey(items, completedSessionId));
+          setSessionRunning(completedSessionId, false);
         }
       }
     },
-    [api, refreshWorkbench, runningSessionIds],
+    [api, refreshWorkbench, setSessionRunning],
   );
 
   const handleSaveSettings = useCallback(
@@ -1095,9 +1110,16 @@ function ToolCallRow({ call, api }) {
 
 function TracePanel({ collapsed, events, settings, activeSession, onToggle }) {
   const [tab, setTab] = useState("Events");
+  const traceListRef = useRef(null);
   const visibleEvents = useMemo(() => traceTabEvents(tab, events), [tab, events]);
   const renderedEvents = useMemo(() => latestItems(visibleEvents, TRACE_RENDER_LIMIT), [visibleEvents]);
   const hiddenEventCount = Math.max(0, visibleEvents.length - renderedEvents.length);
+
+  useEffect(() => {
+    if (!collapsed && tab !== "Config") {
+      scrollTraceToLatest(traceListRef.current);
+    }
+  }, [collapsed, renderedEvents, tab]);
 
   return (
     <aside className="trace" aria-label="Trace inspector">
@@ -1133,29 +1155,61 @@ function TracePanel({ collapsed, events, settings, activeSession, onToggle }) {
           {configRows(settings).map(([key, value]) => (
             <div className="config-row" key={key}>
               <strong>{key}</strong>
-              <span>{String(value || "-")}</span>
+              <span>{formatConfigValue(key, value)}</span>
             </div>
           ))}
         </div>
       ) : (
-        <div className="trace-list">
+        <div className="trace-list" ref={traceListRef}>
           {visibleEvents.length === 0 && <div className="empty-state">No {tab.toLowerCase()} yet</div>}
           {hiddenEventCount > 0 && (
             <div className="empty-state compact">Showing latest {renderedEvents.length} of {visibleEvents.length}</div>
           )}
           {renderedEvents.map((event, index) => (
-            <div className="trace-event" key={`${event.type}-${event.id || index}`}>
-              <div className={`status-dot ${eventTone(event)}`} />
-              <div>
-                <strong>{eventTitle(event)}</strong>
-                <span>{eventSummary(event)}</span>
-              </div>
-            </div>
+            <TraceEventRow event={event} tab={tab} key={`${event.type}-${event.id || index}`} />
           ))}
         </div>
       )}
     </aside>
   );
+}
+
+function TraceEventRow({ event, tab }) {
+  const [expanded, setExpanded] = useState(false);
+  const details = traceEventDetails(event, tab);
+  const content = (
+    <>
+      <strong className="trace-event-title">{eventTitle(event)}</strong>
+      <span className="trace-event-summary">{eventSummary(event)}</span>
+    </>
+  );
+
+  return (
+    <div className={`trace-event${expanded ? " expanded" : ""}`}>
+      <div className={`status-dot ${eventTone(event)}`} aria-hidden="true" />
+      <div className="trace-event-content">
+        {details ? (
+          <button
+            className="trace-event-toggle"
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {content}
+          </button>
+        ) : (
+          <div className="trace-event-text">{content}</div>
+        )}
+        {expanded && details && <pre className="trace-event-details">{details}</pre>}
+      </div>
+    </div>
+  );
+}
+
+export function scrollTraceToLatest(element) {
+  if (element) {
+    element.scrollTop = element.scrollHeight;
+  }
 }
 
 function SettingsPanel({ settings, disabled, onClose, onSave }) {
@@ -1240,6 +1294,12 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
       </section>
     </div>
   );
+}
+
+export function selectSessionMessages(pendingMessages, historyMessages) {
+  return Array.isArray(pendingMessages) && pendingMessages.length > 0
+    ? pendingMessages
+    : historyMessages;
 }
 
 export function historyToMessages(history) {
@@ -1647,7 +1707,7 @@ function traceTabEvents(tab, events) {
   return events;
 }
 
-function traceToolEvents(events) {
+export function traceToolEvents(events) {
   const items = [];
   const byCallId = new Map();
 
@@ -1696,9 +1756,8 @@ function traceToolEvents(events) {
     if (type === "tool.result") {
       const callId = String(payload.tool_call_id || "");
       const status = String(payload.status || "success") === "error" || payload.error ? "error" : "success";
-      upsert(callId, {
+      const patch = {
         tool_call_id: callId,
-        tool_name: String(payload.tool_name || "tool"),
         result_event: event,
         has_result: true,
         result: stringifyDetail(payload.error || payload.preview || payload.result || payload.content || ""),
@@ -1706,7 +1765,11 @@ function traceToolEvents(events) {
         result_size: payload.result_size || 0,
         truncated: Boolean(payload.truncated),
         status,
-      });
+      };
+      if (payload.tool_name) {
+        patch.tool_name = String(payload.tool_name);
+      }
+      upsert(callId, patch);
       continue;
     }
 
@@ -1753,6 +1816,25 @@ function configRows(settings) {
     ["compression_trigger", compressionTriggerLabel(settings.context_window)],
     ["user_lora_root", settings.user_lora_root],
   ];
+}
+
+export function formatConfigValue(key, value) {
+  if (key === "routes") {
+    const routes = Array.isArray(value) ? value : [];
+    if (routes.length === 0) {
+      return "-";
+    }
+    return routes.map((route, index) => {
+      const id = String(route?.id || `route-${index + 1}`);
+      const provider = String(route?.provider || "unknown");
+      const model = String(route?.model_name || route?.model || "unknown");
+      return `${id}  ${provider} / ${model}`;
+    }).join("\n");
+  }
+  if (value === undefined || value === null || value === "") {
+    return "-";
+  }
+  return String(value);
 }
 
 function flattenSessionGroups(groups) {
@@ -2086,7 +2168,7 @@ function activityToolBatchTitle(calls) {
   return "Acting";
 }
 
-function eventSummary(event) {
+export function eventSummary(event) {
   const payload = event.payload || {};
   if (payload.trace_tool) {
     const status = String(payload.status || "running");
@@ -2107,6 +2189,9 @@ function eventSummary(event) {
     }
     return parts.join("  ");
   }
+  if (isFileTraceEvent(event)) {
+    return fileEventPath(event) || "Path unavailable";
+  }
   if (payload.delta) {
     return payload.delta;
   }
@@ -2119,12 +2204,55 @@ function eventSummary(event) {
   return limitText(safeJsonStringify(payload), 180);
 }
 
-function eventTitle(event) {
+export function eventTitle(event) {
   const payload = event.payload || {};
   if (payload.trace_tool) {
     return toolActionLabel(payload.tool_name);
   }
+  if (isFileTraceEvent(event)) {
+    return fileEventAction(event.type);
+  }
   return event.type || "event";
+}
+
+function traceEventDetails(event, tab) {
+  const payload = event.payload || {};
+  if (tab === "Tools" && payload.trace_tool) {
+    const sections = [];
+    if (payload.arguments) {
+      sections.push(`Arguments\n${payload.arguments}`);
+    }
+    if (payload.result) {
+      sections.push(`${payload.status === "error" ? "Error" : "Result"}\n${payload.result}`);
+    }
+    return sections.join("\n\n");
+  }
+  if (tab === "Files" && isFileTraceEvent(event)) {
+    return safeJsonStringify(payload);
+  }
+  return "";
+}
+
+function isFileTraceEvent(event) {
+  const type = String(event?.type || "");
+  return type.startsWith("file.") || type === "diff.created";
+}
+
+function fileEventPath(event) {
+  const payload = event?.payload || {};
+  return String(payload.path || payload.file_path || payload.file || payload.target || "").trim();
+}
+
+function fileEventAction(type) {
+  const actions = {
+    "file.read": "Read file",
+    "file.created": "Created file",
+    "file.written": "Wrote file",
+    "file.modified": "Modified file",
+    "file.deleted": "Deleted file",
+    "diff.created": "Created diff",
+  };
+  return actions[String(type || "")] || String(type || "File event");
 }
 
 function eventTone(event) {

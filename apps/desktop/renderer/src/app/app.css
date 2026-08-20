@@ -1269,17 +1269,53 @@ input:focus {
   margin-top: 5px;
 }
 
-.trace-event strong {
+.trace-event-content {
+  min-width: 0;
+}
+
+.trace-event-toggle {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.trace-event-toggle:hover .trace-event-title {
+  color: var(--accent-deep);
+}
+
+.trace-event-title {
   display: block;
   font-size: 12px;
 }
 
-.trace-event span {
+.trace-event-summary {
   display: block;
   margin-top: 4px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.trace-event-details {
+  max-height: 280px;
+  margin: 10px 0 2px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-2);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .config-list {
@@ -1311,6 +1347,7 @@ input:focus {
   font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .toast {
@@ -1458,6 +1495,10 @@ input:focus {
 
 @media (max-width: 1040px) {
   .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell.history-collapsed {
     grid-template-columns: 68px minmax(0, 1fr);
   }
 
@@ -1471,8 +1512,21 @@ input:focus {
     background: rgba(250, 252, 255, 0.96);
     box-shadow: var(--shadow);
   }
+}
 
+@media (max-width: 760px) {
   .workbench {
     grid-template-columns: minmax(0, 1fr) 56px;
+  }
+
+  .app-shell:not(.trace-collapsed) .trace {
+    position: fixed;
+    z-index: 5;
+    inset: 8px 8px 8px auto;
+    width: min(420px, calc(100vw - 24px));
+    height: auto;
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
   }
 }

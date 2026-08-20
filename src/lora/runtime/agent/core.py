@@ -31,6 +31,7 @@ from pygent.llm import (
     OpenAICompatibleClient,
 )
 from pygent.tool import StandardTools, ToolSpec
+from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
 
 from lora.core.io import plain_data
 from lora.schema import ResolvedAgentConfig, RunConfig
@@ -91,6 +92,10 @@ def _route_supports_streaming(route: Any) -> bool:
 
 
 class LoraAgent(Agent[UserMessage, AIMessage]):
+    execution_requirements = ExecutionRequirements(
+        recovery_safety=RecoverySafety.MODULE_BOUNDARY_RETRY,
+        effect_safety=EffectSafety.MANAGED_EFFECTS,
+    )
     trusted_live_resource_attributes = (
         "config",
         "resolved_agent",
@@ -304,7 +309,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             (message_data.get("raw_content") if isinstance(message_data, dict) else None)
             or message.content
         )
-        checkpoint_conversation_message(
+        await checkpoint_conversation_message(
             self.config,
             context,
             message,
@@ -340,7 +345,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                     )
                 )
                 next_context = visible + message + answer
-                checkpoint_conversation_message(
+                await checkpoint_conversation_message(
                     self.config,
                     next_context,
                     answer,

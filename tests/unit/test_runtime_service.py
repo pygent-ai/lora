@@ -258,6 +258,24 @@ def test_delegation_uses_pygent_agent_tool_executor() -> None:
     )
 
 
+def test_complete_lora_graph_is_eligible_for_pygent_module_boundary_recovery() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = load_run_config(workspace_root=Path(tmp))
+        assert config.resolved_agent is not None
+        for route in config.resolved_agent.routes:
+            route.api_key = "durability-test"
+            route.api_key_source = "test"
+        service = LoraRuntimeService(config)
+        agent = service.new_agent(interactive_approvals=True)
+        report = service.binding.bind(agent).durability
+
+    assert report.recovery_level == "module_boundary_retry"
+    assert report.checkpoint_policy == "run_and_module_boundaries"
+    assert report.replay_policy == "recorded_managed_effects"
+    assert report.recovery_undeclared_modules == ()
+    assert report.effect_unverified_modules == ()
+
+
 @pytest.mark.asyncio
 async def test_one_agent_definition_is_reused_with_isolated_run_contexts() -> None:
     with tempfile.TemporaryDirectory() as tmp:

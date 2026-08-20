@@ -58,5 +58,6 @@ __all__ = [
     "ToolAuditModule",
     "_initial_lora_context",
     "_render_available_tools_prompt",
+    "_session_dir_for_run",
     "_to_pygent_message",
 ]
