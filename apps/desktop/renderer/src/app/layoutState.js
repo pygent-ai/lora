@@ -1,20 +1,32 @@
-export function createInitialLayoutState() {
+export const COMPACT_LAYOUT_QUERY = "(max-width: 1280px)";
+
+export function createInitialLayoutState({ compact = false } = {}) {
   return {
-    historyCollapsed: false,
-    traceCollapsed: false,
+    historyCollapsed: compact,
+    traceCollapsed: compact,
   };
 }
 
-export function toggleHistory(state) {
+export function adaptLayoutToCompactViewport(state, compact) {
+  return compact
+    ? { ...state, historyCollapsed: true, traceCollapsed: true }
+    : state;
+}
+
+export function toggleHistory(state, { compact = false } = {}) {
+  const historyCollapsed = !state.historyCollapsed;
   return {
     ...state,
-    historyCollapsed: !state.historyCollapsed,
+    historyCollapsed,
+    traceCollapsed: compact && !historyCollapsed ? true : state.traceCollapsed,
   };
 }
 
-export function toggleTrace(state) {
+export function toggleTrace(state, { compact = false } = {}) {
+  const traceCollapsed = !state.traceCollapsed;
   return {
     ...state,
-    traceCollapsed: !state.traceCollapsed,
+    historyCollapsed: compact && !traceCollapsed ? true : state.historyCollapsed,
+    traceCollapsed,
   };
 }

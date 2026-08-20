@@ -14,7 +14,13 @@ import {
 } from "lucide-react";
 
 import { createApiClient } from "../shared/api/client.js";
-import { createInitialLayoutState, toggleHistory, toggleTrace } from "./layoutState.js";
+import {
+  adaptLayoutToCompactViewport,
+  COMPACT_LAYOUT_QUERY,
+  createInitialLayoutState,
+  toggleHistory,
+  toggleTrace,
+} from "./layoutState.js";
 import { parseInlineMarkdown, parseMarkdownBlocks } from "./markdown.js";
 
 const EMPTY_SETTINGS = {
@@ -35,7 +41,9 @@ const TRACE_RENDER_LIMIT = 300;
 
 export function App() {
   const api = useMemo(() => createApiClient(), []);
-  const [layout, setLayout] = useState(createInitialLayoutState);
+  const [layout, setLayout] = useState(() =>
+    createInitialLayoutState({ compact: compactLayoutMatches() }),
+  );
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
   const [projects, setProjects] = useState([]);
   const [sessionGroups, setSessionGroups] = useState([]);
@@ -74,6 +82,20 @@ export function App() {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    const matchMedia = globalThis.window?.matchMedia?.bind(globalThis.window);
+    if (!matchMedia) {
+      return undefined;
+    }
+    const compactLayout = matchMedia(COMPACT_LAYOUT_QUERY);
+    const syncCompactLayout = (event) => {
+      setLayout((current) => adaptLayoutToCompactViewport(current, event.matches));
+    };
+    syncCompactLayout(compactLayout);
+    compactLayout.addEventListener("change", syncCompactLayout);
+    return () => compactLayout.removeEventListener("change", syncCompactLayout);
+  }, []);
 
   const setSessionRunning = useCallback((sessionId, isRunning) => {
     if (!sessionId) {
@@ -472,7 +494,9 @@ export function App() {
         onChooseProject={handleChooseProject}
         chooseProjectDisabled={hasRunningSessions}
         onOpenSettings={() => setSettingsOpen(true)}
-        onToggle={() => setLayout(toggleHistory)}
+        onToggle={() =>
+          setLayout((current) => toggleHistory(current, { compact: compactLayoutMatches() }))
+        }
       />
       <Workbench
         activeSession={activeSession}
@@ -487,7 +511,9 @@ export function App() {
         api={api}
         onSendMessage={handleSendMessage}
         onApproval={handleApproval}
-        onToggleTrace={() => setLayout(toggleTrace)}
+        onToggleTrace={() =>
+          setLayout((current) => toggleTrace(current, { compact: compactLayoutMatches() }))
+        }
       />
       {(error || notice) && (
         <div className={error ? "toast error" : "toast"} role="status">
@@ -1870,6 +1896,10 @@ function omitKey(items, key) {
 
 function scopeIdFromWorkspace(workspaceRoot) {
   return workspaceRoot ? `project:${workspaceRoot}` : "";
+}
+
+function compactLayoutMatches() {
+  return Boolean(globalThis.window?.matchMedia?.(COMPACT_LAYOUT_QUERY).matches);
 }
 
 function settingsToDraft(settings) {

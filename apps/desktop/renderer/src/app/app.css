@@ -1493,7 +1493,22 @@ input:focus {
   display: block;
 }
 
-@media (max-width: 1040px) {
+@media (max-width: 1280px) {
+  .app-shell {
+    --history-width: 260px;
+    --trace-width: min(360px, 34vw);
+  }
+
+  .app-shell.history-collapsed {
+    --history-width: 68px;
+  }
+
+  .app-shell.trace-collapsed {
+    --trace-width: 56px;
+  }
+}
+
+@media (max-width: 760px) {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1505,16 +1520,14 @@ input:focus {
   .app-shell:not(.history-collapsed) .history {
     position: fixed;
     z-index: 4;
-    inset: 16px auto 16px 16px;
-    width: 304px;
+    inset: 8px auto 8px 8px;
+    width: min(304px, calc(100vw - 24px));
     border: 1px solid var(--line-strong);
-    border-radius: 16px;
+    border-radius: 12px;
     background: rgba(250, 252, 255, 0.96);
     box-shadow: var(--shadow);
   }
-}
 
-@media (max-width: 760px) {
   .workbench {
     grid-template-columns: minmax(0, 1fr) 56px;
   }
