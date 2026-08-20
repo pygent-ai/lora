@@ -13,6 +13,7 @@ from pygent import (
     FallbackPolicy,
     GenerationConfig,
     ModelCallLayer,
+    ModelErrorKind,
     ModelGroupConfig,
     ModelRoute,
     ReActLayer,
@@ -60,6 +61,12 @@ from .prompts import PromptRegistry
 
 
 MODEL_MAX_OUTPUT_TOKENS = 4096
+MODEL_RETRYABLE_ERROR_KINDS = (
+    ModelErrorKind.TIMEOUT,
+    ModelErrorKind.RATE_LIMIT,
+    ModelErrorKind.UNAVAILABLE,
+    ModelErrorKind.INVALID_RESPONSE,
+)
 PYGENT_VERIFY_SSL_ENV = "PYGENT_VERIFY_SSL"
 
 
@@ -214,6 +221,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             model_group=group,
             retry_policy=RetryPolicy(
                 max_attempts_per_route=retry.max_attempts_per_route,
+                retry_on=MODEL_RETRYABLE_ERROR_KINDS,
                 attempt_timeout_seconds=retry.attempt_timeout_seconds,
                 backoff=ExponentialBackoff(
                     initial=retry.backoff_initial,

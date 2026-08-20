@@ -3,11 +3,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pygent import ModelErrorKind
 
 from lora.runtime import agent
 from lora.runtime.agent import LoraAgent, PromptRenderContext, _render_available_tools_prompt
 from lora.runtime.agent.core import (
     MODEL_MAX_OUTPUT_TOKENS,
+    MODEL_RETRYABLE_ERROR_KINDS,
     PYGENT_VERIFY_SSL_ENV,
     _route_supports_streaming,
     _verify_ssl_from_env,
@@ -32,6 +34,36 @@ def test_deepseek_routes_disable_streaming_for_reliable_tool_arguments() -> None
 
 def test_coding_agent_has_enough_output_budget_to_reach_tool_execution() -> None:
     assert MODEL_MAX_OUTPUT_TOKENS >= 4096
+
+
+def test_model_retry_policy_retries_incomplete_provider_responses() -> None:
+    retry = SimpleNamespace(
+        max_attempts_per_route=5,
+        attempt_timeout_seconds=60,
+        backoff_initial=0.5,
+        backoff_maximum=4,
+        backoff_multiplier=2,
+    )
+    route = SimpleNamespace(id="primary", provider="openai", model_name="test-model")
+    model_agent = LoraAgent.__new__(LoraAgent)
+    model_agent.resolved_agent = SimpleNamespace(
+        alias="test",
+        routes=(route,),
+        fallback=(route.id,),
+        retry=retry,
+    )
+    model_agent.managed_model = False
+    model_agent.llm = object()
+    model_agent._toolkit = None
+    model_agent._external_tools = ()
+
+    retry_policy = model_agent.new_model_layer().retry_policy
+
+    assert retry_policy.max_attempts_per_route == 5
+    assert retry_policy.retry_on == MODEL_RETRYABLE_ERROR_KINDS
+    assert ModelErrorKind.INVALID_RESPONSE in retry_policy.retry_on
+    assert ModelErrorKind.AUTHENTICATION not in retry_policy.retry_on
+    assert ModelErrorKind.INVALID_REQUEST not in retry_policy.retry_on
 
 
 @pytest.mark.parametrize(
