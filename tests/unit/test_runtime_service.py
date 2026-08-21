@@ -4,6 +4,7 @@ import asyncio
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pygent import AIMessage, Context, Module, ToolCall, UserMessage, thaw_json
@@ -46,6 +47,13 @@ class _WideManagedGraph(Module[UserMessage, AIMessage]):
         for _ in range(self.child_calls):
             _, context = await self.child(message, context)
         return AIMessage(content="done"), context
+
+
+def test_pygent_0_2_19_rejects_removed_mcp_sse_transport() -> None:
+    service = LoraRuntimeService.__new__(LoraRuntimeService)
+
+    with pytest.raises(ValueError, match="Pygent 0.2.19.*use stdio"):
+        service._mcp_transport(SimpleNamespace(transport="sse"))
 
 
 @pytest.mark.asyncio

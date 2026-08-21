@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115.0",
-    "pygent-ai==0.2.17",
+    "pygent-ai==0.2.19",
     "uvicorn>=0.32.0",
 ]
 

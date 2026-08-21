@@ -22,6 +22,11 @@ import {
   toggleTrace,
 } from "./layoutState.js";
 import { parseInlineMarkdown, parseMarkdownBlocks } from "./markdown.js";
+import {
+  acknowledgeStoredSessionStatus,
+  loadAcknowledgedSessionStatuses,
+  sessionStatusIdentity,
+} from "./sessionStatusState.js";
 
 const EMPTY_SETTINGS = {
   workspace_root: "",
@@ -548,21 +553,14 @@ export function SessionSidebar({
   onToggle,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState({});
-  const [acknowledgedStatuses, setAcknowledgedStatuses] = useState({});
+  const [acknowledgedStatuses, setAcknowledgedStatuses] = useState(loadAcknowledgedSessionStatuses);
 
   function toggleGroup(scopeId) {
     setCollapsedGroups((current) => ({ ...current, [scopeId]: !current[scopeId] }));
   }
 
   function acknowledgeSessionStatus(session) {
-    const statusKind = sessionStatusKind(session.last_case_run_status);
-    if (statusKind === "running") {
-      return;
-    }
-    setAcknowledgedStatuses((current) => ({
-      ...current,
-      [session.session_id]: sessionStatusIdentity(session),
-    }));
+    setAcknowledgedStatuses((current) => acknowledgeStoredSessionStatus(current, session));
   }
 
   return (
@@ -2327,13 +2325,6 @@ function sessionStatusLabel(status) {
     return "Error";
   }
   return "Done";
-}
-
-function sessionStatusIdentity(session) {
-  return [
-    session.last_case_run_status || sessionStatusKind(session.last_case_run_status),
-    session.updated_at || session.created_at || "",
-  ].join(":");
 }
 
 function sessionStatusKind(status) {

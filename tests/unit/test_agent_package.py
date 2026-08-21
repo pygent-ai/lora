@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,7 @@ from pygent.llm import (
     OpenAICompatibleAdapter,
 )
 
+from lora.config import load_run_config
 from lora.runtime import agent
 from lora.runtime.agent import LoraAgent, PromptRenderContext, _render_available_tools_prompt
 from lora.runtime.agent.core import (
@@ -46,6 +48,15 @@ def test_deepseek_routes_disable_streaming_for_reliable_tool_arguments() -> None
 
 def test_coding_agent_has_enough_output_budget_to_reach_tool_execution() -> None:
     assert MODEL_MAX_OUTPUT_TOKENS >= 4096
+
+
+def test_file_editing_guidance_comes_from_pygent_tool_definitions(tmp_path: Path) -> None:
+    model_agent = LoraAgent(load_run_config(workspace_root=tmp_path))
+    definitions = {definition.name: definition for definition in model_agent.tool_definitions}
+
+    assert "multiple smaller atomic edit calls" in definitions["edit"].description
+    assert "Prefer edit for focused changes" in definitions["write"].description
+    assert "omission placeholders" in definitions["write"].description
 
 
 def test_model_retry_policy_retries_incomplete_provider_responses() -> None:

@@ -45,7 +45,6 @@ from pygent.tool import (
 )
 from pygent.tool.executors import ToolExecutionContext
 from pygent.tool.mcp import (
-    MCPSseTransport,
     MCPStdioTransport,
     discover_mcp_tools,
     register_mcp_tools,
@@ -304,24 +303,17 @@ class LoraRuntimeService:
         self._initialized = True
 
     def _mcp_transport(self, server: Any) -> Any:
-        if server.transport == "stdio":
-            env = {name: os.environ[name] for name in server.env_from if name in os.environ}
-            return MCPStdioTransport(
-                server.command,
-                args=server.args,
-                env=env,
-                cwd=server.cwd,
+        if server.transport != "stdio":
+            raise ValueError(
+                f"MCP transport {server.transport!r} is unsupported by Pygent 0.2.19; "
+                "use stdio"
             )
-        headers = {
-            header: os.environ[env_name]
-            for header, env_name in server.headers_env.items()
-            if env_name in os.environ
-        }
-        return MCPSseTransport(
-            server.url,
-            headers=headers,
-            timeout=server.timeout,
-            sse_read_timeout=max(server.timeout, 300.0),
+        env = {name: os.environ[name] for name in server.env_from if name in os.environ}
+        return MCPStdioTransport(
+            server.command,
+            args=server.args,
+            env=env,
+            cwd=server.cwd,
         )
 
     def new_agent(
