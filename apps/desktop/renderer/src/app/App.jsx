@@ -68,6 +68,7 @@ export function App() {
   const messagesRef = useRef([]);
   const runningSessionIdsRef = useRef({});
   const pendingSessionMessagesRef = useRef(new Map());
+  const sessionLiveEventsRef = useRef(new Map());
   const sessionLoadTokenRef = useRef(0);
   const traceLoadTokenRef = useRef(0);
 
@@ -142,10 +143,11 @@ export function App() {
       setStatus("Loading");
       const pendingMessages = pendingSessionMessagesRef.current.get(sessionId);
       const previewMessages = selectSessionMessages(pendingMessages, []);
+      const previewLiveEvents = sessionLiveEventsRef.current.get(sessionId) || [];
       messagesRef.current = previewMessages;
       setMessages(previewMessages);
       setTraceEvents([]);
-      setLiveEvents([]);
+      setLiveEvents(previewLiveEvents);
       const detail = await api.getSession(sessionId);
       if (sessionToken !== sessionLoadTokenRef.current) {
         return;
@@ -246,6 +248,8 @@ export function App() {
           await api.updateSettings({ workspaceRoot: scope.workspace_root });
         }
         await api.deleteSession(sessionId);
+        pendingSessionMessagesRef.current.delete(sessionId);
+        sessionLiveEventsRef.current.delete(sessionId);
         await refreshWorkbench({ selectFirst: true });
         setNotice("Session deleted");
       } catch (err) {
@@ -293,6 +297,7 @@ export function App() {
       const assistantId = `assistant-${Date.now()}`;
       let streamSessionId = initialSessionId || null;
       let streamMessages = messagesRef.current;
+      let streamEvents = [];
       const startedWithoutSession = !streamSessionId;
       let finalStatus = "Ready";
 
@@ -333,6 +338,7 @@ export function App() {
       ];
       if (initialSessionId) {
         pendingSessionMessagesRef.current.set(initialSessionId, nextMessages);
+        sessionLiveEventsRef.current.set(initialSessionId, streamEvents);
       }
       streamMessages = nextMessages;
       messagesRef.current = nextMessages;
@@ -351,8 +357,14 @@ export function App() {
                 setSessionRunning(eventSessionId, true);
                 pendingSessionMessagesRef.current.set(eventSessionId, streamMessages);
               }
+              streamEvents = appendSessionLiveTraceEvent(
+                sessionLiveEventsRef.current,
+                streamSessionId,
+                streamEvents,
+                apiEventToTraceEvent(data),
+              );
               if (isStreamSessionVisible()) {
-                setLiveEvents((items) => [...items, apiEventToTraceEvent(data)]);
+                setLiveEvents(streamEvents);
               }
               projectLiveExecutionEvent(updateVisibleMessages, assistantId, data);
               if (eventKind === "lora.approval.requested") {
@@ -430,6 +442,8 @@ export function App() {
         setMessages([]);
         setTraceEvents([]);
         setLiveEvents([]);
+        pendingSessionMessagesRef.current.clear();
+        sessionLiveEventsRef.current.clear();
         await refreshWorkbench({ selectFirst: true });
         setNotice("Settings saved and runtime reloaded");
       } catch (err) {
@@ -1324,6 +1338,19 @@ export function selectSessionMessages(pendingMessages, historyMessages) {
   return Array.isArray(pendingMessages) && pendingMessages.length > 0
     ? pendingMessages
     : historyMessages;
+}
+
+export function appendSessionLiveTraceEvent(cache, sessionId, currentEvents, event, limit = TRACE_RENDER_LIMIT) {
+  const events = Array.isArray(currentEvents) ? currentEvents : [];
+  if (event?.id && events.some((item) => item.id === event.id)) {
+    return events;
+  }
+  const next = [...events, event];
+  const limited = next.length > limit ? next.slice(-limit) : next;
+  if (sessionId) {
+    cache.set(sessionId, limited);
+  }
+  return limited;
 }
 
 export function historyToMessages(history) {

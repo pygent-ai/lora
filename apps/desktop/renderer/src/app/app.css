@@ -1532,14 +1532,15 @@ input:focus {
     grid-template-columns: minmax(0, 1fr) 56px;
   }
 
+  .app-shell:not(.trace-collapsed) .workbench {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 3fr) minmax(180px, 2fr);
+  }
+
   .app-shell:not(.trace-collapsed) .trace {
-    position: fixed;
-    z-index: 5;
-    inset: 8px 8px 8px auto;
-    width: min(420px, calc(100vw - 24px));
-    height: auto;
-    border: 1px solid var(--line-strong);
-    border-radius: 12px;
-    box-shadow: var(--shadow);
+    grid-column: 1;
+    grid-row: 2;
+    border-top: 1px solid var(--line-strong);
+    border-left: 0;
   }
 }

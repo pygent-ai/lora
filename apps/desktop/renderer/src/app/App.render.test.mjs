@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -159,6 +160,32 @@ test("session history survives switching away while another session is running",
   assert.equal(appModule.selectSessionMessages(live, persisted), live);
   assert.equal(appModule.selectSessionMessages([], persisted), persisted);
   assert.equal(appModule.selectSessionMessages(undefined, persisted), persisted);
+});
+
+test("session live events survive switching away while another session is running", () => {
+  const cache = new Map();
+  const first = { id: "execution-1", type: "model.started" };
+  const second = { id: "execution-2", type: "tool.started" };
+
+  let live = appModule.appendSessionLiveTraceEvent(cache, "session-1", [], first);
+  live = appModule.appendSessionLiveTraceEvent(cache, "session-1", live, second);
+  live = appModule.appendSessionLiveTraceEvent(cache, "session-1", live, second);
+
+  assert.deepEqual(cache.get("session-1"), [first, second]);
+  assert.equal(cache.has("session-2"), false);
+});
+
+test("compact expanded trace uses workspace space instead of covering chat", async () => {
+  const css = await readFile(new URL("./app.css", import.meta.url), "utf8");
+
+  assert.match(
+    css,
+    /\.app-shell:not\(\.trace-collapsed\) \.workbench\s*{[^}]*grid-template-rows:/,
+  );
+  assert.doesNotMatch(
+    css,
+    /\.app-shell:not\(\.trace-collapsed\) \.trace\s*{[^}]*position:\s*fixed/,
+  );
 });
 
 test("native Pygent events project to the same completed turn as persisted history", () => {
