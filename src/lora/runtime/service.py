@@ -65,7 +65,11 @@ from .delegation import (
     DELEGATE_TOOL_SPEC,
     visible_delegation_specs,
 )
-from .deployment import LoraModelResourceResolver, WorkspaceToolExecutor
+from .deployment import (
+    LoraModelResourceResolver,
+    WorkspaceToolExecutor,
+    migrate_legacy_model_deployments,
+)
 from .file_effects import (
     FILE_EFFECT_TOOL_SPEC,
     FileEffectToolExecutor,
@@ -135,6 +139,7 @@ class LoraRuntimeService:
         self.config = config
         history_path = Path(config.runtime_durability.history_path)
         model_path = history_path.with_name("model-deployments-v1.sqlite3")
+        self.model_path = model_path
         self.history = SQLiteHistoryStore(history_path)
         self.model_store = SQLiteModelDeploymentStore(model_path)
         self.capacity = (
@@ -270,6 +275,7 @@ class LoraRuntimeService:
             Path(self.config.runtime_capacity.coordinator_path),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(migrate_legacy_model_deployments, self.model_path)
         await self.history.open()
         discovered = list(self.external_tools)
         visible_names: set[str] = {

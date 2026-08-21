@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import sqlite3
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ from pygent.tool import AgentToolExecutor
 from lora.config import load_run_config
 from lora.runtime.context import LoraContext
 from lora.runtime.agent import PromptRenderContext, _render_available_tools_prompt
+from lora.runtime.deployment import migrate_legacy_model_deployments
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import SessionManager
 
@@ -54,6 +57,123 @@ def test_pygent_0_2_19_rejects_removed_mcp_sse_transport() -> None:
 
     with pytest.raises(ValueError, match="Pygent 0.2.19.*use stdio"):
         service._mcp_transport(SimpleNamespace(transport="sse"))
+
+
+def test_pygent_0_2_19_migrates_legacy_model_route_snapshots(tmp_path: Path) -> None:
+    database = tmp_path / "model-deployments-v1.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE pygent_model_profiles (
+            snapshot_json TEXT NOT NULL
+        );
+        CREATE TABLE pygent_model_admissions (
+            admission_json TEXT NOT NULL
+        );
+        """
+    )
+    legacy_route = {"route_id": "primary", "provider": "openai", "model": "model"}
+    current_route = {
+        **legacy_route,
+        "route_id": "secondary",
+        "provider_options": {"region": "test"},
+    }
+    legacy_snapshot = {
+        "deployment_scope_id": "scope",
+        "group_name": "group",
+        "profile": "default",
+        "snapshot_id": "snapshot",
+        "digest": "legacy-digest",
+        "resource_bundle_digest": None,
+        "model_group": {
+            "name": "group",
+            "routes": [legacy_route],
+            "fallback": ["primary"],
+            "max_concurrency": None,
+            "capacity_key": None,
+            "resolution": "static",
+        },
+        "resources": None,
+    }
+    connection.execute(
+        "INSERT INTO pygent_model_profiles(snapshot_json) VALUES(?)",
+        (json.dumps(legacy_snapshot),),
+    )
+    connection.execute(
+        "INSERT INTO pygent_model_admissions(admission_json) VALUES(?)",
+        (
+            json.dumps(
+                {
+                    "admission_id": "admission",
+                    "deployment_scope_id": "scope",
+                    "snapshots": [
+                        {
+                            "group_name": "group",
+                            "snapshot": {
+                                **legacy_snapshot,
+                                "model_group": {
+                                    **legacy_snapshot["model_group"],
+                                    "routes": [legacy_route, current_route],
+                                },
+                            },
+                        }
+                    ],
+                    "digest": "current-digest",
+                }
+            ),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    assert migrate_legacy_model_deployments(database) == 2
+    assert migrate_legacy_model_deployments(database) == 0
+
+    connection = sqlite3.connect(database)
+    profile = json.loads(
+        connection.execute(
+            "SELECT snapshot_json FROM pygent_model_profiles"
+        ).fetchone()[0]
+    )
+    admission = json.loads(
+        connection.execute(
+            "SELECT admission_json FROM pygent_model_admissions"
+        ).fetchone()[0]
+    )
+    connection.close()
+    assert profile["model_group"]["routes"][0]["provider_options"] == {}
+    admission_snapshot = admission["snapshots"][0]["snapshot"]
+    assert admission_snapshot["model_group"]["routes"][1]["provider_options"] == {
+        "region": "test"
+    }
+
+    def digest(value: object) -> str:
+        canonical = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+    assert profile["digest"] == digest(
+        {
+            "scope_id": "scope",
+            "group": profile["model_group"],
+            "profile": "default",
+            "resources": None,
+        }
+    )
+    assert admission["digest"] == digest(
+        [
+            {
+                "group_name": "group",
+                "snapshot_id": "snapshot",
+                "digest": admission_snapshot["digest"],
+            }
+        ]
+    )
 
 
 @pytest.mark.asyncio
