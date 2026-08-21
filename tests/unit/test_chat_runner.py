@@ -11,7 +11,7 @@ from pygent import AIMessage, Context
 from lora.schema import CaseRunRef
 from lora_api.models.requests import ChatTurnRequest
 from lora_api.services import chat_runner
-from lora_api.services.chat_runner import ActiveChatRun, ChatRunRegistry, _sse
+from lora_api.services.chat_runner import ActiveChatRun, ChatRunRegistry, _sse, stream_chat_turn
 
 
 class _Runtime:
@@ -31,6 +31,28 @@ class _Runtime:
     ) -> bool:
         self.approvals.append((approval_id, approved, comment))
         return True
+
+
+@pytest.mark.asyncio
+async def test_stream_serializes_startup_failures_instead_of_dropping_connection() -> None:
+    class _FailingRegistry:
+        async def resolve(self, context, request):
+            del context, request
+            raise FileNotFoundError("stale session")
+
+    chunks = [
+        chunk
+        async for chunk in stream_chat_turn(
+            SimpleNamespace(),
+            ChatTurnRequest(message="hello", session_id="missing-session"),
+            registry=_FailingRegistry(),
+        )
+    ]
+
+    assert len(chunks) == 1
+    assert '"kind": "lora.transport.error"' in chunks[0]
+    assert '"error": "stale session"' in chunks[0]
+    assert '"error_type": "FileNotFoundError"' in chunks[0]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from fastapi import HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -35,6 +36,21 @@ def test_health_exposes_backend_instance_header(monkeypatch: pytest.MonkeyPatch)
     assert payload.status == "ok"
     assert payload.service == "lora-api"
     assert response.headers["X-Lora-Backend-Instance"] == "desktop-instance-1"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_returns_structured_error_for_stale_session(tmp_path) -> None:
+    app = create_app(workspace_root=str(tmp_path))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/chat/stream",
+            json={"message": "hello", "session_id": "missing-session", "case_id": "chat"},
+        )
+
+    assert response.status_code == 200
+    assert "lora.transport.error" in response.text
+    assert "FileNotFoundError" in response.text
+    assert "missing-session" in response.text
 
 
 def test_get_tool_result_returns_persisted_result(tmp_path) -> None:

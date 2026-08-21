@@ -29,23 +29,13 @@ async def stream_chat_turn(
     registry: ChatRunRegistry | None = None,
 ) -> AsyncIterator[str]:
     registry = registry or context.chat_registry
-    run = await registry.resolve(context, request)
+    try:
+        run = await registry.resolve(context, request)
+    except Exception as exc:
+        yield _sse(_transport_error_event(request.execution_id or "", exc))
+        return
     if run is None:
-        yield _sse(
-            ExecutionEvent(
-                schema_version="1",
-                event_id="lora-transport-error",
-                execution_id=request.execution_id or "",
-                attempt_id="transport",
-                trace_id="transport",
-                span_id="transport",
-                sequence=0,
-                timestamp_unix_ns=0,
-                module_path="lora.transport",
-                kind="lora.transport.error",
-                data={"error": "execution not found", "error_type": "ExecutionNotFound"},
-            )
-        )
+        yield _sse(_transport_error_event(request.execution_id or "", LookupError("execution not found")))
         return
     async for event in run.events(
         after=request.after_sequence,
@@ -420,6 +410,22 @@ def _keepalive_event(execution_id: str, sequence: int) -> ExecutionEvent:
         timestamp_unix_ns=timestamp,
         module_path="lora.transport",
         kind="lora.transport.keepalive",
+    )
+
+
+def _transport_error_event(execution_id: str, error: BaseException) -> ExecutionEvent:
+    return ExecutionEvent(
+        schema_version="1",
+        event_id="lora-transport-error",
+        execution_id=execution_id,
+        attempt_id="transport",
+        trace_id="transport",
+        span_id="transport",
+        sequence=0,
+        timestamp_unix_ns=time.time_ns(),
+        module_path="lora.transport",
+        kind="lora.transport.error",
+        data={"error": str(error), "error_type": type(error).__name__},
     )
 
 

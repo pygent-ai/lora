@@ -33,6 +33,8 @@ class SessionService:
             return []
         records: list[SessionRecordResponse] = []
         for metadata_path in sessions_root.glob("*/metadata.json"):
+            if not (metadata_path.parent / "session.json").is_file():
+                continue
             metadata = read_json(metadata_path)
             if metadata.get("mode") != "chat":
                 continue

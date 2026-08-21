@@ -133,6 +133,32 @@ def test_session_list_uses_first_user_message_as_title_when_metadata_title_is_mi
     assert records[0].title == "Build a LoRA training script with resume support"
 
 
+def test_session_list_ignores_incomplete_metadata_only_sessions(tmp_path: Path) -> None:
+    manager = SessionManager(
+        RunConfig(
+            workspace_root=str(tmp_path),
+            lora_root=str((tmp_path / ".lora").resolve()),
+        )
+    )
+    valid = manager.create("chat", mode="chat")
+    incomplete = Path(manager.sessions_root) / "chat-chat-incomplete"
+    incomplete.mkdir(parents=True)
+    write_json(
+        incomplete / "metadata.json",
+        {
+            "session_id": incomplete.name,
+            "case_id": "chat",
+            "mode": "chat",
+            "created_at": "2026-08-21T00:00:00Z",
+            "updated_at": "2026-08-21T00:00:00Z",
+        },
+    )
+
+    records = SessionService(manager).list_chat_sessions()
+
+    assert [record.session_id for record in records] == [valid.session_id]
+
+
 def test_title_lookup_stops_after_first_historical_user_message(tmp_path: Path) -> None:
     first = tmp_path / "cases" / "chat" / "runs" / "run-001" / "events.jsonl"
     later = tmp_path / "cases" / "chat" / "runs" / "run-002" / "events.jsonl"
