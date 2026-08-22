@@ -46,9 +46,10 @@ const TRACE_RENDER_LIMIT = 300;
 
 export function App() {
   const api = useMemo(() => createApiClient(), []);
-  const [layout, setLayout] = useState(() =>
-    createInitialLayoutState({ compact: compactLayoutMatches() }),
-  );
+  const [layout, setLayout] = useState(() => {
+    const compact = compactLayoutMatches();
+    return { ...createInitialLayoutState({ compact }), compact };
+  });
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
   const [projects, setProjects] = useState([]);
   const [sessionGroups, setSessionGroups] = useState([]);
@@ -96,7 +97,10 @@ export function App() {
     }
     const compactLayout = matchMedia(COMPACT_LAYOUT_QUERY);
     const syncCompactLayout = (event) => {
-      setLayout((current) => adaptLayoutToCompactViewport(current, event.matches));
+      setLayout((current) => ({
+        ...adaptLayoutToCompactViewport(current, event.matches),
+        compact: event.matches,
+      }));
     };
     syncCompactLayout(compactLayout);
     compactLayout.addEventListener("change", syncCompactLayout);
@@ -476,13 +480,7 @@ export function App() {
     }
   }, [handleSaveSettings, settings]);
 
-  const appClassName = [
-    "app-shell",
-    layout.historyCollapsed ? "history-collapsed" : "",
-    layout.traceCollapsed ? "trace-collapsed" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const appClassName = appLayoutClassName(layout);
 
   async function handleApproval(approval, approved) {
     try {
@@ -499,7 +497,7 @@ export function App() {
   }
 
   return (
-    <main className={appClassName}>
+    <main aria-label="Workbench" className={appClassName}>
       <SessionSidebar
         collapsed={layout.historyCollapsed}
         settings={settings}
@@ -514,10 +512,10 @@ export function App() {
         chooseProjectDisabled={hasRunningSessions}
         onOpenSettings={() => setSettingsOpen(true)}
         onToggle={() =>
-          setLayout((current) => toggleHistory(current, { compact: compactLayoutMatches() }))
+          setLayout((current) => toggleHistory(current, { compact: current.compact }))
         }
       />
-      <Workbench
+      <ChatPane
         activeSession={activeSession}
         messages={messages}
         activityCollapseToken={activityCollapseToken}
@@ -525,13 +523,17 @@ export function App() {
         status={status}
         running={running}
         approvals={approvals.filter((item) => item.session_id === activeSessionId)}
-        traceCollapsed={layout.traceCollapsed}
-        traceEvents={visibleTraceEvents}
         api={api}
         onSendMessage={handleSendMessage}
         onApproval={handleApproval}
-        onToggleTrace={() =>
-          setLayout((current) => toggleTrace(current, { compact: compactLayoutMatches() }))
+      />
+      <TracePanel
+        activeSession={activeSession}
+        collapsed={layout.traceCollapsed}
+        events={visibleTraceEvents}
+        settings={settings}
+        onToggle={() =>
+          setLayout((current) => toggleTrace(current, { compact: current.compact }))
         }
       />
       {(error || notice) && (
@@ -549,6 +551,17 @@ export function App() {
       )}
     </main>
   );
+}
+
+export function appLayoutClassName(layout) {
+  return [
+    "app-shell",
+    layout.compact ? "compact-layout" : "",
+    layout.historyCollapsed ? "history-collapsed" : "",
+    layout.traceCollapsed ? "trace-collapsed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function SessionSidebar({
@@ -726,49 +739,14 @@ function SessionRow({
   );
 }
 
-function Workbench({
-  activeSession,
-  messages,
-  activityCollapseToken,
-  settings,
-  status,
-  running,
-  approvals,
-  traceCollapsed,
-  traceEvents,
-  api,
-  onSendMessage,
-  onApproval,
-  onToggleTrace,
-}) {
-  return (
-    <section className="workbench" aria-label="Workbench">
-      <ChatPane
-        activeSession={activeSession}
-        messages={messages}
-        activityCollapseToken={activityCollapseToken}
-        settings={settings}
-        status={status}
-        running={running}
-        approvals={approvals}
-        api={api}
-        onSendMessage={onSendMessage}
-        onApproval={onApproval}
-      />
-      <TracePanel
-        collapsed={traceCollapsed}
-        events={traceEvents}
-        settings={settings}
-        activeSession={activeSession}
-        onToggle={onToggleTrace}
-      />
-    </section>
-  );
-}
-
 function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, approvals, api, onSendMessage, onApproval }) {
   const [draft, setDraft] = useState("");
+  const transcriptRef = useRef(null);
   const chatTitle = activeSession?.title || "Select or create a chat session";
+
+  useEffect(() => {
+    scrollTranscriptToLatest(transcriptRef.current);
+  }, [messages, activityCollapseToken]);
 
   function submit() {
     const text = draft.trim();
@@ -793,7 +771,7 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
         <div className={`status-pill ${statusTone(status)}`}>{statusLabel(status)}</div>
       </header>
 
-      <div className="transcript">
+      <div className="transcript" ref={transcriptRef}>
         {messages.length === 0 && (
           <div className="welcome">
             <h3>Lora Workbench</h3>
@@ -1245,6 +1223,12 @@ function TraceEventRow({ event, tab }) {
 }
 
 export function scrollTraceToLatest(element) {
+  if (element) {
+    element.scrollTop = element.scrollHeight;
+  }
+}
+
+export function scrollTranscriptToLatest(element) {
   if (element) {
     element.scrollTop = element.scrollHeight;
   }

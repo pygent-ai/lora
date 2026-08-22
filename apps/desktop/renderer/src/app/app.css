@@ -82,7 +82,7 @@ button:focus-visible {
   height: 100dvh;
   min-height: 0;
   display: grid;
-  grid-template-columns: var(--history-width) minmax(640px, 1fr);
+  grid-template-columns: var(--history-width) minmax(0, 1fr) var(--trace-width);
   gap: 0;
   padding: 0;
   overflow: hidden;
@@ -91,6 +91,23 @@ button:focus-visible {
 
 .app-shell.history-collapsed {
   --history-width: 68px;
+}
+
+.app-shell.trace-collapsed {
+  --trace-width: 56px;
+}
+
+.app-shell.compact-layout {
+  --history-width: 260px;
+  --trace-width: min(360px, 34vw);
+}
+
+.app-shell.compact-layout.history-collapsed {
+  --history-width: 68px;
+}
+
+.app-shell.compact-layout.trace-collapsed {
+  --trace-width: 56px;
 }
 
 .history {
@@ -538,25 +555,6 @@ button:focus-visible {
 .app-shell.history-collapsed .history-bottom {
   width: 44px;
   justify-items: center;
-}
-
-.workbench {
-  min-width: 0;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--trace-width);
-  gap: 0;
-  height: 100%;
-  overflow: hidden;
-  border: 0;
-  border-radius: 0;
-  background: var(--surface);
-  box-shadow: none;
-  transition: grid-template-columns 180ms ease;
-}
-
-.app-shell.trace-collapsed {
-  --trace-width: 56px;
 }
 
 .chat {
@@ -1491,56 +1489,4 @@ input:focus {
 
 .app-shell.trace-collapsed .vertical-label {
   display: block;
-}
-
-@media (max-width: 1280px) {
-  .app-shell {
-    --history-width: 260px;
-    --trace-width: min(360px, 34vw);
-  }
-
-  .app-shell.history-collapsed {
-    --history-width: 68px;
-  }
-
-  .app-shell.trace-collapsed {
-    --trace-width: 56px;
-  }
-}
-
-@media (max-width: 760px) {
-  .app-shell {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .app-shell.history-collapsed {
-    grid-template-columns: 68px minmax(0, 1fr);
-  }
-
-  .app-shell:not(.history-collapsed) .history {
-    position: fixed;
-    z-index: 4;
-    inset: 8px auto 8px 8px;
-    width: min(304px, calc(100vw - 24px));
-    border: 1px solid var(--line-strong);
-    border-radius: 12px;
-    background: rgba(250, 252, 255, 0.96);
-    box-shadow: var(--shadow);
-  }
-
-  .workbench {
-    grid-template-columns: minmax(0, 1fr) 56px;
-  }
-
-  .app-shell:not(.trace-collapsed) .workbench {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 3fr) minmax(180px, 2fr);
-  }
-
-  .app-shell:not(.trace-collapsed) .trace {
-    grid-column: 1;
-    grid-row: 2;
-    border-top: 1px solid var(--line-strong);
-    border-left: 0;
-  }
 }

@@ -42,6 +42,15 @@ test("trace event updates scroll the inspector to the latest item", () => {
   assert.doesNotThrow(() => appModule.scrollTraceToLatest(null));
 });
 
+test("conversation updates scroll the transcript to the latest message", () => {
+  const transcript = { scrollTop: 120, scrollHeight: 1_280 };
+
+  appModule.scrollTranscriptToLatest(transcript);
+
+  assert.equal(transcript.scrollTop, 1_280);
+  assert.doesNotThrow(() => appModule.scrollTranscriptToLatest(null));
+});
+
 test("trace tools retain the call name when a result omits it", () => {
   const events = [
     { id: "call-1", type: "tool.call", payload: { tool_name: "read", args: { path: "src/app.js" } } },
@@ -175,16 +184,30 @@ test("session live events survive switching away while another session is runnin
   assert.equal(cache.has("session-2"), false);
 });
 
-test("compact expanded trace uses workspace space instead of covering chat", async () => {
+test("history, chat, and trace share one non-overlay grid", async () => {
   const css = await readFile(new URL("./app.css", import.meta.url), "utf8");
 
   assert.match(
     css,
-    /\.app-shell:not\(\.trace-collapsed\) \.workbench\s*{[^}]*grid-template-rows:/,
+    /\.app-shell\s*{[^}]*grid-template-columns:\s*var\(--history-width\) minmax\(0, 1fr\) var\(--trace-width\)/,
   );
   assert.doesNotMatch(
     css,
-    /\.app-shell:not\(\.trace-collapsed\) \.trace\s*{[^}]*position:\s*fixed/,
+    /\.app-shell:not\(\.history-collapsed\) \.history\s*{[^}]*position:\s*fixed/,
+  );
+  assert.doesNotMatch(css, /\.trace\s*{[^}]*position:\s*fixed/);
+  assert.doesNotMatch(css, /\.workbench\s*{/);
+  assert.doesNotMatch(css, /@media\s*\(max-width:/);
+});
+
+test("layout mode is represented by the same state that drives panel toggles", () => {
+  assert.equal(
+    appModule.appLayoutClassName({ compact: true, historyCollapsed: true, traceCollapsed: false }),
+    "app-shell compact-layout history-collapsed",
+  );
+  assert.equal(
+    appModule.appLayoutClassName({ compact: false, historyCollapsed: false, traceCollapsed: true }),
+    "app-shell trace-collapsed",
   );
 });
 
