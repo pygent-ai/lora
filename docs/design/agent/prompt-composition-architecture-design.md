@@ -58,6 +58,7 @@ Literal["static", "request_system"]
 | `system.identity` | Agent 身份、职责和语言策略 |
 | `system.tool_policy` | 工具调用策略和工具结果信任边界 |
 | `system.injection_guard` | 非可信内容与 prompt injection 防护 |
+| `system.action_safety` | 不可逆、对外、隐私和 Git 操作的授权边界 |
 | `system.path_policy` | workspace、project/user Lora root 和工具路径规则 |
 | `system.coding_rules` | 编码工作规则 |
 | `system.output_style` | 输出风格 |

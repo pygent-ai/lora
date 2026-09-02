@@ -30,6 +30,7 @@ from .prompt_sources import (
     _prompt_render_context_payload,
     _render_available_tools_prompt,
     _render_initial_user_system_reminder,
+    _render_system_action_safety_prompt,
     _render_system_coding_rules_prompt,
     _render_system_identity_prompt,
     _render_system_injection_guard_prompt,
@@ -68,6 +69,14 @@ class PromptRegistry:
                 cache_scope="session",
                 order=30,
                 render=_render_system_injection_guard_prompt,
+            ),
+            PromptModule(
+                id="system.action_safety",
+                phase="static",
+                type="policy",
+                cache_scope="session",
+                order=32,
+                render=_render_system_action_safety_prompt,
             ),
             PromptModule(
                 id="system.path_policy",
