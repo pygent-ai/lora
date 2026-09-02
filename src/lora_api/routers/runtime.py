@@ -3,8 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pygent import thaw_json
-
 from lora.core.io import plain_data
 from lora_api.dependencies import ApiContext, get_api_context
 
@@ -42,5 +40,5 @@ def _task_payload(task: Any) -> dict[str, Any]:
         "version": task.version,
         "state": task.state.value,
         "job_id": task.job_id,
-        "metadata": plain_data(thaw_json(task.metadata)),
+        "metadata": plain_data(task.metadata),
     }

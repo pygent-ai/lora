@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from importlib.metadata import version as package_version
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,7 +30,7 @@ def create_app(
         yield
         await context.aclose()
 
-    app = FastAPI(title="Lora Local API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Lora Local API", version=package_version("lora"), lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",

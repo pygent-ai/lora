@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | system prompt static prefix | `phase="static"` prompt modules | session 内可缓存，写入 `context/prompts/static_prompt.txt` |
 | system prompt request prefix | `phase="request_system"` prompt modules | 每次请求重新渲染，和 static prefix 一起作为真实 system prompt 发送 |
-| conversation messages | runtime history | user message、assistant message、tool message，其中 user/tool message 可能追加 `<system-reminder>` |
+| conversation messages | runtime history | user message、assistant message、tool message，其中 user/tool message 可能追加统一合成的 `<system-reminder>` |
 
 静态前缀和请求级 system 前缀直接拼成同一个 system prompt 字符串，中间只保留普通空行分隔：
 
@@ -113,12 +113,13 @@ flowchart TB
 
 ## 6. `<system-reminder>` 消息链路
 
-`<system-reminder>` 不属于 system prompt module。它是追加到 conversation message 的运行时提醒，分两种位置：
+`<system-reminder>` 不属于 system prompt module。它由 `runtime.reminders.rendering.render_reminder()` 把 CLI、skill、Git 等来源按顺序合并成一个外层 envelope，再追加到 conversation message。触发位置分为：
 
 | 场景 | 注入位置 | 内容 |
 | --- | --- | --- |
-| session 初始可用 CLI / skill 列表 | 当前 user message 后面 | `<cli-context>`、`<skills-context>` |
-| 工具执行后发现新的 CLI / skill | 当前 tool message 后面 | 只包含新发现条目 |
+| 新 session 首个 user turn | 当前 user message 后面 | 初始 CLI、skill；Git 完整状态延迟采集，不阻塞短任务 |
+| 后续 user turn 检测到外部 Git 变化 | 当前 user message 后面 | 去重后的新 Git 快照 |
+| 工具执行后发现新的 CLI / skill / Git 状态 | 当前 tool message 后面 | 只包含发生变化的 provider 内容 |
 
 CLI context 和 skill context 始终共用一个外层标签：
 
@@ -133,7 +134,11 @@ CLI context 和 skill context 始终共用一个外层标签：
 </system-reminder>
 ```
 
-初始提醒由 `AgentRuntimeAdapter.run_turn()` 和 `run_case()` 在写入 user message 前后统一处理。新发现提醒由工具结果路径在写入 tool message 时追加。两者不再通过 `runtime.system_reminder` 或 `runtime.skill_reminder` 这类 prompt module 实现。
+Reminder 已从 prompt source 中独立为 `runtime/reminders` 子系统。`ReminderService` 拥有 Session bootstrap、后台任务和动态 observation 生命周期；`bootstrap.py` 构造首次完整快照，`store.py` 管理原子状态转换，`rendering.py` 只负责模型可见格式，Git、CLI、skills 文件只负责各自的事实采集与差异计算。Prompt registry 不读取或写入 Reminder 状态。
+
+Session 创建后立即后台预热 CLI、skills 和 Git 的完整 initial snapshot。第一条用户消息通过 `claim_initial()` 无超时等待快照到达 `ready`，把完整 `<system-reminder>` 附加到 UserMessage 后才允许启动持久化 ReAct；执行创建成功后状态才从 `claimed` 进入 `consumed`。没有显式创建步骤的 chat、case 和 delegation 由首轮 lazy prepare 兜底。交互式 `lora chat` 使用线程化输入，使用户键入期间后台预热可以继续运行。
+
+Git provider 使用 `git status --short --branch --no-ahead-behind --untracked-files=normal` 的有界快照，排除 `.lora` 内部状态，最多保留 100 行和 4096 字符。首次快照展示完整有界状态，并成为后续 observation baseline。工具边界只触发后台检测，不等待检测完成；已经完成的结果在后续 tool 或 user 边界收割并注入。后续 reminder 只展示相对 baseline 的新增、移除、状态码变化、分支变化或 dirty 文件内容变化，并附当前 dirty 总数。检查至少间隔 10 秒，按耗时的 20 倍自适应退避且最长 60 秒；每个 Git 子命令超时 0.5 秒。dirty 文件使用有界的 `size + mtime_ns` 签名，状态不变时不生成 reminder。
 
 ## 7. 落盘与审计
 
@@ -188,6 +193,14 @@ CLI context 和 skill context 始终共用一个外层标签：
 
 `session.json.system_prompt` 保存最新一次真实发送给模型的完整 system prompt。它包含 static prefix 和 request system prefix，但不包含额外边界 marker。
 
+Reminder 生命周期落盘到：
+
+```text
+.lora/sessions/{session_id}/state/reminders/bootstrap.json
+.lora/sessions/{session_id}/state/reminders/initial-snapshot.json
+.lora/sessions/{session_id}/state/reminders/observations.json
+```
+
 ## 8. 测试要求
 
 单元测试应覆盖：
@@ -196,13 +209,15 @@ CLI context 和 skill context 始终共用一个外层标签：
 - `build_model_request_prompt()` 返回的文本包含 static modules 和 request system modules，但不包含额外边界 marker。
 - `runtime_context.session.system_prompt` 等于真实发送给模型的完整 prompt。
 - `prompt.rendered` 包含 `request_system_module_ids`，且 `dynamic_module_ids` 为空。
-- 初始 skill/CLI reminder 追加到首个 user message，不进入 rendered system prompt。
+- 完整 CLI/skill/Git initial snapshot 追加到首个 user message，不进入 rendered system prompt。
+- 首轮在 snapshot 未完成时等待，Reminder 注入完成前不能启动 ReAct。
+- initial snapshot 只能被一个 turn claim，并在 execution 创建成功后消费。
 - 新发现 skill/CLI reminder 追加到对应 tool message，不进入 rendered system prompt。
 - 已移除模块不会出现在 registry、rendered prompt 或 session prompt 中。
 
 场景测试应覆盖：
 
-- `lora chat --message` 首轮生成 static prompt，同时 rendered prompt 包含 request system modules。
+- `lora chat -m` 首轮等待 initial snapshot，UserMessage 带完整 Reminder 后才启动 ReAct。
 - 续接同一个 session 时 static prompt 命中缓存，但 request system modules 重新渲染。
 - case run 的第一条 user message 能收到初始 skill reminder。
 - trace 和 session 落盘文件能读取到 `request_system_module_ids` 和完整 prompt 文本。

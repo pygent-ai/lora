@@ -7,8 +7,8 @@
 Provide a structured user/tool message injection layer that coexists with the current system prompt composition model:
 
 1. Every new user turn carries user identity and the original user message in a structured `<user-context>` wrapper.
-2. Initial CLI and skill availability context is appended to the user message inside one `<system-reminder>`.
-3. New CLI or skill discoveries after tool execution are appended to the tool message inside one `<system-reminder>`.
+2. Initial CLI, skill, and Git context is composed into one `<system-reminder>` appended to the user message.
+3. Changed CLI, skill, or Git context after tool execution is appended to the tool message inside one `<system-reminder>`.
 4. Reminder content is not registered as a system prompt module and does not enter static prompt cache or request-system prompt.
 
 ## Current Prompt Split
@@ -71,31 +71,45 @@ Example with initial reminders:
 </system-reminder>
 ```
 
+## Unified Reminder Composer
+
+`runtime.reminders.rendering.render_reminder()` owns the outer envelope, time section, source ordering, and empty-result suppression. Sources return sections rather than constructing their own `<system-reminder>` wrappers:
+
+1. `cli.context`
+2. `skills.context`
+3. `git.context`
+
+Lifecycle state is unified under `state/reminders/`; source collection code does not decide whether a snapshot is initial, claimed, or consumed.
+
 ## Initial Reminder Rules
 
-Initial reminders are produced by the agent/context manager and appended by:
-
-- `AgentRuntimeAdapter.run_turn()` for normal chat turns.
-- `run_case()` for the first case input user message.
+Session creation starts background preparation through `ReminderService`. A first turn without prior prewarming starts the same preparation lazily and waits for it.
 
 Rules:
 
-- Render the initial CLI list only when the session state says it has not been shown.
-- Render the initial skill list by scanning available skills and consuming the reminder state.
-- If both CLI and skill context exist, use one outer `<system-reminder>` containing both `<cli-context>` and `<skills-context>`.
+- Build CLI, skill, and Git baseline as one immutable initial snapshot while the new Session waits for user input.
+- The first user turn waits without a business timeout until preparation reaches a terminal state; partial snapshots are never injected.
+- Claim the snapshot for one `turn_id`, attach it to the UserMessage, start the durable execution, then acknowledge it as consumed with the `execution_id`.
+- `lora chat -m`, API auto-create, case, and delegation paths use lazy preparation when no typing window exists.
+- A fork discards the copied bootstrap state and prepares its own baseline.
 - Do not add a second reminder module to the system prompt.
 - Do not include reminder content in `prompt.rendered` system prompt text.
 
 ## Tool-Side Reminder Rules
 
-After a tool result is produced, runtime may detect newly available CLI tools or newly created/changed skills.
+After a tool result is produced, runtime may detect newly available CLI tools, newly created/changed skills, or a changed Git working-tree snapshot.
 
 Rules:
 
 - New discoveries are appended to the tool message, not to the next system prompt.
 - Use the same outer `<system-reminder>` wrapper as initial reminders.
 - Include only newly discovered entries, not the full initial list.
-- Consume pending reminder state immediately after rendering so each discovery is shown once.
+- Treat every non-empty ToolMessage result batch as a dynamic observation opportunity. Start the probe in the background without delaying the current tool boundary, then collect completed deltas at a later tool or user boundary.
+- Throttle Git checks across boundaries by at least ten seconds and increase the interval to twenty times the observed check duration, capped at sixty seconds.
+- Bound each Git subprocess to 0.5 seconds, and bound rendered output to 100 lines and 4096 characters; use `--no-ahead-behind`, and omit it without blocking when Git is unavailable or the workspace is not a repository.
+- Render the initial baseline as complete bounded porcelain status. Persist its branch and entry map, then render later reminders as deltas only: added, removed, status-changed, branch-changed, or content-changed entries plus the current dirty count.
+- Add bounded file `size + mtime_ns` signatures to dirty entries so edits to a file already carrying the same porcelain status are detected without hashing or rendering the full diff.
+- Persist observation state centrally and emit each completed delta once.
 
 Example:
 
@@ -130,6 +144,7 @@ The message injection layer must stay separate from system prompt module composi
 | Context budget guidance | `system.token_budget` request-system module |
 | Initial CLI/skill availability | user message `<system-reminder>` |
 | New CLI/skill discoveries | tool message `<system-reminder>` |
+| Initial and changed Git context | user/tool message `<system-reminder>` selected by trigger |
 
 This avoids two common bugs:
 
@@ -163,7 +178,7 @@ Unit tests should assert:
 
 Runtime and scenario tests should assert:
 
-- `AgentRuntimeAdapter.run_turn()` stores wrapped user content and appends initial reminders.
+- `LoraRuntimeService._prepare_turn()` waits for and stores wrapped user content with the claimed initial snapshot.
 - `run_case()` appends initial reminders to the first case user message.
 - `prompt.rendered` includes `request_system_module_ids`.
 - `session.json.system_prompt` contains the complete system prompt without any synthetic boundary marker.

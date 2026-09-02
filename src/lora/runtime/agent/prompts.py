@@ -29,7 +29,6 @@ from .prompt_models import (
 from .prompt_sources import (
     _prompt_render_context_payload,
     _render_available_tools_prompt,
-    _render_initial_user_system_reminder,
     _render_system_action_safety_prompt,
     _render_system_coding_rules_prompt,
     _render_system_identity_prompt,
@@ -379,24 +378,6 @@ class AgentContextManager:
             for message in history[-limit:]
         ]
         return {"recent_messages": recent_messages}
-
-    def render_initial_user_reminder(self, *, context: LoraContext) -> str | None:
-        render_ctx = PromptRenderContext(
-            session_id=context.session_id,
-            workspace_root=self.workspace_root,
-            session_dir=self.session_dir,
-            turn_id=context.turn_id,
-            projection={},
-            tool_names=[],
-            request_id=None,
-            request_type="agent_turn",
-            cli_bash_presets=self.cli_bash_presets,
-            user_lora_root=self.user_lora_root,
-            project_lora_root=self.project_lora_root,
-            user_skills_dir=self.user_skills_dir,
-            project_skills_dir=self.project_skills_dir,
-        )
-        return _render_initial_user_system_reminder(render_ctx)
 
     def build_model_request_prompt(
         self,

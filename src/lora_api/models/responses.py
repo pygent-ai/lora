@@ -16,9 +16,12 @@ class RuntimeConfigResponse(BaseModel):
     agent: str
     profile: str
     routes: list[dict[str, Any]]
+    fallback: list[str]
+    retry: dict[str, Any]
     user_lora_root: str
     max_steps: int
     context_window: int | None
+    context_compression_trigger_ratio: float
 
 
 class ProjectResponse(BaseModel):
@@ -85,6 +88,7 @@ class TraceEventsResponse(BaseModel):
     session_id: str
     case_run_id: str
     events: list[dict[str, Any]]
+    context_snapshots: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ToolResultResponse(BaseModel):

@@ -22,6 +22,77 @@ def parse_yaml_subset(text: str) -> dict[str, Any]:
     return parsed
 
 
+def dump_yaml_subset(data: dict[str, Any]) -> str:
+    """Serialize values accepted by :func:`parse_yaml_subset`."""
+
+    if not isinstance(data, dict):
+        raise TypeError("Top-level YAML value must be a mapping")
+    return "\n".join(_dump_mapping(data, 0)) + "\n"
+
+
+def _dump_mapping(data: dict[str, Any], indent: int) -> list[str]:
+    lines: list[str] = []
+    prefix = " " * indent
+    for key, value in data.items():
+        if isinstance(value, dict):
+            lines.append(f"{prefix}{key}:")
+            lines.extend(_dump_mapping(value, indent + 2))
+        elif isinstance(value, list):
+            if not value:
+                lines.append(f"{prefix}{key}: []")
+            else:
+                lines.append(f"{prefix}{key}:")
+                lines.extend(_dump_list(value, indent + 2))
+        else:
+            lines.append(f"{prefix}{key}: {_dump_scalar(value)}")
+    return lines
+
+
+def _dump_list(values: list[Any], indent: int) -> list[str]:
+    lines: list[str] = []
+    prefix = " " * indent
+    for value in values:
+        if isinstance(value, dict):
+            items = list(value.items())
+            if not items:
+                lines.append(f"{prefix}- {{}}")
+                continue
+            first_key, first_value = items[0]
+            if isinstance(first_value, (dict, list)):
+                lines.append(f"{prefix}- {first_key}:")
+                lines.extend(_dump_nested(first_value, indent + 4))
+            else:
+                lines.append(f"{prefix}- {first_key}: {_dump_scalar(first_value)}")
+            for key, item in items[1:]:
+                if isinstance(item, (dict, list)):
+                    lines.append(f"{' ' * (indent + 2)}{key}:")
+                    lines.extend(_dump_nested(item, indent + 4))
+                else:
+                    lines.append(f"{' ' * (indent + 2)}{key}: {_dump_scalar(item)}")
+        elif isinstance(value, list):
+            lines.append(f"{prefix}-")
+            lines.extend(_dump_list(value, indent + 2))
+        else:
+            lines.append(f"{prefix}- {_dump_scalar(value)}")
+    return lines
+
+
+def _dump_nested(value: dict[str, Any] | list[Any], indent: int) -> list[str]:
+    return _dump_mapping(value, indent) if isinstance(value, dict) else _dump_list(value, indent)
+
+
+def _dump_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    if not isinstance(value, str):
+        raise TypeError(f"Unsupported YAML value: {type(value).__name__}")
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _parse_block(lines: list[str], index: int, indent: int) -> tuple[Any, int]:
     if lines[index].strip().startswith("- "):
         return _parse_list(lines, index, indent)
@@ -147,7 +218,8 @@ def _parse_scalar(value: str) -> Any:
     if value in {"null", "None", "~"}:
         return None
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
+        content = value[1:-1]
+        return content.replace("''", "'") if value[0] == "'" else content
     try:
         return int(value)
     except ValueError:
@@ -158,4 +230,4 @@ def _parse_scalar(value: str) -> Any:
         return value
 
 
-__all__ = ["parse_yaml_subset"]
+__all__ = ["dump_yaml_subset", "parse_yaml_subset"]

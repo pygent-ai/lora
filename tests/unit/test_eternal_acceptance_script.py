@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,10 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+def test_acceptance_foreground_step_budget_defaults_to_500() -> None:
+    assert MODULE.DEFAULT_REACT_MAX_STEPS == 500
 
 
 def test_tasks_are_conversational_blind_and_hide_probe_answers(tmp_path: Path) -> None:
@@ -30,6 +36,8 @@ def test_tasks_are_conversational_blind_and_hide_probe_answers(tmp_path: Path) -
     assert "挑一个现在真有问题" not in prompts
     assert set(MODULE.EDGE_CASE_REPORTS) == {component.name for component in MODULE.COMPONENTS}
     assert set(MODULE.MEMORY_SEEDS) == set(MODULE.PROBE_MARKERS)
+    edge_tasks = [task for task in tasks if task["phase"] == "edge cases"]
+    assert all("无需为了产生 diff 重写正确代码" in task["prompt"] for task in edge_tasks)
     conflicts = [task for task in tasks if task["conflict_probe"]]
     assert len(conflicts) == 5
     assert all(task["probe_marker"] not in task["prompt"] for task in conflicts)
@@ -83,14 +91,16 @@ def test_question_evidence_requires_the_final_handoff_to_be_a_question() -> None
 
 def test_retry_prompt_can_repeat_the_task_without_exposing_probe_answer(tmp_path: Path) -> None:
     task = next(task for task in MODULE.build_tasks(tmp_path) if task["conflict_probe"])
-    retry = (
-        "刚才这件事没有完成，工作区和会话已经恢复到尝试前。请重新独立处理下面这件事，"
-        "先核对相关实现和既有约束，不要沿用上一轮的推断：\n\n"
-        + task["prompt"]
-    )
+    retry = MODULE.build_retry_message(task["prompt"])
 
     assert task["prompt"] in retry
     assert task["probe_marker"] not in retry
+    assert "完成声明不代表当前工作区状态" in retry
+    assert "补充最小兼容实现属于本任务范围" in retry
+    assert "不要仅因为符号缺失而反问" in retry
+    assert "不要用设计说明代替执行" in retry
+    assert "不能以当前实现已经很快或足够好为由无改动结束" in retry
+    assert "不要在没有具体剩余检查时继续调用工具" in retry
 
 
 def test_project_seed_does_not_persist_hidden_conversation_rules(tmp_path: Path) -> None:
@@ -153,6 +163,7 @@ def test_session_baseline_restore_recovers_only_mutable_context_state(tmp_path: 
     assert MODULE.capture_session_baseline(session_dir) == baseline
     assert evidence.read_text(encoding="utf-8") == "evidence\n"
     assert not (session_dir / "memory" / "memory.sqlite3-wal").exists()
+    assert "context/conversation-checkpoints.sqlite3" in MODULE.SESSION_ROLLBACK_FILES
 
 
 def test_resume_prefix_keeps_only_consecutive_passed_rows() -> None:
@@ -175,6 +186,15 @@ def test_resume_prefix_stops_at_duplicate_task_number() -> None:
     assert [row["number"] for row in MODULE.consecutive_passed_prefix(rows)] == [1, 2]
 
 
+def test_failed_background_cleanup_does_not_prevent_transactional_restore() -> None:
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "A failed background task was already captured" in source
+    assert source.index("except Exception:\n                    # A failed background") < source.index(
+        "restore_project_baseline(project_root, task_baseline)"
+    )
+
+
 def test_load_jsonl_ignores_only_an_incomplete_trailing_record(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     path.write_text('{"number": 1}\n{"number": "part', encoding="utf-8")
@@ -187,6 +207,179 @@ def test_load_jsonl_ignores_only_an_incomplete_trailing_record(tmp_path: Path) -
     path.write_text('{"number": "broken\n{"number": 2}\n', encoding="utf-8")
     with pytest.raises(json.JSONDecodeError):
         MODULE.load_jsonl(path)
+
+
+def test_verified_noop_requires_explicit_task_permission_read_and_passing_tests() -> None:
+    evidence = {
+        "successful_tool_call_count": 3,
+        "has_successful_verification": True,
+        "tool_names": ["bash", "read"],
+    }
+
+    assert MODULE.verified_noop_allowed(
+        {"phase": "edge cases", "allow_verified_noop": True},
+        changed_paths=[],
+        tool_evidence=evidence,
+    )
+    assert MODULE.verified_noop_allowed(
+        {"phase": "performance", "allow_verified_noop": True},
+        changed_paths=[],
+        tool_evidence=evidence,
+    )
+    assert not MODULE.verified_noop_allowed(
+        {"phase": "performance", "allow_verified_noop": False},
+        changed_paths=[],
+        tool_evidence=evidence,
+    )
+    assert not MODULE.verified_noop_allowed(
+        {"phase": "edge cases", "allow_verified_noop": True},
+        changed_paths=["quarry/a.py"],
+        tool_evidence=evidence,
+    )
+    assert not MODULE.verified_noop_allowed(
+        {"phase": "edge cases", "allow_verified_noop": True},
+        changed_paths=[],
+        tool_evidence={**evidence, "tool_names": ["bash"]},
+    )
+
+
+def test_performance_tasks_explicitly_allow_evidence_backed_noop(tmp_path: Path) -> None:
+    task = next(
+        task
+        for task in MODULE.build_tasks(tmp_path)
+        if task["phase"] == "performance" and task["component"] == "retry budget"
+    )
+
+    assert task["allow_verified_noop"] is True
+    assert "verified no-op" in task["prompt"]
+    assert "基准和测试证据" in task["prompt"]
+    assert "不要继续调用工具" in task["prompt"]
+
+
+def test_active_task_baseline_restores_project_and_session_after_crash(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    project_root = tmp_path / "project"
+    session_dir = tmp_path / "session"
+    MODULE.initialize_project(project_root)
+    session_file = session_dir / "session.json"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_bytes(b'{"history": []}\n')
+    project_baseline = MODULE.capture_project_baseline(project_root)
+    session_baseline = MODULE.capture_session_baseline(session_dir)
+    MODULE.persist_task_baseline(
+        run_root,
+        task_number=30,
+        project_baseline=project_baseline,
+        session_baseline=session_baseline,
+    )
+    (project_root / "README.md").write_text("poisoned\n", encoding="utf-8")
+    (project_root / "quarry" / "new.py").write_text("bad = True\n", encoding="utf-8")
+    session_file.write_bytes(b"poisoned")
+
+    restored = MODULE.restore_active_task_baseline(
+        run_root,
+        expected_task_number=30,
+        project_root=project_root,
+        session_dir=session_dir,
+    )
+
+    assert restored is True
+    assert MODULE.capture_project_baseline(project_root) == project_baseline
+    assert MODULE.capture_session_baseline(session_dir) == session_baseline
+    assert not (run_root / MODULE.ACTIVE_TASK_BASELINE).exists()
+
+
+def test_committed_task_baseline_is_discarded_on_resume(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    project_root = tmp_path / "project"
+    session_dir = tmp_path / "session"
+    MODULE.initialize_project(project_root)
+    MODULE.persist_task_baseline(
+        run_root,
+        task_number=29,
+        project_baseline=MODULE.capture_project_baseline(project_root),
+        session_baseline=MODULE.capture_session_baseline(session_dir),
+    )
+
+    assert not MODULE.restore_active_task_baseline(
+        run_root,
+        expected_task_number=30,
+        project_root=project_root,
+        session_dir=session_dir,
+    )
+    assert not (run_root / MODULE.ACTIVE_TASK_BASELINE).exists()
+
+
+def test_unexpected_exception_marks_acceptance_run_failed(tmp_path: Path) -> None:
+    MODULE.write_json(tmp_path / "run.json", {"status": "running"})
+
+    MODULE.mark_run_crashed(tmp_path, RuntimeError("boom"))
+
+    metadata = MODULE.read_json(tmp_path / "run.json")
+    assert metadata["status"] == "failed"
+    assert metadata["failure"] == "RuntimeError: boom"
+    assert metadata["finished_at"]
+
+
+@pytest.mark.asyncio
+async def test_memory_backlog_recovery_restarts_background_job_without_foreground_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Harness:
+        def __init__(self) -> None:
+            self.covered = 2
+            self.retries = 0
+
+        async def wait_idle(self) -> None:
+            return None
+
+        async def retry_pending(self, _session) -> bool:
+            self.retries += 1
+            self.covered = 5
+            return True
+
+    harness = Harness()
+    runtime = SimpleNamespace(memory_harness=harness)
+    manager = SimpleNamespace(load=lambda _session_id: SimpleNamespace(history=[{}] * 5))
+    session_ref = SimpleNamespace(session_id="s1", session_dir=str(tmp_path))
+    monkeypatch.setattr(
+        MODULE,
+        "load_projection",
+        lambda _session_dir: {"covered_through": harness.covered},
+    )
+
+    projection = await MODULE.recover_memory_backlog(
+        runtime,
+        manager,
+        session_ref,
+        max_uncovered_messages=0,
+        recovery_attempts=2,
+    )
+
+    assert projection["covered_through"] == 5
+    assert harness.retries == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_backlog_recovery_fails_after_bounded_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = SimpleNamespace()
+    harness.wait_idle = lambda: asyncio.sleep(0)
+    harness.retry_pending = lambda _session: asyncio.sleep(0, result=True)
+    runtime = SimpleNamespace(memory_harness=harness)
+    manager = SimpleNamespace(load=lambda _session_id: SimpleNamespace(history=[{}] * 5))
+    session_ref = SimpleNamespace(session_id="s1", session_dir=str(tmp_path))
+    monkeypatch.setattr(MODULE, "load_projection", lambda _session_dir: {"covered_through": 0})
+
+    with pytest.raises(RuntimeError, match="remains behind"):
+        await MODULE.recover_memory_backlog(
+            runtime,
+            manager,
+            session_ref,
+            max_uncovered_messages=0,
+            recovery_attempts=2,
+        )
 
 
 def test_tool_evidence_requires_successful_pytest_bash_call(tmp_path: Path) -> None:

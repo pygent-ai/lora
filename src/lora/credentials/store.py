@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from lora.core.io import load_env_file
+from lora.core.io import load_env_file, non_empty_string as _non_empty
 
 try:
     import keyring
@@ -173,9 +173,3 @@ def _restrict_file_permissions(path: Path) -> None:
         path.chmod(0o600)
     except OSError:
         return
-
-
-def _non_empty(value: object | None) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None

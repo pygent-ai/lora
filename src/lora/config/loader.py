@@ -16,40 +16,20 @@ from lora.schema import (
     RuntimeApprovalConfig,
     RuntimeCapacityConfig,
     RuntimeDurabilityConfig,
+    default_cli_bash_presets,
 )
 from lora.credentials import (
     DEFAULT_API_KEY_ENV,
     lookup_credential,
     load_credentials,
 )
+from lora.core.io import non_empty_string as _non_empty
 from .yaml_subset import parse_yaml_subset
 
 
 DEFAULT_MODEL_NAME = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 USER_CONFIG_FILENAME = "config.yaml"
-DEFAULT_CLI_BASH_PRESETS = [
-    BashCliPreset(
-        name="rg",
-        command="rg --help",
-        description="Fast recursive text search. Prefer it for code and file text search.",
-    ),
-    BashCliPreset(
-        name="pyright",
-        command="pyright --help",
-        description="Python type checker. Use it for static type validation when available.",
-    ),
-    BashCliPreset(
-        name="lora-chat",
-        command='uv run lora chat --help',
-        description=(
-            'Project chat CLI. Use `uv run lora chat --new -m "<task>"` to start a new sub-agent session, '
-            'or `uv run lora chat --session <session_id> -m "<task>"` to continue one.'
-        ),
-    ),
-]
-
-
 def load_run_config(
     *,
     workspace_root: str | Path | None = None,
@@ -72,12 +52,11 @@ def load_run_config(
     if not lora_root.is_absolute():
         lora_root = root / lora_root
 
-    configured_max_steps = (
-        max_steps
-        if max_steps is not None
-        else os.environ.get("LORA_MAX_STEPS")
-        or _dig(config_data, "max_steps")
-        or -1
+    configured_max_steps = _int_config(
+        max_steps,
+        os.environ.get("LORA_MAX_STEPS"),
+        _dig(config_data, "max_steps"),
+        default=-1,
     )
 
     resolved_case_file = str(case_file) if case_file is not None else None
@@ -106,7 +85,7 @@ def load_run_config(
             default=True,
         ),
         user_lora_root=str(user_lora_root),
-        context_window=_int_config(
+        context_window=_optional_int_config(
             context_window,
             model_request.get("context_window"),
             os.environ.get("LORA_CONTEXT_WINDOW"),
@@ -166,23 +145,11 @@ def _default_config() -> dict[str, Any]:
             "bash": {
                 "presets": [
                     {
-                        "name": "rg",
-                        "command": "rg --help",
-                        "description": "Fast recursive text search. Prefer it for code and file text search.",
-                    },
-                    {
-                        "name": "pyright",
-                        "command": "pyright --help",
-                        "description": "Python type checker. Use it for static type validation when available.",
-                    },
-                    {
-                        "name": "lora-chat",
-                        "command": "uv run lora chat --help",
-                        "description": (
-                            'Project chat CLI. Use `uv run lora chat --new -m "<task>"` to start a new sub-agent session, '
-                            'or `uv run lora chat --session <session_id> -m "<task>"` to continue one.'
-                        ),
-                    },
+                        "name": preset.name,
+                        "command": preset.command,
+                        "description": preset.description,
+                    }
+                    for preset in default_cli_bash_presets()
                 ],
                 "full_output_allowlist": [],
             }
@@ -325,7 +292,7 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
                     )
         _validate_mapping(
             request.get("retry"),
-            {"max_attempts_per_route", "attempt_timeout_seconds", "backoff_initial", "backoff_maximum", "backoff_multiplier"},
+            {"max_attempts_per_route", "attempt_idle_timeout_seconds", "backoff_initial", "backoff_maximum", "backoff_multiplier"},
             f"agents[{index}].model_request.retry",
         )
 
@@ -479,8 +446,16 @@ def _resolve_delegation(data: dict[str, Any]) -> DelegationConfig:
         raise ValueError("delegation.allowed_agents must be a list")
     return DelegationConfig(
         allowed_agents=tuple(str(item) for item in agents),
-        max_depth=int(_dig(data, "delegation.max_depth") or 4),
-        max_parallel=int(_dig(data, "delegation.max_parallel") or 4),
+        max_depth=(
+            4
+            if _dig(data, "delegation.max_depth") is None
+            else int(_dig(data, "delegation.max_depth"))
+        ),
+        max_parallel=(
+            4
+            if _dig(data, "delegation.max_parallel") is None
+            else int(_dig(data, "delegation.max_parallel"))
+        ),
         background_enabled=_bool_config(
             _dig(data, "delegation.background_enabled"), default=True
         ),
@@ -506,7 +481,7 @@ def _resolve_eternal_conversation(
 def _resolve_cli_bash_presets(config_data: dict[str, Any]) -> list[BashCliPreset]:
     presets = _dig(config_data, "cli.bash.presets")
     if presets is None:
-        return list(DEFAULT_CLI_BASH_PRESETS)
+        return default_cli_bash_presets()
     if not isinstance(presets, list):
         raise ValueError("cli.bash.presets must be a list")
     resolved: list[BashCliPreset] = []
@@ -567,12 +542,6 @@ def _agent_profile(config_data: dict[str, Any], alias: str) -> dict[str, Any]:
     raise ValueError(f"Agent alias {alias!r} is not configured")
 
 
-def _non_empty(value: Any) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
 def _bool_config(*values: Any, default: bool) -> bool:
     for value in values:
         if value is None:
@@ -589,7 +558,7 @@ def _bool_config(*values: Any, default: bool) -> bool:
     return default
 
 
-def _int_config(*values: Any, default: int | None = None) -> int | None:
+def _int_config(*values: Any, default: int) -> int:
     for value in values:
         if value is None:
             continue
@@ -598,6 +567,13 @@ def _int_config(*values: Any, default: int | None = None) -> int | None:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Expected integer config value, got {value!r}") from exc
     return default
+
+
+def _optional_int_config(*values: Any) -> int | None:
+    for value in values:
+        if value is not None:
+            return _int_config(value, default=0)
+    return None
 
 
 def _float_config(*values: Any, default: float) -> float:

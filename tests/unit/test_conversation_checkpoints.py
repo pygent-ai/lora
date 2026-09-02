@@ -16,6 +16,7 @@ from lora.runtime.context import LoraContext
 from lora.runtime.service import LoraRuntimeService
 from lora.schema import AgentSession, CaseDefinition
 from lora.sessions import SessionManager
+from lora.tracing import EventStore
 
 
 @pytest.mark.asyncio
@@ -24,7 +25,9 @@ async def test_interrupted_turn_recovers_completed_conversation_boundaries() -> 
         config = load_run_config(workspace_root=Path(tmp))
         manager = SessionManager(config)
         session_ref = manager.create(case_id="chat", mode="chat")
-        run_ref = manager.start_case_run(session_ref.session_id, "chat", run_config=config)
+        run_ref = manager.start_case_run(
+            session_ref.session_id, "chat", run_config=config
+        )
         context = LoraContext(
             session_id=run_ref.session_id,
             case_id=run_ref.case_id,
@@ -57,10 +60,18 @@ async def test_interrupted_turn_recovers_completed_conversation_boundaries() -> 
             ),
         )
 
-        await checkpoint_conversation_message(config, context, user, boundary="user-input")
-        await checkpoint_conversation_message(config, context, assistant, boundary="model-step-1")
-        await checkpoint_conversation_message(config, context, tool, boundary="tool-step-1")
-        await checkpoint_conversation_message(config, context, tool, boundary="tool-step-1")
+        await checkpoint_conversation_message(
+            config, context, user, boundary="user-input"
+        )
+        await checkpoint_conversation_message(
+            config, context, assistant, boundary="model-step-1"
+        )
+        await checkpoint_conversation_message(
+            config, context, tool, boundary="tool-step-1"
+        )
+        await checkpoint_conversation_message(
+            config, context, tool, boundary="tool-step-1"
+        )
 
         restored = manager.load(session_ref.session_id)
         assert [message["role"] for message in restored.history] == [
@@ -71,11 +82,26 @@ async def test_interrupted_turn_recovers_completed_conversation_boundaries() -> 
         assert restored.history[1]["tool_calls"][0]["call_id"] == "read-1"
         assert restored.history[2]["results"][0]["output"] == "workspace contents"
 
+        conversation_events = EventStore(run_ref).list_by_run()
+        tool_event = next(
+            event
+            for event in conversation_events
+            if event.type == "conversation.tool_message"
+        )
+        assert "message" not in tool_event.payload
+        assert tool_event.payload["content"] == ""
+        assert tool_event.payload["results"][0]["output"] == "workspace contents"
+
         history_path = Path(session_ref.session_dir) / "context" / "history.jsonl"
-        rows = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
+        rows = [
+            json.loads(line)
+            for line in history_path.read_text(encoding="utf-8").splitlines()
+        ]
         assert len(rows) == 3
         assert all(row.get("checkpoint_id") for row in rows)
-        assert all(isinstance(row.get("message"), dict) for row in rows)
+        assert all("message" not in row for row in rows)
+        assert rows[1]["tool_calls"][0]["call_id"] == "read-1"
+        assert rows[2]["results"][0]["output"] == "workspace contents"
 
         checkpoint_path = (
             Path(session_ref.session_dir)
@@ -87,22 +113,20 @@ async def test_interrupted_turn_recovers_completed_conversation_boundaries() -> 
                 "SELECT COUNT(*) FROM conversation_checkpoints"
             ).fetchone() == (3,)
 
-        next_run = manager.start_case_run(session_ref.session_id, "chat", run_config=config)
+        next_run = manager.start_case_run(
+            session_ref.session_id, "chat", run_config=config
+        )
         service = LoraRuntimeService(config)
-        agent = service.new_agent(interactive_approvals=False)
-        _, next_context = service._prepare_turn(
-            agent=agent,
+        _, next_context = await service._prepare_turn(
             manager=manager,
             run_ref=next_run,
             message="continue",
             config=config,
             turn_id="turn-next",
         )
-        assert [message.role for message in next_context.full_history] == [
-            "user",
-            "assistant",
-            "tool",
-        ]
+        assert next_context.committed_messages == ()
+        await service.reminders.release_initial(session_ref.session_id, "turn-next")
+        await service.close()
 
 
 def test_session_load_replays_raw_checkpoint_written_before_session_snapshot() -> None:
@@ -110,7 +134,9 @@ def test_session_load_replays_raw_checkpoint_written_before_session_snapshot() -
         config = load_run_config(workspace_root=Path(tmp))
         manager = SessionManager(config)
         session_ref = manager.create(case_id="chat", mode="chat")
-        run_ref = manager.start_case_run(session_ref.session_id, "chat", run_config=config)
+        run_ref = manager.start_case_run(
+            session_ref.session_id, "chat", run_config=config
+        )
         message = message_to_dict(AIMessage(content="durable boundary"))
         assert manager.append_history_checkpoint(
             run_ref,
@@ -126,12 +152,14 @@ def test_session_load_replays_raw_checkpoint_written_before_session_snapshot() -
 
 
 @pytest.mark.asyncio
-async def test_recovery_keeps_raw_secret_while_audit_history_is_redacted() -> None:
+async def test_recovery_and_audit_history_both_redact_secrets() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = load_run_config(workspace_root=Path(tmp))
         manager = SessionManager(config)
         session_ref = manager.create(case_id="chat", mode="chat")
-        run_ref = manager.start_case_run(session_ref.session_id, "chat", run_config=config)
+        run_ref = manager.start_case_run(
+            session_ref.session_id, "chat", run_config=config
+        )
         context = LoraContext(
             session_id=run_ref.session_id,
             case_id=run_ref.case_id,
@@ -147,10 +175,11 @@ async def test_recovery_keeps_raw_secret_while_audit_history_is_redacted() -> No
             boundary="user-input",
         )
 
-        assert manager.load(session_ref.session_id).history[0]["content"] == "password=hunter2"
-        audit = (
-            Path(session_ref.session_dir) / "context" / "history.jsonl"
-        ).read_text(encoding="utf-8")
+        recovery_content = manager.load(session_ref.session_id).history[0]["content"]
+        assert recovery_content == "password=[REDACTED]"
+        audit = (Path(session_ref.session_dir) / "context" / "history.jsonl").read_text(
+            encoding="utf-8"
+        )
         assert "hunter2" not in audit
         assert "[REDACTED]" in audit
 
@@ -161,7 +190,9 @@ async def test_transient_checkpoints_do_not_enter_session_history() -> None:
         config = load_run_config(workspace_root=Path(tmp))
         manager = SessionManager(config)
         session_ref = manager.create(case_id="chat", mode="chat")
-        run_ref = manager.start_case_run(session_ref.session_id, "chat", run_config=config)
+        run_ref = manager.start_case_run(
+            session_ref.session_id, "chat", run_config=config
+        )
         context = LoraContext(
             session_id=run_ref.session_id,
             case_id=run_ref.case_id,
@@ -253,4 +284,6 @@ async def test_execute_case_handles_multi_message_context_policy(
             assert restored.history[1]["content"] == "first"
             assert restored.history[2]["data"]["raw_content"] == "second"
         else:
-            assert restored.history == [message_to_dict(UserMessage(content="existing"))]
+            assert restored.history == [
+                message_to_dict(UserMessage(content="existing"))
+            ]

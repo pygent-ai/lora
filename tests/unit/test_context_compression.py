@@ -1,371 +1,159 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import tempfile
-import unittest
-from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
-from unittest.mock import patch
 
 from lora.config import load_run_config
 from lora.core.io import append_jsonl
 from lora.runtime import (
-    ContextCompressionModelResult,
-    ContextCompressionRunner,
     collect_recent_file_reads,
     parse_summary,
     render_file_read_block,
 )
-from lora.schema import AgentSession, RunConfig
-
-SUMMARY_WITH_TRANSCRIPT = (
-    "If you need specific details from before compaction (like exact code snippets, error messages, or content you "
-    "generated), read the full transcript at:"
-)
 
 
-class ContextCompressionPureTests(unittest.TestCase):
-    def test_parse_summary_requires_non_empty_summary_tags(self) -> None:
-        self.assertEqual(parse_summary("<analysis>x</analysis><summary>\n这是压缩摘要\n</summary>"), "这是压缩摘要")
-        self.assertIsNone(parse_summary("这是普通文本"))
-        self.assertIsNone(parse_summary("<summary>   </summary>"))
-        self.assertIsNone(parse_summary("</summary><summary>bad"))
-        self.assertIsNone(parse_summary("<summary>valid</summary>", has_tool_call=True))
+def test_parse_summary_requires_non_empty_summary_tags() -> None:
+    assert parse_summary(
+        "<analysis>x</analysis><summary>\n这是压缩摘要\n</summary>"
+    ) == "这是压缩摘要"
+    assert parse_summary("这是普通文本") is None
+    assert parse_summary("<summary>   </summary>") is None
+    assert parse_summary("</summary><summary>bad") is None
+    assert parse_summary("<summary>valid</summary>", has_tool_call=True) is None
 
-    def test_file_read_block_restores_recent_five_and_hides_only_over_limit_results(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            session_dir = Path(tmp)
-            logs_dir = session_dir / "logs"
-            for index in range(1, 8):
-                append_jsonl(
-                    logs_dir / "file_events.jsonl",
-                    {
-                        "type": "file.read",
-                        "path": f"src/file_{index}.py",
-                        "created_at": f"2026-06-15T00:00:0{index}+00:00",
-                        "payload": {
-                            "path": f"src/file_{index}.py",
-                            "returned_range": {"unit": "line", "start": index, "end": index + 10},
-                            "returned_content": f"content-{index}",
-                        },
+
+def test_file_read_block_restores_recent_five_and_hides_over_limit_results(
+    tmp_path: Path,
+) -> None:
+    logs_dir = tmp_path / "logs"
+    for index in range(1, 8):
+        append_jsonl(
+            logs_dir / "file_events.jsonl",
+            {
+                "type": "file.read",
+                "path": f"src/file_{index}.py",
+                "created_at": f"2026-06-15T00:00:0{index}+00:00",
+                "payload": {
+                    "path": f"src/file_{index}.py",
+                    "returned_range": {
+                        "unit": "line",
+                        "start": index,
+                        "end": index + 10,
                     },
-                )
-            append_jsonl(
-                logs_dir / "file_events.jsonl",
-                {
-                    "type": "file.read",
-                    "path": "src/large.py",
-                    "created_at": "2026-06-15T00:00:08+00:00",
-                    "payload": {
-                        "path": "src/large.py",
-                        "returned_range": {"unit": "line", "start": 120, "end": 220},
-                        "returned_content": "x" * 5001,
-                    },
+                    "returned_content": f"content-{index}",
                 },
-            )
-
-            records = collect_recent_file_reads(session_dir, count=5)
-            xml, metadata = render_file_read_block(records, max_chars=5000)
-
-            self.assertNotIn("src/file_1.py", xml)
-            self.assertNotIn("src/file_2.py", xml)
-            self.assertIn("src/file_4.py", xml)
-            self.assertLess(xml.index("src/file_4.py"), xml.index("src/file_7.py"))
-            self.assertIn('path="src/large.py"', xml)
-            self.assertIn('range="120-220"', xml)
-            self.assertIn('truncated="true"', xml)
-            self.assertIn('char_count="5001"', xml)
-            self.assertIn(
-                "The previous file read result is too large to include in this compacted context",
-                xml,
-            )
-            self.assertNotIn("x" * 100, xml)
-            self.assertEqual(metadata[-1]["included"], False)
-            self.assertEqual(metadata[-1]["char_count"], 5001)
-            self.assertEqual(metadata[-1]["truncated"], True)
-
-    def test_file_read_length_threshold_includes_4999_and_5000_but_not_5001(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            session_dir = Path(tmp)
-            for name, size in (("lt", 4999), ("eq", 5000), ("gt", 5001)):
-                append_jsonl(
-                    session_dir / "logs" / "file_events.jsonl",
-                    {
-                        "type": "file.read",
-                        "path": f"src/{name}.txt",
-                        "created_at": f"2026-06-15T00:00:0{len(name)}+00:00",
-                        "payload": {
-                            "path": f"src/{name}.txt",
-                            "returned_range": {"unit": "full", "start": 1, "end": "EOF"},
-                            "returned_content": name * (size // len(name)) + name[: size % len(name)],
-                        },
-                    },
-                )
-
-            xml, metadata = render_file_read_block(collect_recent_file_reads(session_dir), max_chars=5000)
-
-            self.assertIn('path="src/lt.txt" mode="full" truncated="false" char_count="4999"', xml)
-            self.assertIn('path="src/eq.txt" mode="full" truncated="false" char_count="5000"', xml)
-            self.assertIn('path="src/gt.txt" mode="full" truncated="true" char_count="5001"', xml)
-            self.assertEqual([item["included"] for item in metadata], [True, True, False])
-
-    def test_context_compression_config_resolves_from_model_and_runtime_config(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            home = root / "home"
-            user_root = home / ".lora"
-            user_root.mkdir(parents=True)
-            (user_root / "config.yaml").write_text(
-                "\n".join(
-                    [
-                        "agent:",
-                        "  default_alias: dev",
-                        "agents:",
-                        "  - alias: dev",
-                        "    model_request:",
-                        "      context_window: 32000",
-                        "      routes:",
-                        "        - id: primary",
-                        "          provider: openai",
-                        "          model_name: profile-model",
-                        "          base_url: https://example.test/v1",
-                        "          api_key_env: DEV_API_KEY",
-                        "context_compression:",
-                        "  enabled: true",
-                        "  trigger_ratio: 0.75",
-                        "  file_read_count: 4",
-                        "  file_read_max_chars: 1234",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            with patch("lora.config.loader.Path.home", return_value=home):
-                config = load_run_config(workspace_root=root)
-
-            self.assertEqual(config.context_window, 32000)
-            self.assertTrue(config.context_compression_enabled)
-            self.assertEqual(config.context_compression_trigger_ratio, 0.75)
-            self.assertEqual(config.context_compression_file_read_count, 4)
-            self.assertEqual(config.context_compression_file_read_max_chars, 1234)
-
-
-class ContextCompressionRunnerTests(unittest.TestCase):
-    def test_runner_skips_below_trigger_and_does_not_write_model_context(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            session = _session(tmp, token_usage={"latest_input_tokens": 800, "latest_output_tokens": 99})
-            config = RunConfig(
-                workspace_root=tmp,
-                lora_root=Path(tmp) / ".lora",
-                context_window=1000,
-            )
-            calls: list[bool] = []
-
-            decision = asyncio.run(
-                ContextCompressionRunner(config=config, session_dir=Path(tmp)).maybe_compact(
-                    session=session,
-                    system_prompt="system prompt",
-                    model_messages=[{"role": "user", "content": "hello"}],
-                    history_cutoff=1,
-                    call_model=_recording_model(calls, "<summary>unused</summary>"),
-                )
-            )
-
-            self.assertEqual(decision.status, "skipped")
-            self.assertEqual(session.status, "normal")
-            self.assertFalse((Path(tmp) / "model_context.json").exists())
-            self.assertEqual(calls, [])
-
-    def test_runner_compacts_at_threshold_preserving_system_and_reminder(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            session = _session(tmp, token_usage={"latest_input_tokens": 800, "latest_output_tokens": 100})
-            session.history = [
-                {"role": "user", "content": "older user"},
-                {"role": "assistant", "content": "older assistant"},
-                {"role": "user", "content": "latest\n\n<system-reminder>\n原始 reminder 内容\n</system-reminder>"},
-            ]
-            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", context_window=1000)
-            append_jsonl(
-                Path(tmp) / "logs" / "file_events.jsonl",
-                {
-                    "type": "file.read",
-                    "path": "src/a.ts",
-                    "created_at": "2026-06-15T00:00:00+00:00",
-                    "payload": {
-                        "path": "src/a.ts",
-                        "returned_range": {"unit": "line", "start": 120, "end": 220},
-                        "returned_content": "lines 120-220",
-                    },
-                },
-            )
-
-            decision = asyncio.run(
-                ContextCompressionRunner(config=config, session_dir=Path(tmp)).maybe_compact(
-                    session=session,
-                    system_prompt="system prompt",
-                    model_messages=session.history,
-                    history_cutoff=len(session.history),
-                    call_model=_recording_model([], "<analysis>x</analysis><summary>压缩摘要</summary>"),
-                )
-            )
-
-            self.assertEqual(decision.status, "compacted")
-            self.assertEqual(session.status, "compacted")
-            self.assertEqual(decision.messages[0], {"role": "system", "content": "system prompt"})
-            self.assertEqual(decision.messages[1]["role"], "user")
-            content = decision.messages[1]["content"]
-            self.assertLess(content.index("<system-reminder>"), content.index("<session-context>"))
-            self.assertIn("<system-reminder>\n原始 reminder 内容\n</system-reminder>", content)
-            self.assertIn("<file-read>", content)
-            self.assertIn('path="src/a.ts" mode="partial" range="120-220"', content)
-            self.assertIn("<summary>", content)
-            self.assertIn("压缩摘要", content)
-            self.assertIn(SUMMARY_WITH_TRANSCRIPT, content)
-
-            model_context = json.loads((Path(tmp) / "model_context.json").read_text(encoding="utf-8"))
-            self.assertTrue(model_context["is_compacted"])
-            self.assertEqual(model_context["history_cutoff"], len(session.history))
-            self.assertEqual(model_context["messages"], decision.messages)
-            compactions = _read_jsonl(Path(tmp) / "compactions.jsonl")
-            self.assertEqual(len(compactions), 1)
-            self.assertEqual(compactions[0]["attempts_with_tools"], 1)
-            self.assertEqual(compactions[0]["attempts_without_tools"], 0)
-            self.assertFalse(compactions[0]["fallback_without_tools"])
-            self.assertEqual(len(session.history), 3)
-            self.assertFalse((Path(tmp) / "sessions").exists())
-
-    def test_runner_retries_tool_calls_then_falls_back_without_tools(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            session = _session(tmp, token_usage={"latest_input_tokens": 900, "latest_output_tokens": 0})
-            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", context_window=1000)
-            tool_modes: list[bool] = []
-
-            async def call_model(
-                messages: list[dict[str, Any]], *, system_prompt: str, tools_enabled: bool
-            ) -> ContextCompressionModelResult:
-                tool_modes.append(tools_enabled)
-                if tools_enabled:
-                    return ContextCompressionModelResult(text="<summary>ignored</summary>", has_tool_call=True)
-                return ContextCompressionModelResult(text="<summary>fallback summary</summary>", has_tool_call=False)
-
-            decision = asyncio.run(
-                ContextCompressionRunner(config=config, session_dir=Path(tmp)).maybe_compact(
-                    session=session,
-                    system_prompt="system",
-                    model_messages=[{"role": "user", "content": "<system-reminder>\nR\n</system-reminder>"}],
-                    history_cutoff=1,
-                    call_model=call_model,
-                )
-            )
-
-            self.assertEqual(decision.status, "compacted")
-            self.assertEqual(tool_modes, [True, True, True, True, True, False])
-            record = _read_jsonl(Path(tmp) / "compactions.jsonl")[0]
-            self.assertEqual(record["attempts_with_tools"], 5)
-            self.assertEqual(record["attempts_without_tools"], 1)
-            self.assertTrue(record["fallback_without_tools"])
-
-    def test_runner_marks_session_failed_after_ten_failed_attempts_without_replacing_context(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            session = _session(tmp, token_usage={"latest_input_tokens": 900, "latest_output_tokens": 0})
-            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", context_window=1000)
-            calls: list[bool] = []
-
-            decision = asyncio.run(
-                ContextCompressionRunner(config=config, session_dir=Path(tmp)).maybe_compact(
-                    session=session,
-                    system_prompt="system",
-                    model_messages=[{"role": "user", "content": "hello"}],
-                    history_cutoff=1,
-                    call_model=_recording_model(calls, "no summary"),
-                )
-            )
-
-            self.assertEqual(decision.status, "failed")
-            self.assertEqual(session.status, "compression_failed")
-            self.assertEqual(calls, [True, True, True, True, True, False, False, False, False, False])
-            self.assertFalse((Path(tmp) / "model_context.json").exists())
-
-    def test_concurrent_compaction_for_same_session_runs_only_once(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            session_a = _session(tmp, token_usage={"latest_input_tokens": 900, "latest_output_tokens": 0})
-            session_b = _session(tmp, token_usage={"latest_input_tokens": 900, "latest_output_tokens": 0})
-            config = RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora", context_window=1000)
-            call_count = 0
-
-            async def slow_model(
-                messages: list[dict[str, Any]], *, system_prompt: str, tools_enabled: bool
-            ) -> ContextCompressionModelResult:
-                nonlocal call_count
-                call_count += 1
-                await asyncio.sleep(0.01)
-                return ContextCompressionModelResult(text="<summary>once</summary>", has_tool_call=False)
-
-            async def run_both() -> list[str]:
-                runner = ContextCompressionRunner(config=config, session_dir=Path(tmp))
-                decisions = await asyncio.gather(
-                    runner.maybe_compact(
-                        session=session_a,
-                        system_prompt="system",
-                        model_messages=[{"role": "user", "content": "<system-reminder>\nR\n</system-reminder>"}],
-                        history_cutoff=1,
-                        call_model=slow_model,
-                    ),
-                    runner.maybe_compact(
-                        session=session_b,
-                        system_prompt="system",
-                        model_messages=[{"role": "user", "content": "<system-reminder>\nR\n</system-reminder>"}],
-                        history_cutoff=1,
-                        call_model=slow_model,
-                    ),
-                )
-                return [decision.status for decision in decisions]
-
-            statuses = asyncio.run(run_both())
-
-            self.assertEqual(statuses, ["compacted", "compacted"])
-            self.assertEqual(call_count, 1)
-            self.assertEqual(len(_read_jsonl(Path(tmp) / "compactions.jsonl")), 1)
-
-
-def _session(tmp: str, *, token_usage: dict[str, int]) -> AgentSession:
-    return AgentSession(
-        session_id="chat-test",
-        workspace_root=tmp,
-        session_dir=tmp,
-        created_at="2026-06-15T00:00:00+00:00",
-        updated_at="2026-06-15T00:00:00+00:00",
-        status="normal",
-        token_usage=token_usage,
-        history=[],
+            },
+        )
+    append_jsonl(
+        logs_dir / "file_events.jsonl",
+        {
+            "type": "file.read",
+            "path": "src/large.py",
+            "created_at": "2026-06-15T00:00:08+00:00",
+            "payload": {
+                "path": "src/large.py",
+                "returned_range": {"unit": "line", "start": 120, "end": 220},
+                "returned_content": "x" * 5001,
+            },
+        },
     )
 
+    records = collect_recent_file_reads(tmp_path, count=5)
+    xml, metadata = render_file_read_block(records, max_chars=5000)
 
-def _recording_model(
-    calls: list[bool],
-    text: str,
-) -> Callable[[list[dict[str, Any]]], Awaitable[ContextCompressionModelResult]]:
-    async def call_model(
-        messages: list[dict[str, Any]], *, system_prompt: str, tools_enabled: bool
-    ) -> ContextCompressionModelResult:
-        calls.append(tools_enabled)
-        return ContextCompressionModelResult(text=text, has_tool_call=False)
-
-    return call_model
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
-def _extract_system_reminder(content: str) -> str:
-    start = content.index("<system-reminder>")
-    end = content.index("</system-reminder>", start) + len("</system-reminder>")
-    return content[start:end]
+    assert "src/file_1.py" not in xml
+    assert "src/file_2.py" not in xml
+    assert "src/file_4.py" in xml
+    assert xml.index("src/file_4.py") < xml.index("src/file_7.py")
+    assert 'path="src/large.py"' in xml
+    assert 'range="120-220"' in xml
+    assert 'truncated="true"' in xml
+    assert 'char_count="5001"' in xml
+    assert "The previous file read result is too large" in xml
+    assert "x" * 100 not in xml
+    assert metadata[-1] == {
+        "path": "src/large.py",
+        "mode": "partial",
+        "included": False,
+        "char_count": 5001,
+        "truncated": True,
+        "range": "120-220",
+    }
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_file_read_length_threshold_is_inclusive(tmp_path: Path) -> None:
+    for name, size in (("lt", 4999), ("eq", 5000), ("gt", 5001)):
+        append_jsonl(
+            tmp_path / "logs" / "file_events.jsonl",
+            {
+                "type": "file.read",
+                "path": f"src/{name}.txt",
+                "created_at": f"2026-06-15T00:00:0{len(name)}+00:00",
+                "payload": {
+                    "path": f"src/{name}.txt",
+                    "returned_range": {"unit": "full", "start": 1, "end": "EOF"},
+                    "returned_content": name * (size // len(name))
+                    + name[: size % len(name)],
+                },
+            },
+        )
+
+    xml, metadata = render_file_read_block(
+        collect_recent_file_reads(tmp_path),
+        max_chars=5000,
+    )
+
+    assert 'path="src/lt.txt" mode="full" truncated="false" char_count="4999"' in xml
+    assert 'path="src/eq.txt" mode="full" truncated="false" char_count="5000"' in xml
+    assert 'path="src/gt.txt" mode="full" truncated="true" char_count="5001"' in xml
+    assert [item["included"] for item in metadata] == [True, True, False]
+
+
+def test_zero_file_read_count_disables_file_read_injection(tmp_path: Path) -> None:
+    append_jsonl(
+        tmp_path / "logs" / "file_events.jsonl",
+        {
+            "type": "file.read",
+            "payload": {"path": "secret.txt", "returned_content": "secret"},
+        },
+    )
+
+    assert collect_recent_file_reads(tmp_path, count=0) == []
+
+
+def test_context_compression_config_resolves_from_model_and_runtime_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    user_root = home / ".lora"
+    user_root.mkdir(parents=True)
+    (user_root / "config.yaml").write_text(
+        """agent:
+  default_alias: dev
+agents:
+  - alias: dev
+    model_request:
+      context_window: 32000
+      routes:
+        - id: primary
+          provider: openai
+          model_name: profile-model
+          base_url: https://example.test/v1
+          api_key_env: DEV_API_KEY
+context_compression:
+  enabled: true
+  trigger_ratio: 0.75
+  file_read_count: 4
+  file_read_max_chars: 1234
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("lora.config.loader.Path.home", lambda: home)
+
+    config = load_run_config(workspace_root=tmp_path)
+
+    assert config.context_window == 32000
+    assert config.context_compression_enabled is True
+    assert config.context_compression_trigger_ratio == 0.75
+    assert config.context_compression_file_read_count == 4
+    assert config.context_compression_file_read_max_chars == 1234

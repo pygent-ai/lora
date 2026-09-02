@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from pygent import (
     ToolDefinition,
     ToolMessage,
     ToolResult as PygentToolResult,
+    freeze_json_object,
     thaw_json,
 )
 from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
@@ -33,32 +35,23 @@ from pygent.core import (
 from pygent.runtime.codec import message_from_dict, message_to_dict
 from pygent.tool import ToolSideEffect
 
-from lora.core.io import plain_data
+from lora.core.io import plain_data, plain_object
 from lora.runtime.context import LoraContext
-from lora.runtime.context_compression import ContextCompressionModelResult, ContextCompressionRunner
-from lora.runtime.eternal_conversation import render_memory_context
+from lora.runtime.context_snapshots import ContextSnapshotStore
+from lora.runtime.eternal_conversation import render_memory_access_instruction
 from lora.runtime.file_effects import DeferredFileEffectBatch, FILE_EFFECT_TOOL_SPEC
 from lora.runtime.file_effect_models import DeferredFileEffectJob
+from lora.runtime.reminders import ReminderService
 from lora.runtime.tools import ToolObserver
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import EventStore
 
 from .common import (
-    _message_content,
-    _pygent_context_from_model_messages,
-    _pygent_context_messages,
     _serialize_tool_payload_for_model,
-    _split_current_message,
-    _to_pygent_message,
     _session_dir_for_run,
 )
 from .prompts import AgentContextManager, PromptRegistry
-from .prompt_sources import (
-    _detect_new_bash_cli,
-    _detect_new_skills_after_file_change,
-    _render_tool_system_reminder,
-)
 
 MAX_EMPTY_TOOL_FOLLOWUP_RETRIES = 5
 
@@ -72,6 +65,105 @@ MANAGED_EFFECT_RECOVERY = ExecutionRequirements(
 )
 
 
+def _context_snapshot_payload(
+    context: LoraContext,
+    current: PygentMessage,
+    *,
+    phase: str = "request",
+    response: AIMessage | None = None,
+) -> dict[str, Any]:
+    messages = [
+        {**message_to_dict(message), "source": "history", "position": index}
+        for index, message in enumerate(context.messages)
+    ]
+    messages.append(
+        {
+            **message_to_dict(current),
+            "source": "current",
+            "position": len(messages),
+        }
+    )
+    if response is not None:
+        messages.append(
+            {
+                **message_to_dict(response),
+                "source": "response",
+                "position": len(messages),
+            }
+        )
+    tools = [
+        {
+            "name": definition.name,
+            "description": definition.description,
+            "parameters": plain_data(definition.parameters),
+        }
+        for definition in context.tools
+    ]
+    identity = {
+        "case_run_id": context.case_run_id,
+        "turn_id": context.turn_id,
+        "compression_version": context.compression_count,
+        "projection_revision": context.projection_revision,
+        "phase": phase,
+        "system_prompt": context.system_prompt,
+        "messages": messages,
+        "tools": tools,
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:24]
+    return {
+        "schema_version": 2,
+        "snapshot_id": f"context-{digest}",
+        "session_id": context.session_id,
+        "case_run_id": context.case_run_id,
+        "turn_id": context.turn_id,
+        "compression_version": context.compression_count,
+        "projection_revision": context.projection_revision,
+        "phase": phase,
+        "system_prompt": context.system_prompt,
+        "messages": messages,
+        "message_count": len(messages),
+        "tool_count": len(context.tools),
+        "tools": tools,
+    }
+
+
+async def checkpoint_context_snapshot(
+    context: LoraContext,
+    current: PygentMessage,
+    *,
+    phase: str = "request",
+    response: AIMessage | None = None,
+) -> dict[str, Any]:
+    payload = _context_snapshot_payload(
+        context,
+        current,
+        phase=phase,
+        response=response,
+    )
+    store = ContextSnapshotStore(_session_dir_for_run(Path(context.run_dir)))
+
+    async def operation():
+        saved = await asyncio.to_thread(store.save, payload)
+        return freeze_json(saved)
+
+    infrastructure = active_infrastructure()
+    if infrastructure is None:
+        return await asyncio.to_thread(store.save, payload)
+    effect = await infrastructure.execute_effect(
+        spec=EffectSpec(
+            effect_type="lora.context.snapshot",
+            side_effect=EffectSideEffect.WRITE,
+            idempotency=EffectIdempotency.INHERENT,
+            retry_policy=EffectRetryPolicy.REPLAY_SAFE,
+        ),
+        request=freeze_json_object(payload),
+        operation=operation,
+    )
+    return plain_object(thaw_json(effect.value))
+
+
 async def checkpoint_conversation_message(
     config: RunConfig,
     context: LoraContext,
@@ -81,7 +173,7 @@ async def checkpoint_conversation_message(
 ) -> None:
     checkpoint_id = f"{context.case_run_id}:{context.turn_id}:{boundary}"
     payload = message_to_dict(message)
-    metadata = plain_data(thaw_json(context.metadata))
+    metadata = plain_data(context.metadata)
     include_in_session = not (
         isinstance(metadata, dict)
         and metadata.get("persist_conversation_history") is False
@@ -104,10 +196,9 @@ async def checkpoint_conversation_message(
             event_payload = {
                 **payload,
                 "checkpoint_id": checkpoint_id,
-                "message": payload,
             }
             if message.role == "user":
-                message_data = plain_data(thaw_json(message.data))
+                message_data = plain_data(message.data)
                 raw_content = (
                     message_data.get("raw_content")
                     if isinstance(message_data, dict)
@@ -147,11 +238,11 @@ async def checkpoint_conversation_message(
             idempotency=EffectIdempotency.INHERENT,
             retry_policy=EffectRetryPolicy.REPLAY_SAFE,
         ),
-        request={
+        request=freeze_json_object({
             "checkpoint_id": checkpoint_id,
             "message": payload,
             "include_in_session": include_in_session,
-        },
+        }),
         operation=operation,
     )
 
@@ -188,7 +279,7 @@ _READ_PARAMETER_DESCRIPTIONS = {
 def _model_tool_definition(definition: ToolDefinition) -> ToolDefinition:
     if definition.name != "read":
         return definition
-    parameters = plain_data(thaw_json(definition.parameters))
+    parameters = plain_data(definition.parameters)
     properties = parameters.get("properties")
     if not isinstance(properties, dict):
         return definition
@@ -270,7 +361,7 @@ class LoraToolAuthorization(Module[ToolAuthorizationRequest, ToolAuthorizationDe
                     "tool_name": name,
                     "tool_id": request.spec.tool_id,
                     "side_effect": request.spec.side_effect.value,
-                    "arguments": plain_data(thaw_json(request.call.arguments)),
+                    "arguments": plain_data(request.call.arguments),
                 },
             ),
         )
@@ -314,8 +405,6 @@ class DynamicPromptModule(Module[PygentMessage, PygentMessage]):
     async def forward(
         self, message: PygentMessage, context: LoraContext
     ) -> tuple[PygentMessage, LoraContext]:
-        if context.model_context_compacted:
-            return message, context
         tool_names = [definition.name for definition in context.tools]
         infrastructure = active_infrastructure()
         if infrastructure is None:  # pragma: no cover - managed graph invariant
@@ -334,7 +423,7 @@ class DynamicPromptModule(Module[PygentMessage, PygentMessage]):
             if context.eternal_memory_enabled:
                 text = (
                     f"{text}\n\n"
-                    f"{render_memory_context(_session_dir_for_run(Path(context.run_dir)), dict(thaw_json(context.memory_projection)))}"
+                    f"{render_memory_access_instruction(_session_dir_for_run(Path(context.run_dir)), plain_object(context.memory_projection))}"
                 )
             return freeze_json({"text": text})
 
@@ -345,12 +434,12 @@ class DynamicPromptModule(Module[PygentMessage, PygentMessage]):
                 idempotency=EffectIdempotency.INHERENT,
                 retry_policy=EffectRetryPolicy.REPLAY_SAFE,
             ),
-            request={
+            request=freeze_json_object({
                 "message": message_to_dict(message),
                 "history": context.history,
                 "tool_names": tool_names,
-                "memory_projection": plain_data(thaw_json(context.memory_projection)),
-            },
+                "memory_projection": plain_data(context.memory_projection),
+            }),
             operation=operation,
         )
         result = thaw_json(effect.value)
@@ -360,87 +449,16 @@ class DynamicPromptModule(Module[PygentMessage, PygentMessage]):
         return message, replace(context, system_prompt=text)
 
 
-class ContextCompressionModule(Module[PygentMessage, PygentMessage]):
-    execution_requirements = MANAGED_EFFECT_RECOVERY
-    trusted_live_resource_attributes = ("config",)
+class ForegroundModelModule(Module[PygentMessage, AIMessage]):
+    """Foreground provider call with bounded empty tool-followup recovery."""
 
-    def __init__(
-        self,
-        config: RunConfig,
-        model: ModelCallLayer,
-    ) -> None:
-        super().__init__()
-        self.config = config
-        self.model = model
-
-    async def forward(
-        self, message: PygentMessage, context: LoraContext
-    ) -> tuple[PygentMessage, LoraContext]:
-        if context.model_context_compacted:
-            return message, context
-        if self.config.eternal_conversation.enabled:
-            return message, context
-        session = SessionManager(self.config).load(context.session_id)
-        compression = await ContextCompressionRunner(
-            config=self.config,
-            session_dir=_session_dir_for_run(Path(context.run_dir)),
-        ).maybe_compact(
-            session=session,
-            system_prompt=context.system_prompt,
-            model_messages=_pygent_context_messages(context + message),
-            history_cutoff=len(context.full_history),
-            call_model=self._call_model,
-        )
-        if compression.status == "failed":
-            raise RuntimeError(compression.reason or "context compression failed")
-        if compression.status != "compacted":
-            return message, context
-        compacted, current = _split_current_message(
-            _pygent_context_from_model_messages(context, compression.messages)
-        )
-        return current, replace(
-            compacted,
-            tools=context.tools,
-            session_status=session.status,
-            model_context_compacted=True,
-        )
-
-    async def _call_model(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        system_prompt: str,
-        tools_enabled: bool,
-    ) -> ContextCompressionModelResult:
-        converted = [
-            item for value in messages if (item := _to_pygent_message(value)) is not None
-        ]
-        if not converted:
-            raise RuntimeError("context compression requires at least one model message")
-        context = PygentContext(
-            system_prompt=system_prompt,
-            messages=tuple(converted[:-1]),
-            tools=self.model.tools if tools_enabled else (),
-        )
-        answer, _ = await self.model(converted[-1], context)
-        return ContextCompressionModelResult(
-            text=_message_content(answer),
-            has_tool_call=bool(answer.tool_calls),
-        )
-
-
-class PreparedModelModule(Module[PygentMessage, AIMessage]):
     execution_requirements = EFFECT_FREE_RECOVERY
     def __init__(
         self,
         *,
-        prompt: DynamicPromptModule,
-        compression: ContextCompressionModule,
         model: ModelCallLayer,
     ) -> None:
         super().__init__()
-        self.prompt = prompt
-        self.compression = compression
         self.model = model
 
     async def forward(
@@ -449,8 +467,6 @@ class PreparedModelModule(Module[PygentMessage, AIMessage]):
         current = message
         history = context
         for retry in range(MAX_EMPTY_TOOL_FOLLOWUP_RETRIES + 1):
-            current, history = await self.prompt(current, history)
-            current, history = await self.compression(current, history)
             answer, model_context = await self.model(current, history)
             if not isinstance(message, ToolMessage) or answer.content or answer.tool_calls:
                 return answer, model_context
@@ -460,6 +476,36 @@ class PreparedModelModule(Module[PygentMessage, AIMessage]):
                     f"after {MAX_EMPTY_TOOL_FOLLOWUP_RETRIES} retries"
                 )
         raise AssertionError("unreachable")
+
+
+class ContextSnapshotModelModule(Module[PygentMessage, AIMessage]):
+    execution_requirements = MANAGED_EFFECT_RECOVERY
+    trusted_live_resource_attributes = ("inner",)
+
+    def __init__(self, inner: Module[PygentMessage, AIMessage]) -> None:
+        super().__init__()
+        self.inner = inner
+
+    async def forward(
+        self, message: PygentMessage, context: LoraContext
+    ) -> tuple[AIMessage, LoraContext]:
+        request_snapshot = await checkpoint_context_snapshot(context, message)
+        await self.emit(
+            kind="lora.context.snapshot",
+            data=freeze_json_object(request_snapshot),
+        )
+        answer, next_context = await self.inner(message, context)
+        response_snapshot = await checkpoint_context_snapshot(
+            next_context,
+            message,
+            phase="response",
+            response=answer,
+        )
+        await self.emit(
+            kind="lora.context.snapshot",
+            data=freeze_json_object(response_snapshot),
+        )
+        return answer, next_context
 
 
 class ConversationCheckpointModelModule(Module[PygentMessage, AIMessage]):
@@ -498,8 +544,8 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
         self.config = config
 
     async def forward(
-        self, message: ToolMessage, context: PygentContext
-    ) -> tuple[ToolMessage, PygentContext]:
+        self, message: ToolMessage, context: LoraContext
+    ) -> tuple[ToolMessage, LoraContext]:
         infrastructure = active_infrastructure()
         if infrastructure is None:  # pragma: no cover - managed graph invariant
             raise RuntimeError("tool audit requires managed execution")
@@ -523,7 +569,7 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
             for result in message.results:
                 call = calls.get(result.call_id)
                 arguments = (
-                    plain_data(thaw_json(call.arguments))
+                    plain_data(call.arguments)
                     if call is not None
                     else {}
                 )
@@ -564,7 +610,7 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
                 {
                     "message": message_to_dict(ToolMessage(results=tuple(projected))),
                     "pending_file_effects": [
-                        plain_data(thaw_json(item))
+                        plain_data(item)
                         for item in next_context.pending_file_effects
                     ],
                 }
@@ -577,7 +623,7 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
                 idempotency=EffectIdempotency.INHERENT,
                 retry_policy=EffectRetryPolicy.REPLAY_SAFE,
             ),
-            request={
+            request=freeze_json_object({
                 "message": message_to_dict(message),
                 "assistant": (
                     message_to_dict(assistant)
@@ -586,7 +632,7 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
                 ),
                 "turn_id": context.turn_id,
                 "available_tools": [definition.name for definition in context.tools],
-            },
+            }),
             operation=operation,
         )
         result = thaw_json(effect.value)
@@ -603,21 +649,20 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
         return projected_message, next_context
 
 
-class SkillReminderModule(Module[ToolMessage, ToolMessage]):
+class SystemReminderModule(Module[ToolMessage, ToolMessage]):
     execution_requirements = MANAGED_EFFECT_RECOVERY
-    trusted_live_resource_attributes = ("config", "prompt_registry")
+    trusted_live_resource_attributes = ("reminders",)
 
-    def __init__(self, config: RunConfig, prompt_registry: PromptRegistry | None) -> None:
+    def __init__(self, reminders: ReminderService) -> None:
         super().__init__()
-        self.config = config
-        self.prompt_registry = prompt_registry
+        self.reminders = reminders
 
     async def forward(
-        self, message: ToolMessage, context: PygentContext
-    ) -> tuple[ToolMessage, PygentContext]:
+        self, message: ToolMessage, context: LoraContext
+    ) -> tuple[ToolMessage, LoraContext]:
         infrastructure = active_infrastructure()
         if infrastructure is None:  # pragma: no cover - managed graph invariant
-            raise RuntimeError("skill reminder requires managed execution")
+            raise RuntimeError("system reminder requires managed execution")
         assistant = context.messages[-1] if context.messages else None
         calls = {
             call.call_id: call
@@ -626,49 +671,39 @@ class SkillReminderModule(Module[ToolMessage, ToolMessage]):
 
         async def operation():
             updated: list[PygentToolResult] = []
-            manager = _context_manager(self.config, context, self.prompt_registry)
-            for result in message.results:
+            mutation_indexes = [
+                index
+                for index, result in enumerate(message.results)
+                if result.status == "succeeded"
+                and result.name in {"bash", "write", "edit"}
+            ]
+            bash_commands: list[str] = []
+            for index in mutation_indexes:
+                result = message.results[index]
+                if result.name != "bash":
+                    continue
                 call = calls.get(result.call_id)
-                arguments = (
-                    plain_data(thaw_json(call.arguments))
-                    if call is not None
-                    else {}
-                )
+                arguments = plain_data(call.arguments) if call is not None else {}
                 if not isinstance(arguments, dict):
                     arguments = {}
-                new_cli: list[dict[str, Any]] = []
-                new_skills: list[dict[str, Any]] = []
-                if result.status == "succeeded" and result.name == "bash":
-                    new_cli = _detect_new_bash_cli(
-                        manager.session_dir,
-                        self.config.cli_bash_presets,
-                        command=str(arguments.get("command") or ""),
-                    )
-                    new_skills = _detect_new_skills_after_file_change(
-                        manager.session_dir,
-                        user_skills_dir=manager.user_skills_dir,
-                        project_skills_dir=manager.project_skills_dir,
-                    )
-                elif result.status == "succeeded" and result.name in {
-                    "write",
-                    "edit",
-                }:
-                    new_skills = _detect_new_skills_after_file_change(
-                        manager.session_dir,
-                        user_skills_dir=manager.user_skills_dir,
-                        project_skills_dir=manager.project_skills_dir,
-                    )
-                reminder = _render_tool_system_reminder(
-                    manager,
-                    context=context,
-                    new_cli_entries=new_cli,
-                    new_skill_entries=new_skills,
-                )
-                output = str(plain_data(thaw_json(result.output)) or "")
+                bash_commands.append(str(arguments.get("command") or ""))
+            reminder = await self.reminders.observe_after_tools(
+                context.session_id,
+                bash_commands=tuple(bash_commands),
+                file_mutation=bool(mutation_indexes),
+                has_results=bool(message.results),
+            )
+            reminder_index = len(message.results) - 1 if reminder else None
+            for result_index, result in enumerate(message.results):
+                output = str(plain_data(result.output) or "")
                 updated.append(
                     replace(
                         result,
-                        output=f"{output}\n\n{reminder}" if reminder else output,
+                        output=(
+                            f"{output}\n\n{reminder}"
+                            if reminder_index == result_index
+                            else output
+                        ),
                     )
                 )
             return freeze_json(
@@ -682,7 +717,7 @@ class SkillReminderModule(Module[ToolMessage, ToolMessage]):
                 idempotency=EffectIdempotency.INHERENT,
                 retry_policy=EffectRetryPolicy.REPLAY_SAFE,
             ),
-            request={
+            request=freeze_json_object({
                 "message": message_to_dict(message),
                 "assistant": (
                     message_to_dict(assistant)
@@ -690,17 +725,16 @@ class SkillReminderModule(Module[ToolMessage, ToolMessage]):
                     else None
                 ),
                 "turn_id": context.turn_id,
-            },
+            }),
             operation=operation,
         )
         replayed = thaw_json(effect.value)
         if not isinstance(replayed, dict):
-            raise TypeError("replayed skill reminder is invalid")
+            raise TypeError("replayed system reminder is invalid")
         updated_message = message_from_dict(replayed.get("message"))
         if not isinstance(updated_message, ToolMessage):
-            raise TypeError("replayed skill reminder did not return a ToolMessage")
+            raise TypeError("replayed system reminder did not return a ToolMessage")
         return updated_message, context
-
 
 class PersistedDiffModule(Module[ToolMessage, ToolMessage]):
     execution_requirements = EFFECT_FREE_RECOVERY
@@ -712,8 +746,8 @@ class PersistedDiffModule(Module[ToolMessage, ToolMessage]):
         self.tasks = tasks
 
     async def forward(
-        self, message: ToolMessage, context: PygentContext
-    ) -> tuple[ToolMessage, PygentContext]:
+        self, message: ToolMessage, context: LoraContext
+    ) -> tuple[ToolMessage, LoraContext]:
         jobs, next_context = context.drain_file_effects()
         if jobs:
             batch = DeferredFileEffectBatch.create(
@@ -739,6 +773,47 @@ class PersistedDiffModule(Module[ToolMessage, ToolMessage]):
         return message, next_context
 
 
+MAX_IDENTICAL_FOREGROUND_TOOL_CALLS = 8
+
+
+class _RepeatedToolCallState:
+    def __init__(self) -> None:
+        self.turn_id: str | None = None
+        self.signature: tuple[tuple[str, str], ...] | None = None
+        self.count = 0
+
+
+class RepeatedToolCallGuardModule(Module[AIMessage, ToolMessage]):
+    execution_requirements = EFFECT_FREE_RECOVERY
+    trusted_live_resource_attributes = ("state",)
+
+    def __init__(self, inner: Module[AIMessage, ToolMessage]) -> None:
+        super().__init__()
+        self.inner = inner
+        self.state = _RepeatedToolCallState()
+
+    async def forward(
+        self, message: AIMessage, context: LoraContext
+    ) -> tuple[ToolMessage, LoraContext]:
+        signature = tuple(
+            (call.name, repr(call.arguments))
+            for call in message.tool_calls
+        )
+        if context.turn_id == self.state.turn_id and signature == self.state.signature:
+            self.state.count += 1
+        else:
+            self.state.turn_id = context.turn_id
+            self.state.signature = signature
+            self.state.count = 1
+        if signature and self.state.count >= MAX_IDENTICAL_FOREGROUND_TOOL_CALLS:
+            raise RuntimeError(
+                "foreground Agent requested the identical tool arguments "
+                f"{self.state.count} consecutive times in turn {context.turn_id or '<unknown>'}; "
+                "stop this attempt so the caller can retry from its durable baseline"
+            )
+        return await self.inner(message, context)
+
+
 class PreparedToolModule(Module[AIMessage, ToolMessage]):
     execution_requirements = EFFECT_FREE_RECOVERY
     def __init__(
@@ -746,7 +821,7 @@ class PreparedToolModule(Module[AIMessage, ToolMessage]):
         *,
         tools: ToolCallLayer,
         audit: ToolAuditModule,
-        reminders: SkillReminderModule,
+        reminders: SystemReminderModule,
         persisted_diff: PersistedDiffModule,
     ) -> None:
         super().__init__()
@@ -756,8 +831,8 @@ class PreparedToolModule(Module[AIMessage, ToolMessage]):
         self.persisted_diff = persisted_diff
 
     async def forward(
-        self, message: AIMessage, context: PygentContext
-    ) -> tuple[ToolMessage, PygentContext]:
+        self, message: AIMessage, context: LoraContext
+    ) -> tuple[ToolMessage, LoraContext]:
         tool_message, tool_context = await self.tools(message, context)
         projection_context = tool_context + message
         tool_message, projection_context = await self.audit(tool_message, projection_context)

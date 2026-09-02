@@ -69,8 +69,8 @@ class RepairWorkflow:
     def plan(self, session_id: str, case_run_id: str) -> dict[str, Any]:
         ref = self.find_case_run(session_id, case_run_id)
         run_dir = Path(ref.run_dir)
-        verdict = _read_json(run_dir / "verdict.json", default={})
-        status = str(verdict.get("status") or _read_json(run_dir / "run_metadata.json", default={}).get("status") or "error")
+        verdict = read_json(run_dir / "verdict.json", default={})
+        status = str(verdict.get("status") or read_json(run_dir / "run_metadata.json", default={}).get("status") or "error")
         if status == "passed":
             return {
                 "status": "skipped",
@@ -81,7 +81,7 @@ class RepairWorkflow:
 
         repair_id = self._new_repair_id(case_run_id)
         repair_dir = self._repair_dir(session_id, repair_id)
-        analysis = _read_json(run_dir / "analysis.json", default={})
+        analysis = read_json(run_dir / "analysis.json", default={})
         events = list(EventStore(ref).iter_jsonl(run_dir / "events.jsonl"))
         plan = RepairPlan(
             repair_id=repair_id,
@@ -114,7 +114,7 @@ class RepairWorkflow:
 
     def apply(self, repair_plan_path: str | Path) -> dict[str, Any]:
         plan_path = Path(repair_plan_path).expanduser().resolve()
-        plan = RepairPlan.from_dict(_read_json(plan_path))
+        plan = RepairPlan.from_dict(read_json(plan_path))
         ref = self.find_case_run(plan.session_id, plan.case_run_id)
         attempt_id = self._new_attempt_id(plan.repair_id)
         attempt_dir = self._repair_dir(plan.session_id, plan.repair_id) / "attempts" / attempt_id
@@ -154,8 +154,8 @@ class RepairWorkflow:
 
     def gate(self, repair_attempt_id: str) -> dict[str, Any]:
         attempt_dir = self.find_attempt_dir(repair_attempt_id)
-        metadata = _read_json(attempt_dir / "metadata.json")
-        plan = RepairPlan.from_dict(_read_json(metadata["repair_plan_path"]))
+        metadata = read_json(attempt_dir / "metadata.json")
+        plan = RepairPlan.from_dict(read_json(metadata["repair_plan_path"]))
         ref = self.find_case_run(plan.session_id, plan.case_run_id)
 
         commands = _normalise_commands(plan.gate.get("commands"))
@@ -269,7 +269,7 @@ def _recommended_checks(verdict: dict[str, Any], analysis: dict[str, Any], works
             {
                 "kind": "command",
                 "description": "Run the local unit and scenario suite.",
-                "command": [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                "command": [sys.executable, "-m", "pytest", "tests", "-q"],
             }
         )
     if not checks and verdict.get("failures"):
@@ -280,12 +280,12 @@ def _recommended_checks(verdict: dict[str, Any], analysis: dict[str, Any], works
 def _gate_config(workspace_root: Path, lora_root: Path) -> dict[str, Any]:
     repair_manifest = lora_root / "repair.json"
     if repair_manifest.exists():
-        data = _read_json(repair_manifest)
+        data = read_json(repair_manifest)
         return {"commands": data.get("commands", [])}
     if (lora_root / "regression.json").exists():
         return {"regression_manifest": str(lora_root / "regression.json")}
     if (workspace_root / "tests").exists():
-        return {"commands": [[sys.executable, "-m", "unittest", "discover", "-s", "tests"]]}
+        return {"commands": [[sys.executable, "-m", "pytest", "tests", "-q"]]}
     return {"commands": []}
 
 
@@ -364,7 +364,3 @@ def _summarize(text: str, limit: int = 4000) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "\n...[truncated]"
-
-
-def _read_json(path: str | Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
-    return read_json(path, default=default)

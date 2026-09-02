@@ -6,10 +6,14 @@ from fastapi import HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from lora.tracing import EventStore
+from lora.runtime.context_snapshots import ContextSnapshotStore
+from lora.runtime.reminders import BootstrapStatus
 from lora_api.app import create_app
 from lora_api.dependencies import ApiContext
 from lora_api.routers.health import health
 from lora_api.routers.tool_results import get_tool_result
+from lora_api.routers.traces import get_trace_events
+from lora_api.services.session_service import SessionService
 
 
 def test_create_app_allows_desktop_renderer_cors_requests() -> None:
@@ -27,7 +31,26 @@ def test_create_app_exposes_runtime_approval_and_task_contracts() -> None:
     assert {"get", "delete"} <= set(schema["paths"]["/runtime/tasks/{task_id}"])
 
 
-def test_health_exposes_backend_instance_header(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_session_creation_prewarms_without_constructing_runtime(tmp_path) -> None:
+    context = ApiContext(
+        workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json")
+    )
+    reminders = context.reminders
+
+    session = SessionService(context.manager, reminders).create_session()
+    task = reminders._preparations[session.session_id]
+    await task
+
+    assert context._runtime_service is None
+    state = reminders.store.load_bootstrap(reminders.scope(session.session_id))
+    assert state["status"] == BootstrapStatus.READY.value
+    await context.aclose()
+
+
+def test_health_exposes_backend_instance_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("LORA_BACKEND_INSTANCE_ID", "desktop-instance-1")
     response = Response()
 
@@ -41,10 +64,16 @@ def test_health_exposes_backend_instance_header(monkeypatch: pytest.MonkeyPatch)
 @pytest.mark.asyncio
 async def test_chat_stream_returns_structured_error_for_stale_session(tmp_path) -> None:
     app = create_app(workspace_root=str(tmp_path))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         response = await client.post(
             "/chat/stream",
-            json={"message": "hello", "session_id": "missing-session", "case_id": "chat"},
+            json={
+                "message": "hello",
+                "session_id": "missing-session",
+                "case_id": "chat",
+            },
         )
 
     assert response.status_code == 200
@@ -54,9 +83,13 @@ async def test_chat_stream_returns_structured_error_for_stale_session(tmp_path) 
 
 
 def test_get_tool_result_returns_persisted_result(tmp_path) -> None:
-    context = ApiContext(workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json"))
+    context = ApiContext(
+        workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json")
+    )
     session = context.manager.create(case_id="chat", mode="chat")
-    run = context.manager.start_case_run(session.session_id, "chat", run_config=context.config)
+    run = context.manager.start_case_run(
+        session.session_id, "chat", run_config=context.config
+    )
     store = EventStore(run)
     call_id = store.append(
         "tool.call",
@@ -66,7 +99,11 @@ def test_get_tool_result_returns_persisted_result(tmp_path) -> None:
     store.append(
         "tool.result",
         actor="tool",
-        payload={"tool_call_id": call_id, "status": "success", "result": "complete output"},
+        payload={
+            "tool_call_id": call_id,
+            "status": "success",
+            "result": "complete output",
+        },
     )
 
     response = get_tool_result(call_id, context)
@@ -82,10 +119,40 @@ def test_get_tool_result_returns_persisted_result(tmp_path) -> None:
     }
 
 
-def test_get_tool_result_accepts_model_tool_call_id(tmp_path) -> None:
-    context = ApiContext(workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json"))
+def test_trace_response_includes_session_context_snapshots(tmp_path) -> None:
+    context = ApiContext(
+        workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json")
+    )
     session = context.manager.create(case_id="chat", mode="chat")
-    run = context.manager.start_case_run(session.session_id, "chat", run_config=context.config)
+    run = context.manager.start_case_run(
+        session.session_id, "chat", run_config=context.config
+    )
+    ContextSnapshotStore(session.session_dir).save(
+        {
+            "snapshot_id": "context-1",
+            "session_id": session.session_id,
+            "case_run_id": run.case_run_id,
+            "turn_id": "turn-1",
+            "compression_version": 0,
+            "projection_revision": 1,
+            "system_prompt": "system",
+            "messages": [],
+        }
+    )
+
+    response = get_trace_events(session.session_id, run.case_run_id, context)
+
+    assert [item["snapshot_id"] for item in response.context_snapshots] == ["context-1"]
+
+
+def test_get_tool_result_accepts_model_tool_call_id(tmp_path) -> None:
+    context = ApiContext(
+        workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json")
+    )
+    session = context.manager.create(case_id="chat", mode="chat")
+    run = context.manager.start_case_run(
+        session.session_id, "chat", run_config=context.config
+    )
     store = EventStore(run)
     trace_call_id = store.append(
         "tool.call",
@@ -116,7 +183,9 @@ def test_get_tool_result_accepts_model_tool_call_id(tmp_path) -> None:
 
 
 def test_get_tool_result_returns_404_for_missing_id(tmp_path) -> None:
-    context = ApiContext(workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json"))
+    context = ApiContext(
+        workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json")
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         get_tool_result("missing-call", context)

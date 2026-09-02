@@ -5,10 +5,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from pygent import IdempotencyPolicy, ToolDefinition, ToolSideEffect, ToolSpec, thaw_json
+from pygent import IdempotencyPolicy, ToolDefinition, ToolSideEffect, ToolSpec
 from pygent.tool.executors import SandboxExecutorSupport, ToolExecutionContext
 
-from lora.core.io import read_json, utc_now, write_json
+from lora.core.io import plain_object, read_json, utc_now, write_json_atomic
 from lora.tracing.events import EventStore
 
 from .file_effect_models import (
@@ -39,7 +39,7 @@ class FileEffectBaselineStore:
     def save(self, snapshots: dict[str, Any]) -> None:
         if self.path is None:
             return
-        write_json(
+        write_json_atomic(
             self.path,
             {
                 "updated_at": utc_now(),
@@ -79,8 +79,8 @@ class FileEffectToolExecutor:
         self, spec: ToolSpec, call: Any, context: ToolExecutionContext
     ) -> object:
         del spec, context
-        arguments = thaw_json(call.arguments)
-        batch = DeferredFileEffectBatch.from_dict(dict(arguments["batch"]))
+        arguments = plain_object(call.arguments)
+        batch = DeferredFileEffectBatch.from_dict(plain_object(arguments.get("batch")))
         await asyncio.to_thread(process_file_effect_batch, batch)
         return {"batch_id": batch.batch_id, "status": "completed"}
 
@@ -100,27 +100,16 @@ def process_file_effect_batch(batch: DeferredFileEffectBatch) -> None:
     if baseline is None:
         tracker.append_effects(declared, turn_id=batch.turn_id)
     else:
-        primary = _primary_job(batch)
+        snapshot_jobs = [job for job in batch.jobs if job.requires_snapshot]
+        owner = snapshot_jobs[0] if len(snapshot_jobs) == 1 else None
         observed = tracker.observed_effects(
             baseline,
             current,
-            tool_name=primary.tool_name,
-            tool_call_id=primary.tool_call_id,
+            tool_name=owner.tool_name if owner is not None else "tool_batch",
+            tool_call_id=owner.tool_call_id if owner is not None else batch.batch_id,
         )
         tracker.append_effects(tracker.merge_effects(declared, observed), turn_id=batch.turn_id)
     baseline_store.save(current)
-
-
-def _primary_job(batch: DeferredFileEffectBatch) -> DeferredFileEffectJob:
-    for job in reversed(batch.jobs):
-        if job.requires_snapshot and job.tool_name != "read":
-            return job
-    for job in reversed(batch.jobs):
-        if job.requires_snapshot:
-            return job
-    return batch.jobs[-1]
-
-
 __all__ = [
     "DeferredFileEffectBatch",
     "DeferredFileEffectJob",

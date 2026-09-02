@@ -618,6 +618,33 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(ValueError):
                         tracker.declared_effects("read", {"file_path": raw_path}, tool_call_id="evt_tool")
 
+    def test_file_effect_tracker_skips_inferred_outside_bash_reads_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            FileEffectTracker = _file_effect_tracker_class()
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            outside = Path(tmp) / "external-cli.py"
+            outside.write_text("print('ok')\n", encoding="utf-8")
+            run = CaseRunRef(
+                session_id="s1",
+                case_id="c1",
+                case_run_id="r1",
+                run_dir=Path(tmp) / "run",
+            )
+            tracker = FileEffectTracker(
+                workspace_root=workspace,
+                store=EventStore(run),
+                allow_read_outside_workspace=False,
+            )
+
+            effects = tracker.declared_effects(
+                "bash",
+                {"command": f'grep -n "add" "{outside}"'},
+                tool_call_id="evt_tool",
+            )
+
+            self.assertEqual(effects, [])
+
     def test_file_effect_tracker_infers_bash_read_without_claiming_observed_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             FileEffectTracker = _file_effect_tracker_class()

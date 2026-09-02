@@ -5,6 +5,7 @@ import hashlib
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
+from collections.abc import AsyncIterator
 from typing import Any
 
 from pygent.tool import LocalToolExecutor, SandboxExecutorSupport
@@ -77,7 +78,7 @@ def _migrate_model_deployment_document(value: object) -> bool:
 
 
 def migrate_legacy_model_deployments(path: Path) -> int:
-    """Make Pygent <=0.2.18 route snapshots readable by Pygent 0.2.19."""
+    """Make Pygent <=0.2.18 route snapshots readable by current Pygent."""
 
     if not path.exists():
         return 0
@@ -138,7 +139,7 @@ class LoraModelResourceResolver:
                 raise ValueError(f"model resource revision {resource.revision!r} is unavailable")
 
     @asynccontextmanager
-    async def acquire(self, model_group: Any, resources: Any) -> Any:
+    async def acquire(self, model_group: Any, resources: Any) -> AsyncIterator[Any]:
         del model_group
         revision = resources.route_resources[0][1].revision
         invoker = self._invokers.get(revision)

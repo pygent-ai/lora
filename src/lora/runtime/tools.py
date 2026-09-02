@@ -7,7 +7,7 @@ import shlex
 from pathlib import Path
 from typing import Any, Literal
 
-from pygent import ToolResult as PygentToolResult, thaw_json
+from pygent import ToolResult as PygentToolResult
 
 from lora.core.io import plain_data
 from lora.tracing import DiffRecorder, read_snapshot_content
@@ -224,8 +224,8 @@ class FileEffectTracker:
                 FileEffect(
                     type=observed_effect.type,
                     path=observed_effect.path,
-                    tool_call_id=observed_effect.tool_call_id,
-                    tool_name=observed_effect.tool_name,
+                    tool_call_id=declared_effect.tool_call_id,
+                    tool_name=declared_effect.tool_name,
                     detected_by=detected_by,
                     confidence=observed_effect.confidence,
                     before_hash=observed_effect.before_hash,
@@ -325,7 +325,18 @@ class FileEffectTracker:
         effects: list[FileEffect] = []
         seen: set[str] = set()
         for raw_path in paths:
-            path = self._resolve_workspace_path(raw_path, allow_outside_workspace=True)
+            try:
+                path = self._resolve_workspace_path(
+                    raw_path,
+                    allow_outside_workspace=True,
+                )
+            except ValueError:
+                # Bash has already executed by the time audit runs. An
+                # inferred external read (for example a configured CLI
+                # executable) must not retroactively fail an otherwise valid
+                # tool call when outside-workspace read tracking is disabled.
+                # Explicit read tool paths remain fail-closed above.
+                continue
             if path in seen:
                 continue
             seen.add(path)
@@ -443,7 +454,7 @@ class ToolObserver:
                 )
 
         if result.status == "succeeded":
-            value = plain_data(thaw_json(result.output))
+            value = plain_data(result.output)
             value = _spool_large_tool_result(
                 tool_name=name,
                 args=args,

@@ -3,28 +3,27 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
 
-from pygent import Context, ContextCodec, FrozenJsonObject, Message, freeze_json_object, thaw_json
+from pygent import ContextCodec, FrozenJsonObject, PygentAgentContext, freeze_json_object
+from pygent.runtime.context_codec import ContextCodecRegistry
 from pygent.runtime.codec import message_to_dict
 
+from lora.core.io import plain_object
 from lora.schema import CaseRunRef
 from .file_effect_models import DeferredFileEffectJob
 
 
 @dataclass(frozen=True, slots=True)
-class LoraContext(Context):
+class LoraContext(PygentAgentContext):
     """Portable Lora agent state carried through one Pygent execution."""
 
     context_schema: ClassVar[str] = "lora.agent-context"
-    context_schema_version: ClassVar[int] = 3
+    context_schema_version: ClassVar[int] = 6
 
     session_id: str = ""
-    session_status: str = "normal"
     case_id: str = ""
     case_run_id: str = ""
     run_dir: str = ""
     turn_id: str | None = None
-    full_history: tuple[Message, ...] = ()
-    model_context_compacted: bool = False
     eternal_memory_enabled: bool = False
     memory_covered_through: int = 0
     memory_projection: FrozenJsonObject = field(default_factory=lambda: freeze_json_object({}))
@@ -33,14 +32,9 @@ class LoraContext(Context):
 
     @property
     def history(self) -> list[dict[str, Any]]:
-        """Return this execution's portable history segment in storage shape."""
+        """Return this invocation's native committed messages in storage shape."""
 
-        return [message_to_dict(message) for message in self.full_history]
-
-    def append_history(self, *messages: Message) -> LoraContext:
-        """Append messages to durable history without changing model projection."""
-
-        return replace(self, full_history=(*self.full_history, *messages))
+        return [message_to_dict(message) for message in self.committed_messages]
 
     @property
     def case_run_ref(self) -> CaseRunRef:
@@ -63,10 +57,11 @@ class LoraContext(Context):
         """Return pending effects and a context with the queue cleared."""
 
         jobs = tuple(
-            DeferredFileEffectJob.from_dict(dict(thaw_json(value)))
+            DeferredFileEffectJob.from_dict(plain_object(value))
             for value in self.pending_file_effects
         )
         return jobs, replace(self, pending_file_effects=())
 
 
 LORA_CONTEXT_CODEC = ContextCodec.dataclass(LoraContext)
+LORA_CONTEXT_CODECS = ContextCodecRegistry((LORA_CONTEXT_CODEC,))

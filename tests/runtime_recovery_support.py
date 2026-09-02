@@ -54,10 +54,17 @@ class ScriptedRecoveryInvoker:
         return None
 
 
-def recovery_service(workspace: Path) -> tuple[Any, LoraRuntimeService]:
+def recovery_service(
+    workspace: Path,
+    *,
+    force_compression: bool = False,
+) -> tuple[Any, LoraRuntimeService]:
     config = load_run_config(workspace_root=workspace)
     config.eternal_conversation.enabled = False
     config.runtime_approvals.enabled = False
+    if force_compression:
+        config.context_window = 40_000
+        config.context_compression_trigger_ratio = 0.8
     assert config.resolved_agent is not None
     for route in config.resolved_agent.routes:
         route.api_key = "recovery-test"
@@ -78,15 +85,30 @@ async def crash_at_boundary(
     reached_path: Path,
     force_compression: bool,
 ) -> None:
-    config, service = recovery_service(workspace)
+    config, service = recovery_service(
+        workspace,
+        force_compression=force_compression,
+    )
     manager = SessionManager(config)
     session_ref = manager.create(case_id="recovery", mode="chat")
+    turn_message = "recover this turn"
     if force_compression:
-        config.context_window = 10
-        config.context_compression_trigger_ratio = 0.5
+        # Pygent 0.3 intentionally refuses to compress an oversized first
+        # request because there is no prior projection to summarize. Exercise
+        # the real boundary instead: a normal current request following a
+        # sizeable, still-compressible history.
         session = manager.load(session_ref.session_id)
-        session.token_usage = {"context_tokens": 10}
+        session.history = [
+            {"role": "user", "content": f"durable prior context {'x' * 50_000}"},
+            {
+                "role": "assistant",
+                "content": "prior answer",
+                "tool_calls": [],
+                "usage": {},
+            },
+        ]
         manager.save(session)
+        turn_message = f"recover this turn {'y' * 30_000}"
     run_ref = manager.start_case_run(
         session_ref.session_id,
         "recovery",
@@ -111,7 +133,7 @@ async def crash_at_boundary(
     core_module.checkpoint_conversation_message = crashing_checkpoint
     handle = await service.start_turn(
         manager=manager,
-        message="recover this turn",
+        message=turn_message,
         run_ref=run_ref,
         turn_id="turn-recovery",
         interactive_approvals=True,

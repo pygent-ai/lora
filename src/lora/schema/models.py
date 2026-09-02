@@ -37,21 +37,21 @@ class ModelRouteConfig:
 @dataclass(slots=True)
 class ModelRetryConfig:
     max_attempts_per_route: int = 2
-    attempt_timeout_seconds: float = 60.0
+    attempt_idle_timeout_seconds: float = 60.0
     backoff_initial: float = 0.5
     backoff_maximum: float = 4.0
     backoff_multiplier: float = 2.0
 
     def __post_init__(self) -> None:
         self.max_attempts_per_route = int(self.max_attempts_per_route)
-        self.attempt_timeout_seconds = float(self.attempt_timeout_seconds)
+        self.attempt_idle_timeout_seconds = float(self.attempt_idle_timeout_seconds)
         self.backoff_initial = float(self.backoff_initial)
         self.backoff_maximum = float(self.backoff_maximum)
         self.backoff_multiplier = float(self.backoff_multiplier)
         if self.max_attempts_per_route < 1:
             raise ValueError("max_attempts_per_route must be at least one")
-        if self.attempt_timeout_seconds <= 0:
-            raise ValueError("attempt_timeout_seconds must be greater than zero")
+        if self.attempt_idle_timeout_seconds <= 0:
+            raise ValueError("attempt_idle_timeout_seconds must be greater than zero")
         if not 0 <= self.backoff_initial <= self.backoff_maximum:
             raise ValueError("backoff requires 0 <= initial <= maximum")
         if self.backoff_multiplier < 1:
@@ -212,7 +212,7 @@ class BashCliPreset:
             self.description = ""
 
 
-def _default_cli_bash_presets() -> list[BashCliPreset]:
+def default_cli_bash_presets() -> list[BashCliPreset]:
     return [
         BashCliPreset(
             name="rg",
@@ -245,10 +245,10 @@ class RunConfig:
     agent_alias: str = "default"
     resolved_agent: ResolvedAgentConfig | None = field(default=None, repr=False, compare=False)
     user_identity: str = "default"
-    cli_bash_presets: list[BashCliPreset] = field(default_factory=_default_cli_bash_presets)
+    cli_bash_presets: list[BashCliPreset] = field(default_factory=default_cli_bash_presets)
     bash_full_output_allowlist: list[str] = field(default_factory=list)
     allow_read_outside_workspace: bool = True
-    user_lora_root: str | None = None
+    user_lora_root: str = ""
     context_window: int | None = None
     context_compression_enabled: bool = True
     context_compression_trigger_ratio: float = 0.9

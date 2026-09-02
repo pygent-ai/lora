@@ -11,12 +11,12 @@ from lora.evaluation import FailureAnalyzer
 from lora.cli.credentials import register_credentials_parser
 from lora.evaluation import CaseManager
 from lora.config import load_run_config
+from lora.core.io import plain_object
 from lora.evaluation import Evaluator
 from lora.evaluation import RegressionRunner
 from lora.repair import RepairWorkflow
 from lora.workflows import execute_case_run
 from lora.runtime.service import LoraRuntimeService
-from pygent import thaw_json
 from lora.sessions import SessionManager
 from lora.evaluation import RegressionRegistrar, TestGenerator
 from lora.tracing import EventStore
@@ -261,34 +261,36 @@ async def _chat_async(args: argparse.Namespace) -> dict[str, Any] | None:
     if session_id is None:
         session_id = manager.create("chat", mode="chat").session_id
 
-    run_ref = manager.start_case_run(session_id, "chat", run_config=config)
-    store = EventStore(run_ref)
-    store.append("chat.started", actor="system", payload={"interactive": args.message is None}, turn_id=None)
     runtime = LoraRuntimeService(config)
+    runtime.reminders.prewarm_session(session_id)
     await runtime.initialize()
-    status = "passed"
 
     try:
         if args.message is not None:
-            handle = await runtime.start_turn(
-                manager=manager,
-                message=args.message,
-                run_ref=run_ref,
-                turn_id="turn-0001",
-                interactive_approvals=False,
-            )
-            output, _ = await handle.result()
-            result = dict(thaw_json(output.data).get("result") or {})
-            result["runtime_execution_id"] = handle.execution_id
-            status = result["status"]
-            return _chat_message_payload(run_ref, result)
+            run_ref = manager.start_case_run(session_id, "chat", run_config=config)
+            status = "error"
+            try:
+                handle = await runtime.start_turn(
+                    manager=manager,
+                    message=args.message,
+                    run_ref=run_ref,
+                    turn_id="turn-0001",
+                    interactive_approvals=False,
+                )
+                output, _ = await handle.result()
+                result = plain_object(plain_object(output.data).get("result"))
+                result["runtime_execution_id"] = handle.execution_id
+                status = result["status"]
+                return _chat_message_payload(run_ref, result)
+            finally:
+                manager.finish_case_run(run_ref, status)
 
         print(f"lora chat session: {session_id}")
         print("Type /exit or /quit to end.")
         turn_index = 1
         while True:
             try:
-                user_input = input("> ")
+                user_input = await asyncio.to_thread(input, "> ")
             except EOFError:
                 break
             if user_input.strip() in {"/exit", "/quit"}:
@@ -296,48 +298,51 @@ async def _chat_async(args: argparse.Namespace) -> dict[str, Any] | None:
             if not user_input.strip():
                 continue
             streamed = False
-            pending_delta_text = ""
-
-            handle = await runtime.start_turn(
-                manager=manager,
-                message=user_input,
-                run_ref=run_ref,
-                turn_id=f"turn-{turn_index:04d}",
-                interactive_approvals=True,
-            )
-            async with handle.subscribe() as execution_events:
-                async for event in execution_events:
-                    data = dict(thaw_json(event.data))
-                    if event.kind == "model.text.delta" and event.module_path.endswith(".react.model.model"):
-                        chunk = str(data.get("text") or "")
-                        if chunk:
-                            streamed = True
-                            pending_delta_text += chunk
-                            print(chunk, end="", flush=True)
-                    elif event.kind == "lora.approval.requested":
-                        answer = await asyncio.to_thread(
-                            input,
-                            f"Approve {data.get('tool_name')} {data.get('arguments')}? [y/N] ",
-                        )
-                        await runtime.deliver_approval(
-                            str(data["approval_id"]),
-                            approved=answer.strip().lower() in {"y", "yes"},
-                            comment="interactive CLI decision",
-                        )
-            output, _ = await handle.result()
-            result = dict(thaw_json(output.data).get("result") or {})
-            status = result["status"]
-            if streamed:
-                print()
-            elif result["final_answer"]:
-                print(result["final_answer"])
-            if result["error"]:
-                print(f"agent error: {result['error']}", file=sys.stderr)
-                break
+            run_ref = manager.start_case_run(session_id, "chat", run_config=config)
+            status = "error"
+            try:
+                handle = await runtime.start_turn(
+                    manager=manager,
+                    message=user_input,
+                    run_ref=run_ref,
+                    turn_id=f"turn-{turn_index:04d}",
+                    interactive_approvals=True,
+                )
+                async with handle.subscribe() as execution_events:
+                    async for event in execution_events:
+                        data = plain_object(event.data)
+                        if (
+                            event.kind == "model.text.delta"
+                            and ".foreground.react.model.model" in event.module_path
+                        ):
+                            chunk = str(data.get("text") or "")
+                            if chunk:
+                                streamed = True
+                                print(chunk, end="", flush=True)
+                        elif event.kind == "lora.approval.requested":
+                            answer = await asyncio.to_thread(
+                                input,
+                                f"Approve {data.get('tool_name')} {data.get('arguments')}? [y/N] ",
+                            )
+                            await runtime.deliver_approval(
+                                str(data["approval_id"]),
+                                approved=answer.strip().lower() in {"y", "yes"},
+                                comment="interactive CLI decision",
+                            )
+                output, _ = await handle.result()
+                result = plain_object(plain_object(output.data).get("result"))
+                status = result["status"]
+                if streamed:
+                    print()
+                elif result["final_answer"]:
+                    print(result["final_answer"])
+                if result["error"]:
+                    print(f"agent error: {result['error']}", file=sys.stderr)
+                    break
+            finally:
+                manager.finish_case_run(run_ref, status)
             turn_index += 1
     finally:
-        store.append("chat.finished", actor="system", payload={"status": status}, turn_id=None)
-        manager.finish_case_run(run_ref, status)
         await runtime.close(cancel=True)
     return None
 

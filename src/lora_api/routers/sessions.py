@@ -27,11 +27,14 @@ def list_session_groups(context: ApiContext = Depends(get_api_context)) -> Sessi
 
 
 @router.post("", response_model=SessionRecordResponse)
-def create_session(
+async def create_session(
     request: CreateSessionRequest,
     context: ApiContext = Depends(get_api_context),
 ) -> SessionRecordResponse:
-    return SessionService(context.manager).create_session(case_id=request.case_id, mode=request.mode)
+    return SessionService(context.manager, context.reminders).create_session(
+        case_id=request.case_id,
+        mode=request.mode,
+    )
 
 
 @router.get("/{session_id}", response_model=SessionDetailResponse)

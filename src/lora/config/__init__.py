@@ -4,18 +4,18 @@ from pathlib import Path  # noqa: F401 - compatibility hook for monkeypatch targ
 
 from .loader import (
     DEFAULT_BASE_URL,
-    DEFAULT_CLI_BASH_PRESETS,
     DEFAULT_MODEL_NAME,
     USER_CONFIG_FILENAME,
     load_mapping_file,
     load_run_config,
 )
+from .editor import update_user_model_group
 
 __all__ = [
     "DEFAULT_BASE_URL",
-    "DEFAULT_CLI_BASH_PRESETS",
     "DEFAULT_MODEL_NAME",
     "USER_CONFIG_FILENAME",
     "load_mapping_file",
     "load_run_config",
+    "update_user_model_group",
 ]

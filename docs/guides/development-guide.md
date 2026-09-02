@@ -29,7 +29,7 @@ agents:
       fallback: [primary]
       retry:
         max_attempts_per_route: 2
-        attempt_timeout_seconds: 60
+        attempt_idle_timeout_seconds: 60
 ```
 
 所有项目共用用户级 `agent/agents`，不再有项目级模型配置文件读取与回退。
@@ -41,7 +41,7 @@ agents:
 
 - `DynamicPromptModule`
 - `ContextCompressionModule`
-- `SkillReminderModule`
+- `SystemReminderModule`
 - `ToolAuditModule`
 - `PersistedDiffModule`
 - Pygent `ReActLayer`、`ModelCallLayer`、`ToolCallLayer`

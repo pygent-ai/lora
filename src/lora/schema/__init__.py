@@ -19,6 +19,7 @@ from .models import (
     SessionRef,
     SessionSpec,
     WorkspaceRef,
+    default_cli_bash_presets,
 )
 
 __all__ = [
@@ -42,4 +43,5 @@ __all__ = [
     "SessionRef",
     "SessionSpec",
     "WorkspaceRef",
+    "default_cli_bash_presets",
 ]

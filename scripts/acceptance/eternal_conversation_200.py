@@ -11,6 +11,8 @@ import sqlite3
 import subprocess
 import sys
 import time
+import traceback
+import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,8 +22,9 @@ from typing import Any
 from pygent import thaw_json
 
 from lora.config import load_run_config
-from lora.core.io import append_jsonl, read_json, write_json
+from lora.core.io import append_jsonl, read_json, read_jsonl_snapshot, write_json, write_json_atomic
 from lora.runtime import LoraRuntimeService
+from lora.runtime.agent.common import DEFAULT_REACT_MAX_STEPS
 from lora.runtime.eternal_conversation import load_projection
 from lora.schema import SessionRef
 from lora.sessions import SessionManager
@@ -245,7 +248,8 @@ def build_tasks(project_root: Path) -> list[dict[str, Any]]:
             elif phase == "edge cases":
                 instruction = (
                     f"{component.name} 这边有个小反馈：{EDGE_CASE_REPORTS[component.name]}。"
-                    "现有 API 别动，修好后补个能防回归的测试。"
+                    "现有 API 别动，修好后补个能防回归的测试。如果当前实现和回归测试已经完整覆盖，"
+                    "请实际读取代码、运行相关测试并明确说明，无需为了产生 diff 重写正确代码。"
                 )
             elif phase == "integration":
                 previous = COMPONENTS[(component_index - 1) % len(COMPONENTS)]
@@ -316,6 +320,13 @@ def build_tasks(project_root: Path) -> list[dict[str, Any]]:
                         f"相关测试跑通后，把命令、结果、约束是怎么组合的以及还剩什么发布阻碍写到 "
                         f"release-evidence/{Path(component.file).stem}.md。"
                     )
+            if phase == "performance":
+                instruction += (
+                    "先用代码和可重复的基准确认瓶颈；如果证据表明确实没有明显重复工作且现有测试已覆盖，"
+                    "允许把这一轮作为 verified no-op，但必须给出实际读取、基准和测试证据，不要制造 diff。"
+                    "完成一次可重复基准和一次成功的全量 pytest 后，如果已经足够得出结论，立即给出简洁最终答复，"
+                    "不要继续调用工具。"
+                )
             tasks.append(
                 {
                     "number": number,
@@ -323,6 +334,7 @@ def build_tasks(project_root: Path) -> list[dict[str, Any]]:
                     "component": component.name,
                     "conflict_probe": component.name in BLIND_CONFLICT_REQUESTS and phase == "change request",
                     "probe_marker": PROBE_MARKERS.get(component.name) if phase == "change request" else None,
+                    "allow_verified_noop": phase in {"edge cases", "performance"},
                     "prompt": instruction,
                 }
             )
@@ -386,9 +398,7 @@ def restore_project_baseline(project_root: Path, baseline: dict[str, bytes]) -> 
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    text = path.read_text(encoding="utf-8")
+    text = read_jsonl_snapshot(path)
     lines = text.splitlines()
     rows: list[dict[str, Any]] = []
     for index, line in enumerate(lines):
@@ -494,6 +504,70 @@ def task_tool_evidence(run_dir: Path) -> dict[str, Any]:
     }
 
 
+def verified_noop_allowed(
+    task: dict[str, Any],
+    *,
+    changed_paths: list[str],
+    tool_evidence: dict[str, Any],
+) -> bool:
+    """Accept a verified edge-case request that the existing code already satisfies."""
+
+    return bool(
+        task.get("allow_verified_noop") is True
+        and not changed_paths
+        and int(tool_evidence.get("successful_tool_call_count") or 0) >= 2
+        and tool_evidence.get("has_successful_verification")
+        and "read" in set(tool_evidence.get("tool_names") or ())
+    )
+
+
+def mark_run_crashed(run_root: Path, error: BaseException) -> None:
+    path = run_root / "run.json"
+    if not path.exists():
+        return
+    metadata = read_json(path)
+    metadata.update(
+        {
+            "finished_at": utc_now(),
+            "status": "failed",
+            "failure": f"{type(error).__name__}: {error}",
+        }
+    )
+    write_json_atomic(path, metadata)
+
+
+async def recover_memory_backlog(
+    runtime: LoraRuntimeService,
+    manager: SessionManager,
+    session_ref: SessionRef,
+    *,
+    max_uncovered_messages: int,
+    recovery_attempts: int,
+) -> dict[str, Any]:
+    """Boundedly resume only the failed background memory job until caught up."""
+
+    session_dir = Path(session_ref.session_dir)
+    for recovery_attempt in range(recovery_attempts + 1):
+        await runtime.memory_harness.wait_idle()
+        session = manager.load(session_ref.session_id)
+        projection = load_projection(session_dir)
+        uncovered = len(session.history) - int(projection.get("covered_through") or 0)
+        if uncovered <= max_uncovered_messages:
+            return projection
+        if recovery_attempt == recovery_attempts:
+            raise RuntimeError(
+                "memory projection remains behind after "
+                f"{recovery_attempts} background recovery attempts: "
+                f"uncovered={uncovered}, allowed={max_uncovered_messages}"
+            )
+        scheduled = await runtime.memory_harness.retry_pending(session)
+        if not scheduled:
+            raise RuntimeError(
+                f"memory projection is behind by {uncovered} messages but no retry was scheduled"
+            )
+    raise AssertionError("unreachable memory recovery state")
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -501,6 +575,9 @@ def utc_now() -> str:
 SESSION_ROLLBACK_FILES = (
     "session.json",
     "context/history.jsonl",
+    "context/conversation-checkpoints.sqlite3",
+    "context/conversation-checkpoints.sqlite3-wal",
+    "context/conversation-checkpoints.sqlite3-shm",
     "raw-history/events.jsonl",
     "state/eternal-conversation.json",
     "state/eternal-harness.json",
@@ -528,6 +605,87 @@ def restore_session_baseline(session_dir: Path, baseline: dict[str, bytes | None
         path.write_bytes(content)
 
 
+ACTIVE_TASK_BASELINE = "active-task-baseline.zip"
+
+
+def persist_task_baseline(
+    run_root: Path,
+    *,
+    task_number: int,
+    project_baseline: dict[str, bytes],
+    session_baseline: dict[str, bytes | None],
+) -> None:
+    """Atomically persist the rollback boundary for the currently active task."""
+
+    target = run_root / ACTIVE_TASK_BASELINE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    metadata = {
+        "task_number": task_number,
+        "project_paths": sorted(project_baseline),
+        "session_paths": {
+            relative: content is not None for relative, content in session_baseline.items()
+        },
+    }
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("metadata.json", json.dumps(metadata, ensure_ascii=False, sort_keys=True))
+            for relative, content in project_baseline.items():
+                archive.writestr(f"project/{relative}", content)
+            for relative, content in session_baseline.items():
+                if content is not None:
+                    archive.writestr(f"session/{relative}", content)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def restore_active_task_baseline(
+    run_root: Path,
+    *,
+    expected_task_number: int,
+    project_root: Path,
+    session_dir: Path,
+) -> bool:
+    """Restore an interrupted task before resuming its acceptance run."""
+
+    path = run_root / ACTIVE_TASK_BASELINE
+    if not path.exists():
+        return False
+    stale_committed_baseline = False
+    with zipfile.ZipFile(path, "r") as archive:
+        metadata = json.loads(archive.read("metadata.json"))
+        task_number = int(metadata["task_number"])
+        if task_number < expected_task_number:
+            stale_committed_baseline = True
+        elif task_number != expected_task_number:
+            raise RuntimeError(
+                f"active task baseline is for task {task_number}, expected {expected_task_number}"
+            )
+        else:
+            project_paths = set(metadata["project_paths"])
+            current_paths = set(capture_project_baseline(project_root))
+            for relative in current_paths - project_paths:
+                (project_root / relative).unlink()
+            for relative in project_paths:
+                target = project_root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(f"project/{relative}"))
+            for relative, exists in metadata["session_paths"].items():
+                target = session_dir / relative
+                if not exists:
+                    target.unlink(missing_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(f"session/{relative}"))
+    path.unlink()
+    return not stale_committed_baseline
+
+
+def clear_active_task_baseline(run_root: Path) -> None:
+    (run_root / ACTIVE_TASK_BASELINE).unlink(missing_ok=True)
+
+
 def question_evidence(answer: str) -> bool:
     text = answer.strip()
     if not text:
@@ -535,6 +693,21 @@ def question_evidence(answer: str) -> bool:
     # A clarification must be the foreground's final hand-off, not a question
     # buried in chain-of-thought-like analysis that never actually yields.
     return bool(re.search(r"[?？][\s*_`'\"）)\]]*$", text))
+
+
+def build_retry_message(task_prompt: str) -> str:
+    return (
+        "刚才这件事没有完成，工作区和会话已经恢复到尝试前。请重新独立处理下面这件事，"
+        "先核对相关实现和既有约束，不要沿用上一轮的推断。Raw History 会保留失败尝试的"
+        "审计证据，其中的完成声明不代表当前工作区状态；请以当前文件为准完成任务。"
+        "如果任务点名的 helper 或公共 API 尚不存在，但已经说明了所需行为，补充最小兼容实现"
+        "属于本任务范围，不要仅因为符号缺失而反问。"
+        "这是实现任务：必须使用工具把范围内的改动持久化并运行相关验证，不要用设计说明代替执行。"
+        "除非原任务明确允许 verified no-op，否则检查后必须选择满足要求的最小可靠改动，不能以当前实现已经很快或足够好为由无改动结束。"
+        "一旦已有足够的改动、基准和测试证据，立即给出简洁最终答复，不要在没有具体剩余检查时继续调用工具。"
+        "若原任务明确允许 verified no-op 且当前实现和测试已完整满足要求，请核验证据后明确说明，不要制造无意义改动：\n\n"
+        + task_prompt
+    )
 
 
 def probe_memory_evidence(answer: str, marker: str | None) -> bool:
@@ -568,6 +741,12 @@ def fresh_session_evidence(manager: SessionManager, session_ref: SessionRef) -> 
 
 async def run(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).resolve()
+    interpreter_bin = str(Path(sys.executable).resolve().parent)
+    path_entries = os.environ.get("PATH", "").split(os.pathsep)
+    if os.path.normcase(interpreter_bin) not in {
+        os.path.normcase(str(Path(entry).resolve())) for entry in path_entries if entry
+    }:
+        os.environ["PATH"] = os.pathsep.join((interpreter_bin, *path_entries))
     config = load_run_config(
         workspace_root=str(workspace),
         agent_alias=args.agent_alias,
@@ -581,6 +760,7 @@ async def run(args: argparse.Namespace) -> int:
             route.model_name = args.foreground_model
 
     resume_rows: list[dict[str, Any]] = []
+    fresh_history: dict[str, Any] | None = None
     if args.resume_run:
         run_root = Path(args.resume_run).resolve()
         run_meta = read_json(run_root / "run.json")
@@ -595,19 +775,18 @@ async def run(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
         initialize_project(project_root)
-        source_config = workspace / "lora.yaml"
-        if not source_config.is_file():
-            raise RuntimeError(f"acceptance requires workspace model configuration: {source_config}")
-        # Background agents resolve their independent aliases from the foreground
-        # workspace root. Mirror only the declarative configuration; credentials
-        # remain in the user's configured credentials store.
-        shutil.copy2(source_config, project_root / "lora.yaml")
+        # Foreground and background Agents resolve the same user-level Lora
+        # configuration independently for this disposable workspace. Never copy
+        # user configuration or credentials into the acceptance project.
     # Keep the fresh Session inside the disposable project so the foreground can
     # follow the advertised Raw History path without gaining read access to the
     # real repository or any older acceptance Session.
     config.workspace_root = str(project_root)
     config.lora_root = str(project_root / ".lora")
     config.allow_read_outside_workspace = False
+    runtime_root = project_root / ".lora" / "runtime"
+    config.runtime_durability.history_path = str(runtime_root / "executions.sqlite3")
+    config.runtime_capacity.coordinator_path = str(runtime_root / "capacity.sqlite3")
     tasks = build_tasks(project_root)[: args.limit]
 
     manager = SessionManager(config)
@@ -620,6 +799,12 @@ async def run(args: argparse.Namespace) -> int:
         )
         all_previous_rows = load_jsonl(run_root / "progress.jsonl")
         resume_rows = consecutive_passed_prefix(all_previous_rows)
+        restore_active_task_baseline(
+            run_root,
+            expected_task_number=len(resume_rows) + 1,
+            project_root=project_root,
+            session_dir=Path(session_ref.session_dir),
+        )
         interrupted_rows = all_previous_rows[len(resume_rows) :]
         for row in interrupted_rows:
             append_jsonl(run_root / "interrupted-tasks.jsonl", row)
@@ -646,11 +831,14 @@ async def run(args: argparse.Namespace) -> int:
                 "failure": None,
                 "resumed_at": utc_now(),
                 "resume_count": int(run_meta.get("resume_count") or 0) + 1,
+                "max_steps": config.max_steps,
                 "task_attempts": args.task_attempts,
+                "memory_recovery_attempts": args.memory_recovery_attempts,
             }
         )
         write_json(run_root / "run.json", run_meta)
     else:
+        assert fresh_history is not None
         write_json(
             run_root / "run.json",
             {
@@ -669,6 +857,7 @@ async def run(args: argparse.Namespace) -> int:
             "builder_alias": config.eternal_conversation.builder_agent_alias,
             "max_steps": config.max_steps,
             "task_attempts": args.task_attempts,
+            "memory_recovery_attempts": args.memory_recovery_attempts,
             "fresh_history": fresh_history,
             "scenario": "conversational-blind-memory",
             },
@@ -680,11 +869,27 @@ async def run(args: argparse.Namespace) -> int:
         for task in tasks[len(resume_rows) :]:
             index = int(task["number"])
             session_dir = Path(session_ref.session_dir)
-            await runtime.memory_harness.wait_idle()
+            try:
+                await recover_memory_backlog(
+                    runtime,
+                    manager,
+                    session_ref,
+                    max_uncovered_messages=args.max_uncovered_messages,
+                    recovery_attempts=args.memory_recovery_attempts,
+                )
+            except Exception as exc:
+                failure = f"memory recovery before task {index} failed: {type(exc).__name__}: {exc}"
+                break
             before = load_projection(session_dir)
             manifest_before = project_manifest(project_root)
             task_baseline = capture_project_baseline(project_root)
             session_baseline = capture_session_baseline(session_dir)
+            persist_task_baseline(
+                run_root,
+                task_number=index,
+                project_baseline=task_baseline,
+                session_baseline=session_baseline,
+            )
             started = time.monotonic()
             status = "error"
             answer = ""
@@ -701,6 +906,7 @@ async def run(args: argparse.Namespace) -> int:
             }
             changed_paths: list[str] = []
             gate_failures: list[str] = []
+            verified_noop = False
             for attempt in range(1, args.task_attempts + 1):
                 run_ref = manager.start_case_run(
                     session_ref.session_id,
@@ -709,14 +915,11 @@ async def run(args: argparse.Namespace) -> int:
                 )
                 attempt_status = "error"
                 attempt_error: str | None = None
+                attempt_traceback: str | None = None
                 if attempt == 1:
                     message = str(task["prompt"])
                 else:
-                    message = (
-                        "刚才这件事没有完成，工作区和会话已经恢复到尝试前。请重新独立处理下面这件事，"
-                        "先核对相关实现和既有约束，不要沿用上一轮的推断：\n\n"
-                        + str(task["prompt"])
-                    )
+                    message = build_retry_message(str(task["prompt"]))
                 try:
                     handle = await runtime.start_turn(
                         manager=manager,
@@ -727,11 +930,17 @@ async def run(args: argparse.Namespace) -> int:
                         deadline=time.monotonic() + args.turn_timeout,
                     )
                     output, _ = await handle.result()
-                    result = dict(thaw_json(output.data).get("result") or {})
+                    output_data = thaw_json(output.data)
+                    result = (
+                        dict(output_data.get("result") or {})
+                        if isinstance(output_data, dict)
+                        else {}
+                    )
                     attempt_status = str(result.get("status") or "error")
                     answer = str(result.get("final_answer") or "")
                     attempt_error = result.get("error")
                 except Exception as exc:  # retain exact failed-attempt evidence
+                    attempt_traceback = traceback.format_exc()
                     kind = getattr(exc, "kind", None)
                     attempt_error = f"{type(exc).__name__}: {exc}"
                     if kind is not None:
@@ -750,6 +959,11 @@ async def run(args: argparse.Namespace) -> int:
                     tool_evidence["has_successful_verification"] or attempt_tools["has_successful_verification"]
                 )
                 changed_paths = changed_project_paths(manifest_before, project_manifest(project_root))
+                verified_noop = verified_noop_allowed(
+                    task,
+                    changed_paths=changed_paths,
+                    tool_evidence=tool_evidence,
+                )
                 gate_failures = []
                 if tool_evidence["successful_tool_call_count"] < 2:
                     gate_failures.append("fewer than two successful real tool calls")
@@ -762,13 +976,22 @@ async def run(args: argparse.Namespace) -> int:
                         gate_failures.append("conflict probe did not ask a natural clarification question")
                     if not probe_memory_evidence(answer, task.get("probe_marker")):
                         gate_failures.append("conflict probe did not recover the hidden conversational marker")
-                elif not changed_paths:
+                elif not changed_paths and not verified_noop:
                     gate_failures.append("no persistent project source, test, or evidence file changed")
                 status = attempt_status
                 error = attempt_error
                 if status == "passed" and gate_failures:
                     status = "failed"
                     error = "; ".join(gate_failures)
+                if status == "passed":
+                    try:
+                        await runtime.memory_harness.wait_idle()
+                    except Exception as exc:
+                        status = "error"
+                        error = (
+                            "eternal-conversation background attempt failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
                 manager.finish_case_run(
                     run_ref,
                     status if status in {"passed", "failed", "error", "skipped"} else "error",
@@ -779,13 +1002,36 @@ async def run(args: argparse.Namespace) -> int:
                         "case_run_id": run_ref.case_run_id,
                         "status": status,
                         "error": error,
+                        "traceback": attempt_traceback,
                         "tool_evidence": attempt_tools,
                         "changed_project_paths": changed_paths,
+                        "verified_noop": verified_noop,
                     }
+                )
+                append_jsonl(
+                    run_root / "attempts-live.jsonl",
+                    {
+                        "recorded_at": utc_now(),
+                        "task_number": index,
+                        "attempt": attempt,
+                        "case_run_id": run_ref.case_run_id,
+                        "status": status,
+                        "error": error,
+                        "traceback": attempt_traceback,
+                        "gate_failures": gate_failures,
+                        "changed_project_paths": changed_paths,
+                        "verified_noop": verified_noop,
+                        "tool_evidence": attempt_tools,
+                    },
                 )
                 if status == "passed":
                     break
-                await runtime.memory_harness.wait_idle()
+                try:
+                    await runtime.memory_harness.wait_idle()
+                except Exception:
+                    # A failed background task was already captured in this attempt's
+                    # status. Cleanup must still reach the transactional rollback.
+                    pass
                 restore_project_baseline(project_root, task_baseline)
                 restore_session_baseline(session_dir, session_baseline)
 
@@ -795,8 +1041,18 @@ async def run(args: argparse.Namespace) -> int:
             uncovered = len(session_after.history) - int(after.get("covered_through") or 0)
             if status == "passed" and uncovered > args.max_uncovered_messages:
                 barrier_waited = True
-                await runtime.memory_harness.wait_idle()
-                after = load_projection(session_dir)
+                try:
+                    after = await recover_memory_backlog(
+                        runtime,
+                        manager,
+                        session_ref,
+                        max_uncovered_messages=args.max_uncovered_messages,
+                        recovery_attempts=args.memory_recovery_attempts,
+                    )
+                except Exception as exc:
+                    status = "error"
+                    error = f"background memory recovery failed: {type(exc).__name__}: {exc}"
+                    after = load_projection(session_dir)
             record = {
                 **task,
                 "started_at": utc_now(),
@@ -808,6 +1064,7 @@ async def run(args: argparse.Namespace) -> int:
                 "probe_memory_evidence": probe_memory_evidence(answer, task.get("probe_marker")),
                 "tool_evidence": tool_evidence,
                 "changed_project_paths": changed_paths,
+                "verified_noop": verified_noop,
                 "execution_gate_failures": gate_failures,
                 "attempts": attempts,
                 "memory_barrier_waited": barrier_waited,
@@ -820,6 +1077,8 @@ async def run(args: argparse.Namespace) -> int:
                 "history_messages": len(session_after.history),
             }
             append_jsonl(run_root / "progress.jsonl", record)
+            if status == "passed":
+                clear_active_task_baseline(run_root)
             heartbeat = {
                 "updated_at": utc_now(),
                 "completed": index,
@@ -840,6 +1099,20 @@ async def run(args: argparse.Namespace) -> int:
                 failure = f"task {index} failed: {error or status}"
                 break
             passed += 1
+        if failure is None:
+            try:
+                await recover_memory_backlog(
+                    runtime,
+                    manager,
+                    session_ref,
+                    max_uncovered_messages=0,
+                    recovery_attempts=args.memory_recovery_attempts,
+                )
+            except Exception as exc:
+                failure = f"final memory recovery failed: {type(exc).__name__}: {exc}"
+    except BaseException as exc:
+        mark_run_crashed(run_root, exc)
+        raise
     finally:
         await runtime.close(cancel=False)
 
@@ -871,6 +1144,7 @@ async def run(args: argparse.Namespace) -> int:
     real_tool_rows = [row for row in rows if int((row.get("tool_evidence") or {}).get("successful_tool_call_count") or 0) >= 2]
     verified_rows = [row for row in rows if (row.get("tool_evidence") or {}).get("has_successful_verification")]
     changed_rows = [row for row in rows if row.get("changed_project_paths")]
+    verified_noop_rows = [row for row in rows if row.get("verified_noop")]
     clean_conflicts = [row for row in conflict_rows if not row.get("changed_project_paths")]
     memory_search_rows = [
         row for row in rows if int((row.get("tool_evidence") or {}).get("memory_search_count") or 0) > 0
@@ -907,6 +1181,7 @@ async def run(args: argparse.Namespace) -> int:
         "tasks_with_real_tools": len(real_tool_rows),
         "tasks_with_successful_pytest": len(verified_rows),
         "tasks_with_persistent_changes": len(changed_rows),
+        "tasks_verified_as_already_satisfied": len(verified_noop_rows),
         "clean_conflict_probes": len(clean_conflicts),
         "foreground_memory_searches": memory_search_count,
         "tasks_using_memory_search": len(memory_search_rows),
@@ -926,11 +1201,12 @@ async def run(args: argparse.Namespace) -> int:
         and passed == 200
         and int(projection.get("snapshot_revision") or 0) >= 2
         and int(projection.get("covered_through") or 0) > 0
+        and int(projection.get("covered_through") or 0) == len(manager.load(session_ref.session_id).history)
         and states.get("pending", 0) == 0
         and len(successful_conflicts) == len(BLIND_CONFLICT_REQUESTS)
         and len(real_tool_rows) == 200
         and len(verified_rows) == 200 - len(BLIND_CONFLICT_REQUESTS)
-        and len(changed_rows) == 200 - len(BLIND_CONFLICT_REQUESTS)
+        and len(changed_rows) + len(verified_noop_rows) == 200 - len(BLIND_CONFLICT_REQUESTS)
         and len(clean_conflicts) == len(BLIND_CONFLICT_REQUESTS)
         and full_suite.returncode == 0
     )
@@ -955,6 +1231,7 @@ async def run(args: argparse.Namespace) -> int:
         f"- Tasks with real successful tools: {len(real_tool_rows)}/200\n"
         f"- Non-probe tasks with successful foreground pytest: {len(verified_rows)}/{200 - len(BLIND_CONFLICT_REQUESTS)}\n"
         f"- Non-probe tasks with persistent changes: {len(changed_rows)}/{200 - len(BLIND_CONFLICT_REQUESTS)}\n"
+        f"- Non-probe tasks verified as already satisfied: {len(verified_noop_rows)}\n"
         f"- Blind probes without mutation: {len(clean_conflicts)}/{len(BLIND_CONFLICT_REQUESTS)}\n"
         f"- Final full-project pytest: {'PASS' if full_suite.returncode == 0 else 'FAIL'}\n"
         f"- Failure: {failure or 'none'}\n\n"
@@ -985,7 +1262,8 @@ def main() -> int:
     parser.add_argument("--foreground-model", default=None)
     parser.add_argument("--turn-timeout", type=float, default=15 * 60)
     parser.add_argument("--max-uncovered-messages", type=int, default=20)
-    parser.add_argument("--max-steps", type=int, default=32)
+    parser.add_argument("--memory-recovery-attempts", type=int, default=3)
+    parser.add_argument("--max-steps", type=int, default=DEFAULT_REACT_MAX_STEPS)
     parser.add_argument("--task-attempts", type=int, default=12)
     parser.add_argument("--final-test-timeout", type=float, default=30 * 60)
     parser.add_argument("--limit", type=int, default=200, choices=range(1, 201))

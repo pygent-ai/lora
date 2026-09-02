@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import hashlib
 import asyncio
+import json
+import sqlite3
 import time
 import warnings
 from contextvars import ContextVar
@@ -12,14 +14,28 @@ from pathlib import Path
 from typing import Any
 
 from pygent import (
+    AIMessage,
     Context as PygentContext,
     FallbackPolicy,
+    IdempotencyPolicy,
     ModelGroupConfig,
+    ModelCallLayer,
     ModelRoute,
+    Module,
+    PygentAgent,
+    ToolAuthorizationDecision,
+    ToolAuthorizationRequest,
     ToolKit,
+    ToolSideEffect,
+    ToolMessage,
     UserMessage,
     freeze_json_object,
-    thaw_json,
+    tool,
+)
+from pygent.agent import (
+    REACT_PROJECTION_OPERATION_KIND,
+    ReplaceMessageProjection,
+    encode_react_projection_operation,
 )
 from pygent.llm import ModelResourceRef
 from pygent.runtime import (
@@ -41,6 +57,7 @@ from pygent.tool import (
     LocalToolExecutor,
     SandboxExecutorSupport,
     StandardTools,
+    ToolExecutionError,
     ToolSpec,
 )
 from pygent.tool.executors import ToolExecutionContext
@@ -50,14 +67,21 @@ from pygent.tool.mcp import (
     register_mcp_tools,
 )
 
-from lora.schema import CaseRunRef, RunConfig
+from lora.schema import AgentSession, CaseRunRef, RunConfig
 from lora.config import load_run_config
-from lora.core.io import read_json, write_json
+from lora.core.io import aclose_if_supported, plain_object, read_json, write_json
 from lora.sessions import SessionManager
-from lora.tracing import DIFF_TOOL_SPEC, DiffTool
+from lora.tracing import DIFF_TOOL_SPEC, DiffTool, EventStore
+from lora.runtime.reminders import ReminderService
 from pygent.runtime.codec import invocation_from_dict, message_to_dict
 
-from .agent import LoraAgent, _initial_lora_context, _session_dir_for_run, _to_pygent_message
+from .agent import (
+    LORA_PROJECTION_READY_KIND,
+    LoraAgent,
+    _initial_lora_context,
+    _to_pygent_message,
+)
+from .agent.common import DEFAULT_REACT_MAX_STEPS
 from .agent.pipeline import checkpoint_conversation_message
 from .context import LORA_CONTEXT_CODEC, LoraContext
 from .delegation import (
@@ -70,39 +94,183 @@ from .deployment import (
     WorkspaceToolExecutor,
     migrate_legacy_model_deployments,
 )
-from .file_effects import (
-    FILE_EFFECT_TOOL_SPEC,
-    FileEffectToolExecutor,
+from .eternal_conversation import (
+    EternalConversationHarness,
+    MemoryAgentTool,
+    load_projection,
+    render_memory_snapshot,
 )
-from .eternal_conversation import EternalConversationHarness, load_projection
+from .file_effects import FILE_EFFECT_TOOL_SPEC, FileEffectToolExecutor
+
+
+PYGENT_HISTORY_SCHEMA_VERSION = 7
+
+
+def resolve_runtime_history_path(path: str | Path, durability_mode: str) -> Path:
+    """Choose a fresh journal for incompatible Pygent schemas without deleting history."""
+
+    configured = Path(path)
+    version = _sqlite_schema_version(configured)
+    if (
+        version is None
+        or version == PYGENT_HISTORY_SCHEMA_VERSION
+        or durability_mode == "required"
+    ):
+        return configured
+
+    suffix = configured.suffix or ".sqlite3"
+    stem = (
+        configured.name[: -len(configured.suffix)]
+        if configured.suffix
+        else configured.name
+    )
+    base = configured.with_name(
+        f"{stem}-schema-v{PYGENT_HISTORY_SCHEMA_VERSION}{suffix}"
+    )
+    candidate = base
+    index = 2
+    while _sqlite_schema_version(candidate) not in {
+        None,
+        PYGENT_HISTORY_SCHEMA_VERSION,
+    }:
+        candidate = base.with_name(f"{base.stem}-{index}{base.suffix}")
+        index += 1
+    warnings.warn(
+        f"Pygent history at {configured} uses incompatible schema v{version}; "
+        f"preserving it and starting with {candidate}",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return candidate
+
+
+def _sqlite_schema_version(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        connection = sqlite3.connect(
+            f"file:{path.resolve().as_posix()}?mode=ro", uri=True
+        )
+        try:
+            tables = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            if not tables:
+                return None
+            row = connection.execute("PRAGMA user_version").fetchone()
+            return 0 if row is None else int(row[0])
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return None
+
 
 _DELEGATION_DEPTH: ContextVar[int] = ContextVar("lora_delegation_depth", default=0)
 RECOVERY_CLAIM_WAIT_SECONDS = 31.0
+PROJECTION_OPERATION_METADATA_KEY = "projection_replacement_operation"
+PROJECTION_INPUT_ID_METADATA_KEY = "projection_replacement_input_id"
+PROJECTION_READY_INPUT_ID_METADATA_KEY = "projection_replacement_ready_input_id"
+MAX_IDENTICAL_MEMORY_TOOL_REJECTIONS = 8
 
 
-def _wrap_user_message(message: str, identity: str) -> str:
-    return "\n".join(
-        (
-            "<user-context>",
-            f"  <user-identity>{escape(identity or 'default', quote=False)}</user-identity>",
-            f"  <user-message>{escape(message, quote=False)}</user-message>",
-            "</user-context>",
-        )
-    )
+class _MemoryFeedbackState:
+    def __init__(self) -> None:
+        self.signature: tuple[tuple[str, str], ...] | None = None
+        self.count = 0
 
 
-def _managed_child_budget(config: RunConfig) -> int:
-    """Bound the full managed module graph, not just delegated agents."""
+class _MemoryToolFeedbackLayer(Module[AIMessage, ToolMessage]):
+    trusted_live_resource_attributes = ("_feedback_state",)
 
-    max_steps = config.max_steps if config.max_steps > 0 else 128
-    return max(1024, max_steps * 16)
+    def __init__(self, tools: Module[AIMessage, ToolMessage]) -> None:
+        super().__init__()
+        self.tools = tools
+        self._feedback_state = _MemoryFeedbackState()
+
+    async def forward(
+        self, message: AIMessage, context: Any
+    ) -> tuple[ToolMessage, Any]:
+        result, next_context = await self.tools(message, context)
+        feedback = [
+            item.error
+            for item in result.results
+            if item.error_kind == "validation_error" and item.error
+        ]
+        if feedback:
+            signature = tuple(
+                (call.name, repr(call.arguments)) for call in message.tool_calls
+            )
+            if signature == self._feedback_state.signature:
+                self._feedback_state.count += 1
+            else:
+                self._feedback_state.signature = signature
+                self._feedback_state.count = 1
+            same_rejection_count = self._feedback_state.count
+            if same_rejection_count >= MAX_IDENTICAL_MEMORY_TOOL_REJECTIONS:
+                raise RuntimeError(
+                    "publish_pending received the identical invalid payload "
+                    f"{same_rejection_count} consecutive times; restart only this background "
+                    "memory job with the validation failure in previous_publish_failure"
+                )
+            repeated = (
+                f" IDENTICAL INVALID PAYLOAD REJECTION #{same_rejection_count}: "
+                "you resent the same arguments. Change the rejected field before the next tool call."
+                if same_rejection_count > 1
+                else ""
+            )
+            instruction = (
+                "STOP: publish_pending rejected the previous call before any write; "
+                "nothing was published. NEVER resend identical arguments. Preserve all "
+                "other facts. Snapshot items must be at most 500 characters; move excess "
+                "detail into focused UTs. UT content must be at most 700 characters; split "
+                "a larger UT across multiple focused UTs. Keep the whole batch within 8 UT "
+                "changes, and call "
+                "publish_pending again now."
+                + repeated
+                + " Validation error: "
+                + " | ".join(feedback)
+            )
+            enhanced_results = tuple(
+                replace(
+                    item,
+                    error=f"{instruction}\nOriginal validation error: {item.error}",
+                )
+                if item.error_kind == "validation_error" and item.error
+                else item
+                for item in result.results
+            )
+            result = replace(
+                result,
+                content="\n".join(filter(None, (result.content, instruction))),
+                results=enhanced_results,
+            )
+        return result, next_context
+
+
+def _recent_conversation_messages(history: list[dict[str, Any]]) -> tuple[Any, ...]:
+    selected = []
+    for item in reversed(history):
+        role = item.get("role")
+        if (
+            role == "assistant"
+            and not selected
+            and item.get("content")
+            and not item.get("tool_calls")
+        ):
+            selected.append(_to_pygent_message(item))
+        elif role == "user":
+            selected.append(_to_pygent_message(item))
+            break
+    return tuple(item for item in reversed(selected) if item is not None)
 
 
 class _DiffExecutor:
     def __init__(self, service: "LoraRuntimeService") -> None:
         self.service = service
 
-    async def execute(self, spec: ToolSpec, call: Any, context: ToolExecutionContext) -> object:
+    async def execute(
+        self, spec: ToolSpec, call: Any, context: ToolExecutionContext
+    ) -> object:
         del spec
         if context.execution_id is None:
             raise RuntimeError("managed diff execution requires an execution id")
@@ -120,7 +288,7 @@ class _DiffExecutor:
             workspace_root=self.service.config.workspace_root,
             turn_id=execution_context.turn_id,
         )
-        return await diff.forward(**dict(thaw_json(call.arguments)))
+        return await diff.forward(**plain_object(call.arguments))
 
 
 class LoraRuntimeService:
@@ -135,9 +303,19 @@ class LoraRuntimeService:
         max_queue_size: int = 64,
         model_max_concurrency: int = 4,
         tool_max_concurrency: int = 8,
+        reminders: ReminderService | None = None,
+        own_reminders: bool | None = None,
     ) -> None:
         self.config = config
-        history_path = Path(config.runtime_durability.history_path)
+        self.reminders = reminders or ReminderService(config)
+        self._owns_reminders = (
+            reminders is None if own_reminders is None else own_reminders
+        )
+        history_path = resolve_runtime_history_path(
+            config.runtime_durability.history_path,
+            config.runtime_durability.mode,
+        )
+        self.history_path = history_path
         model_path = history_path.with_name("model-deployments-v1.sqlite3")
         self.model_path = model_path
         self.history = SQLiteHistoryStore(history_path)
@@ -205,7 +383,9 @@ class LoraRuntimeService:
                 max_queue_size=max_queue_size,
                 max_waiters=max_live_executions + max_queue_size,
                 max_child_depth=max(8, config.delegation.max_depth + 2),
-                max_children_per_execution=_managed_child_budget(config),
+                max_children_per_execution=max(
+                    1024, (config.max_steps if config.max_steps > 0 else 128) * 16
+                ),
                 max_external_wait_seconds=config.runtime_approvals.timeout_seconds,
             ),
             model_capacity=CapacityPolicy.limited(
@@ -230,15 +410,22 @@ class LoraRuntimeService:
         self._closed = False
         self.memory_harness = EternalConversationHarness(
             config.eternal_conversation,
-            call_agent=self._call_memory_agent,
+            run_agent=self._run_memory_agent,
         )
-        template = LoraAgent(config, managed_model=True, memory_harness=self.memory_harness)
-        self._agent_definitions: dict[tuple[int, bool], LoraAgent] = {
-            (id(config), False): template
-        } if config.resolved_agent is not None else {}
-        self._model_invokers: dict[str, Any] = {
-            config.resolved_agent.alias: template.llm
-        } if config.resolved_agent is not None and template.llm is not None else {}
+        template = LoraAgent(
+            config,
+            managed_model=True,
+            memory_harness=self.memory_harness,
+            reminders=self.reminders,
+        )
+        self._agent_definitions: dict[tuple[int, bool], LoraAgent] = (
+            {(id(config), False): template} if config.resolved_agent is not None else {}
+        )
+        self._model_invokers: dict[str, Any] = (
+            {config.resolved_agent.alias: template.llm}
+            if config.resolved_agent is not None and template.llm is not None
+            else {}
+        )
 
     async def _execute_delegation(
         self,
@@ -246,7 +433,7 @@ class LoraRuntimeService:
         call: Any,
         context: ToolExecutionContext,
     ) -> object:
-        arguments = thaw_json(call.arguments)
+        arguments = plain_object(call.arguments)
         return await self.run_delegated(
             agent_alias=str(arguments["agent"]),
             task=str(arguments["task"]),
@@ -271,7 +458,7 @@ class LoraRuntimeService:
 
     async def _initialize_once(self) -> None:
         for path in (
-            Path(self.config.runtime_durability.history_path),
+            self.history_path,
             Path(self.config.runtime_capacity.coordinator_path),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,7 +466,13 @@ class LoraRuntimeService:
         await self.history.open()
         discovered = list(self.external_tools)
         visible_names: set[str] = {
-            "bash", "read", "write", "edit", "glob", "grep", "diff",
+            "bash",
+            "read",
+            "write",
+            "edit",
+            "glob",
+            "grep",
+            "diff",
             *(spec.definition.name for spec in discovered),
         }
         for server in self.config.mcp_servers:
@@ -293,7 +486,9 @@ class LoraRuntimeService:
                 for spec in specs:
                     name = spec.definition.name
                     if name in visible_names:
-                        raise ValueError(f"duplicate MCP model-visible tool name: {name}")
+                        raise ValueError(
+                            f"duplicate MCP model-visible tool name: {name}"
+                        )
                     visible_names.add(name)
                 register_mcp_tools(self.executor_registry, transport, specs)
                 discovered.extend(specs)
@@ -311,7 +506,7 @@ class LoraRuntimeService:
     def _mcp_transport(self, server: Any) -> Any:
         if server.transport != "stdio":
             raise ValueError(
-                f"MCP transport {server.transport!r} is unsupported by Pygent 0.2.19; "
+                f"MCP transport {server.transport!r} is unsupported by the installed Pygent; "
                 "use stdio"
             )
         env = {name: os.environ[name] for name in server.env_from if name in os.environ}
@@ -336,7 +531,9 @@ class LoraRuntimeService:
         existing = self._agent_definitions.get(key)
         if existing is not None:
             return existing
-        invoker = self._model_invokers.get(resolved.alias) if resolved is not None else None
+        invoker = (
+            self._model_invokers.get(resolved.alias) if resolved is not None else None
+        )
         agent = LoraAgent(
             effective_config,
             resolved_agent=effective_config.resolved_agent,
@@ -345,6 +542,7 @@ class LoraRuntimeService:
             interactive_approvals=interactive_approvals,
             model_invoker=invoker,
             memory_harness=self.memory_harness,
+            reminders=self.reminders,
         )
         if resolved is not None and agent.llm is not None:
             self._model_invokers.setdefault(resolved.alias, agent.llm)
@@ -396,14 +594,15 @@ class LoraRuntimeService:
         )
         manager = SessionManager(child_config)
         session = manager.create(case_id="delegation", mode="agent")
-        run_ref = manager.start_case_run(session.session_id, "delegation", run_config=child_config)
+        run_ref = manager.start_case_run(
+            session.session_id, "delegation", run_config=child_config
+        )
         turn_id = f"delegate-{parent_call_id}"
         child = self.new_agent(
             interactive_approvals=True,
             config=child_config,
         )
-        child_message, child_context = self._prepare_turn(
-            agent=child,
+        child_message, child_context = await self._prepare_turn(
             manager=manager,
             run_ref=run_ref,
             message=task,
@@ -411,25 +610,43 @@ class LoraRuntimeService:
             turn_id=turn_id,
         )
         bound = await self.bind(child, child)
-        handle = await bound.start(
-            child_message,
-            replace(child_context, metadata={"parent_tool_call_id": parent_call_id}),
-            execution=ExecutionOptions(
-                request_id=run_ref.case_run_id,
-                identity=run_ref.session_id,
-                idempotency_key=parent_call_id,
-                deadline=time.monotonic() + 30 * 60,
-            ),
+        delegated_context = replace(
+            child_context,
+            metadata={
+                **plain_object(child_context.metadata),
+                "parent_tool_call_id": parent_call_id,
+            },
+        )
+        try:
+            handle = await self._start_agent_execution(
+                bound,
+                child_message,
+                delegated_context,
+                execution=ExecutionOptions(
+                    request_id=run_ref.case_run_id,
+                    identity=run_ref.session_id,
+                    idempotency_key=parent_call_id,
+                    deadline=time.monotonic() + 30 * 60,
+                ),
+            )
+        except BaseException:
+            await self.reminders.release_initial(run_ref.session_id, turn_id)
+            raise
+        await self.reminders.acknowledge_initial(
+            run_ref.session_id, turn_id, handle.execution_id
         )
         if emit is not None:
             async with handle.subscribe() as events:
                 async for event in events:
                     if event.kind == "lora.approval.requested":
-                        await emit(event.kind, dict(thaw_json(event.data)))
+                        await emit(event.kind, plain_object(event.data))
         output, _ = await handle.result()
-        result = dict(thaw_json(output.data).get("result") or {})
+        result = plain_object(plain_object(output.data).get("result"))
         status = str(result.get("status") or "passed")
-        manager.finish_case_run(run_ref, status if status in {"passed", "failed", "error", "skipped"} else "error")
+        manager.finish_case_run(
+            run_ref,
+            status if status in {"passed", "failed", "error", "skipped"} else "error",
+        )
         return {
             "answer": output.content,
             "session_id": run_ref.session_id,
@@ -440,7 +657,9 @@ class LoraRuntimeService:
     async def bind(self, module: Any, agent: LoraAgent) -> Any:
         await self.initialize()
         bound = self.binding.bind(module)
-        if agent.llm is not None and (module is agent or getattr(module, "agent", None) is agent):
+        if agent.llm is not None and (
+            module is agent or getattr(module, "agent", None) is agent
+        ):
             requirement = ModelGroupConfig.deferred(
                 name=f"lora:{agent.resolved_agent.alias}",
                 capacity_key="lora-chat-model",
@@ -452,7 +671,13 @@ class LoraRuntimeService:
                     (
                         agent.resolved_agent.profile,
                         tuple(
-                            (route.id, route.provider, route.model_name, route.base_url, route.api_key_env)
+                            (
+                                route.id,
+                                route.provider,
+                                route.model_name,
+                                route.base_url,
+                                route.api_key_env,
+                            )
                             for route in routes
                         ),
                     )
@@ -462,7 +687,9 @@ class LoraRuntimeService:
             await handle.ensure_profile(
                 profile=agent.resolved_agent.profile,
                 routes=tuple(
-                    ModelRoute(route.id, provider=route.provider, model=route.model_name)
+                    ModelRoute(
+                        route.id, provider=route.provider, model=route.model_name
+                    )
                     for route in routes
                 ),
                 fallback=FallbackPolicy(
@@ -481,6 +708,41 @@ class LoraRuntimeService:
             )
         return bound
 
+    @staticmethod
+    async def _deliver_projection_replacement(
+        handle: Any, context: LoraContext
+    ) -> None:
+        operation = context.metadata.get(PROJECTION_OPERATION_METADATA_KEY)
+        if operation is None:
+            return
+        for key, kind, value in (
+            (
+                PROJECTION_INPUT_ID_METADATA_KEY,
+                REACT_PROJECTION_OPERATION_KIND,
+                operation,
+            ),
+            (PROJECTION_READY_INPUT_ID_METADATA_KEY, LORA_PROJECTION_READY_KIND, True),
+        ):
+            result = await handle.send_input(
+                input_id=str(context.metadata[key]), kind=kind, value=value
+            )
+            if result.status not in {"accepted", "duplicate"}:
+                raise RuntimeError(
+                    f"native projection input was not delivered: {result.status}"
+                )
+
+    async def _start_agent_execution(
+        self,
+        bound: Any,
+        message: UserMessage,
+        context: LoraContext,
+        *,
+        execution: Any,
+    ) -> Any:
+        handle = await bound.start(message, context, execution=execution)
+        await self._deliver_projection_replacement(handle, context)
+        return handle
+
     async def start_turn(
         self,
         *,
@@ -495,8 +757,7 @@ class LoraRuntimeService:
 
         await self.initialize()
         agent = self.new_agent(interactive_approvals=interactive_approvals)
-        turn_message, turn_context = self._prepare_turn(
-            agent=agent,
+        turn_message, turn_context = await self._prepare_turn(
             manager=manager,
             run_ref=run_ref,
             message=message,
@@ -504,15 +765,25 @@ class LoraRuntimeService:
             turn_id=turn_id,
         )
         bound = await self.bind(agent, agent)
-        handle = await bound.start(
-            turn_message,
-            turn_context,
-            execution=ExecutionOptions(
-                request_id=run_ref.case_run_id,
-                idempotency_key=run_ref.case_run_id,
-                identity=run_ref.session_id,
-                deadline=deadline if deadline is not None else time.monotonic() + 30 * 60,
-            ),
+        try:
+            handle = await self._start_agent_execution(
+                bound,
+                turn_message,
+                turn_context,
+                execution=ExecutionOptions(
+                    request_id=run_ref.case_run_id,
+                    idempotency_key=run_ref.case_run_id,
+                    identity=run_ref.session_id,
+                    deadline=deadline
+                    if deadline is not None
+                    else time.monotonic() + 30 * 60,
+                ),
+            )
+        except BaseException:
+            await self.reminders.release_initial(run_ref.session_id, turn_id)
+            raise
+        await self.reminders.acknowledge_initial(
+            run_ref.session_id, turn_id, handle.execution_id
         )
         self._record_execution_id(run_ref, handle.execution_id)
         return handle
@@ -535,11 +806,24 @@ class LoraRuntimeService:
         )
         while True:
             try:
-                return await self.runtime.recover(
+                handle = await self.runtime.recover(
                     bound,
                     execution_id,
                     deadline=deadline,
                 )
+                stored = await self.history.get_execution(execution_id)
+                if stored is None:
+                    raise KeyError(f"unknown durable execution {execution_id!r}")
+                _, context = invocation_from_dict(
+                    stored.input,
+                    registry=self.runtime.context_codec_registry,
+                )
+                if not isinstance(context, LoraContext):
+                    raise TypeError(
+                        "durable Lora execution has an incompatible context"
+                    )
+                await self._deliver_projection_replacement(handle, context)
+                return handle
             except ExecutionAdmissionError as exc:
                 if (
                     "owned by another recovery attempt" not in str(exc)
@@ -574,16 +858,24 @@ class LoraRuntimeService:
         from pygent.runtime import ExecutionOptions
 
         await self.initialize()
-        from lora.tracing import EventStore
 
         store = EventStore(run_ref)
-        store.append("case.started", actor="system", payload={"title": case.title}, turn_id="turn-0001")
+        store.append(
+            "case.started",
+            actor="system",
+            payload={"title": case.title},
+            turn_id="turn-0001",
+        )
         carry_context = case.session.get("carry_context") is not False
         if not carry_context:
             session.history = []
         inputs = case.input.get("messages")
         messages = (
-            [str(item.get("content") or "") for item in inputs if isinstance(item, dict) and item.get("role", "user") == "user"]
+            [
+                str(item.get("content") or "")
+                for item in inputs
+                if isinstance(item, dict) and item.get("role", "user") == "user"
+            ]
             if isinstance(inputs, list)
             else [str(case.input.get("content") or "")]
         )
@@ -611,8 +903,7 @@ class LoraRuntimeService:
         if carry_context and messages[:-1]:
             session = manager.load(run_ref.session_id)
         agent = self.new_agent(interactive_approvals=False)
-        turn_message, turn_context = self._prepare_turn(
-            agent=agent,
+        turn_message, turn_context = await self._prepare_turn(
             manager=manager,
             run_ref=run_ref,
             message=current_message,
@@ -622,18 +913,28 @@ class LoraRuntimeService:
             carry_context=carry_context,
         )
         bound = await self.bind(agent, agent)
-        handle = await bound.start(
-            turn_message,
-            turn_context,
-            execution=ExecutionOptions(
-                request_id=run_ref.case_run_id,
-                idempotency_key=run_ref.case_run_id,
-                identity=run_ref.session_id,
-                deadline=time.monotonic() + 30 * 60,
-            ),
+        try:
+            handle = await self._start_agent_execution(
+                bound,
+                turn_message,
+                turn_context,
+                execution=ExecutionOptions(
+                    request_id=run_ref.case_run_id,
+                    idempotency_key=run_ref.case_run_id,
+                    identity=run_ref.session_id,
+                    deadline=time.monotonic() + 30 * 60,
+                ),
+            )
+        except BaseException:
+            await self.reminders.release_initial(run_ref.session_id, "turn-0001")
+            raise
+        await self.reminders.acknowledge_initial(
+            run_ref.session_id,
+            "turn-0001",
+            handle.execution_id,
         )
         output, _ = await handle.result()
-        result = dict(thaw_json(output.data).get("result") or {})
+        result = plain_object(plain_object(output.data).get("result"))
         result["event_count"] = len(store.list_by_run())
         store.append(
             "case.finished",
@@ -645,63 +946,108 @@ class LoraRuntimeService:
         self._record_execution_id(run_ref, handle.execution_id)
         return result
 
-    @staticmethod
-    def _prepare_turn(
+    async def _prepare_turn(
+        self,
         *,
-        agent: LoraAgent,
         manager: SessionManager,
         run_ref: CaseRunRef,
         message: str,
         config: RunConfig,
         turn_id: str,
-        session: Any | None = None,
+        session: AgentSession | None = None,
         carry_context: bool = True,
     ) -> tuple[UserMessage, LoraContext]:
-        session = session or manager.load(run_ref.session_id)
-        memory_projection = load_projection(session.session_dir) if carry_context else {}
+        if session is None:
+            session = manager.load(run_ref.session_id)
+        memory_projection = (
+            load_projection(session.session_dir) if carry_context else {}
+        )
         covered_through = int(memory_projection.get("covered_through") or 0)
-        portable_history = (
-            session.history[covered_through:]
-            if config.eternal_conversation.enabled
-            else session.history
-        )
-        full_history = tuple(
-            converted
-            for item in portable_history
-            if (converted := _to_pygent_message(item)) is not None
-        )
         lora_context = LoraContext(
             session_id=session.session_id,
-            session_status=session.status,
             case_id=run_ref.case_id,
             case_run_id=run_ref.case_run_id,
             run_dir=run_ref.run_dir,
             turn_id=turn_id,
             system_prompt=session.system_prompt,
-            full_history=full_history,
             eternal_memory_enabled=config.eternal_conversation.enabled,
             memory_covered_through=covered_through,
             memory_projection=freeze_json_object(memory_projection),
-            raw_history_location=str(Path(session.session_dir) / "raw-history" / "events.jsonl"),
+            raw_history_location=str(
+                Path(session.session_dir) / "raw-history" / "events.jsonl"
+            ),
         )
-        wrapped = _wrap_user_message(message, config.user_identity)
-        reminder = agent.render_initial_user_reminder(lora_context)
+        wrapped = "\n".join(
+            (
+                "<user-context>",
+                f"  <user-identity>{escape(config.user_identity or 'default', quote=False)}</user-identity>",
+                f"  <user-message>{escape(message, quote=False)}</user-message>",
+                "</user-context>",
+            )
+        )
+        reminder = await self.reminders.claim_initial(session.session_id, turn_id)
+        dynamic_reminder = await self.reminders.collect_pending(session.session_id)
+        if dynamic_reminder:
+            reminder = (
+                f"{reminder}\n\n{dynamic_reminder}" if reminder else dynamic_reminder
+            )
         if reminder:
             wrapped = f"{wrapped}\n\n{reminder}"
         history, _ = _initial_lora_context(
             context=lora_context,
-            session_dir=_session_dir_for_run(Path(run_ref.run_dir)),
+            history=session.history,
+            checkpoint=session.metadata.get("agent_context"),
+        )
+        current = UserMessage(
+            content=wrapped,
+            kind="lora.chat.turn",
+            data={"raw_content": message},
+        )
+        metadata: dict[str, Any] = {
+            "session_id": run_ref.session_id,
+            "case_run_id": run_ref.case_run_id,
+            "persist_conversation_history": carry_context,
+        }
+        if (
+            config.eternal_conversation.enabled
+            and carry_context
+            and covered_through > 0
+        ):
+            snapshot = UserMessage(
+                content=render_memory_snapshot(memory_projection),
+                kind="lora.memory.snapshot",
+                slot="lora.memory.snapshot",
+            )
+            replacement = ReplaceMessageProjection(
+                messages=(
+                    snapshot,
+                    *_recent_conversation_messages(session.history),
+                    current,
+                ),
+                expected_revision=history.projection_revision + 1,
+            )
+            identity = (
+                f"{run_ref.case_run_id}:memory-projection:"
+                f"{memory_projection.get('snapshot_revision', 0)}:{covered_through}"
+            )
+            metadata.update(
+                {
+                    "projection_replacement_pending": True,
+                    "projection_replacement_message_count": len(replacement.messages),
+                    PROJECTION_OPERATION_METADATA_KEY: encode_react_projection_operation(
+                        replacement
+                    ),
+                    PROJECTION_INPUT_ID_METADATA_KEY: identity,
+                    PROJECTION_READY_INPUT_ID_METADATA_KEY: f"{identity}:ready",
+                }
+            )
+        execution_context = replace(
+            history,
+            metadata=metadata,
         )
         return (
-            UserMessage(content=wrapped, kind="lora.chat.turn", data={"raw_content": message}),
-            replace(
-                history,
-                metadata={
-                    "session_id": run_ref.session_id,
-                    "case_run_id": run_ref.case_run_id,
-                    "persist_conversation_history": carry_context,
-                },
-            ),
+            current,
+            execution_context,
         )
 
     @staticmethod
@@ -720,7 +1066,13 @@ class LoraRuntimeService:
             value={"approved": approved, "comment": comment},
         )
 
-    async def _call_memory_agent(self, alias: str, system_prompt: str, request: str) -> str:
+    async def _run_memory_agent(
+        self,
+        alias: str,
+        system_prompt: str,
+        request: dict[str, Any],
+        memory_tool: MemoryAgentTool,
+    ) -> str:
         child_config = load_run_config(
             workspace_root=self.config.workspace_root,
             agent_alias=alias,
@@ -729,25 +1081,85 @@ class LoraRuntimeService:
         try:
             layer = agent.new_model_layer()
             if agent.llm is None:
-                raise RuntimeError(f"background memory Agent {alias!r} has no configured model")
-            # Background memory work is intentionally independent of a foreground
-            # Runtime execution. Invoke the provider operation directly instead of
-            # calling a Module child from an unregistered asyncio task.
-            execution = agent.llm.execute(
+                raise RuntimeError(
+                    f"background memory Agent {alias!r} has no configured model"
+                )
+
+            @tool(
+                tool_id=f"lora.memory.{memory_tool.name}",
+                version="1.0.0",
+                side_effect=ToolSideEffect.WRITE,
+                idempotency=IdempotencyPolicy.INHERENT,
+                name=memory_tool.name,
+                description=memory_tool.description,
+                timeout=300,
+                resource_key="lora-memory",
+                required_permissions=("memory:write",),
+            )
+            async def memory_operation(payload: dict[str, Any]) -> dict[str, Any]:
+                try:
+                    return await memory_tool.handler(payload)
+                except ValueError as exc:
+                    # Extractor validation happens before publish-pending writes.
+                    # Tell Pygent the failed call is safe to correct and retry;
+                    # unclassified CLI failures remain conservatively unknown.
+                    raise ToolExecutionError(
+                        str(exc),
+                        kind="validation_error",
+                        code=type(exc).__name__,
+                        retryable=True,
+                        side_effect_committed=False,
+                    ) from exc
+
+            toolkit = ToolKit(memory_operation)
+
+            def authorize_memory_tool(
+                request: ToolAuthorizationRequest,
+                context: PygentContext,
+            ) -> ToolAuthorizationDecision:
+                del context
+                return ToolAuthorizationDecision(
+                    call_id=request.call.call_id,
+                    allowed=True,
+                    reason_code="lora-background-memory-job",
+                )
+
+            model = ModelCallLayer(
                 model_group=layer.model_group,
                 retry_policy=layer.retry_policy,
                 generation=replace(
                     layer.generation,
-                    tool_choice="none",
-                    max_output_tokens=8192,
+                    tool_choice="auto",
                 ),
-                message=UserMessage(content=request),
-                context=PygentContext(system_prompt=system_prompt),
-                tools=(),
+                policy=layer.policy,
+                tools=toolkit.definitions,
+                invoker=agent.llm,
             )
-            answer = (await execution.result()).message
-            if answer.tool_calls:
-                raise RuntimeError("background memory Agent attempted a tool call")
+            # This is a native Pygent ReAct Agent. The background job remains
+            # independent of the foreground durable execution, while validation
+            # failures return through ToolResult and stay in this Agent's context.
+            react_agent = PygentAgent(
+                system_prompt=system_prompt,
+                compression_prompt="Compress the memory job transcript without losing tool errors.",
+                model=model,
+                compressor=model,
+                tools=_MemoryToolFeedbackLayer(
+                    toolkit.local_layer(authorization_adapter=authorize_memory_tool)
+                ),
+                context_window_tokens=1 << 60,
+                compression_context_window_tokens=1 << 60,
+                max_compressions=1,
+                max_steps=DEFAULT_REACT_MAX_STEPS,
+                max_model_calls=DEFAULT_REACT_MAX_STEPS,
+                max_tool_calls=DEFAULT_REACT_MAX_STEPS,
+            )
+            answer, _ = await react_agent.invoke(
+                UserMessage(content=json.dumps(request, ensure_ascii=False)),
+                react_agent.new_context(
+                    tools=toolkit.definitions,
+                    metadata={"memory_agent_alias": alias},
+                ),
+            )
             return answer.content
         finally:
             await agent.aclose()
@@ -764,13 +1176,15 @@ class LoraRuntimeService:
         self._closed = True
         await self.memory_harness.close()
         await self.runtime.close(cancel=cancel)
-        for invoker in {id(value): value for value in self._model_invokers.values()}.values():
-            close = getattr(invoker, "aclose", None)
-            if callable(close):
-                await close()
+        for invoker in {
+            id(value): value for value in self._model_invokers.values()
+        }.values():
+            await aclose_if_supported(invoker)
         if self.capacity is not None:
             await self.capacity.close(release_leases=True)
         await self.history.close()
+        if self._owns_reminders:
+            await self.reminders.close()
 
 
 __all__ = ["LoraRuntimeService"]

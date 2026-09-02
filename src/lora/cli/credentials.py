@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 from lora.config import load_run_config
+from lora.core.io import non_empty_string as _non_empty
 from lora.credentials import (
     DEFAULT_API_KEY_ENV,
     credential_is_configured,
@@ -140,9 +141,3 @@ def _keyring_available() -> bool:
     except ImportError:
         return False
     return True
-
-
-def _non_empty(value: object | None) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None

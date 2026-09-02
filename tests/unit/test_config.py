@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from lora.config import load_run_config
+from lora.config.yaml_subset import dump_yaml_subset, parse_yaml_subset
 
 
 ROUTES_CONFIG = """
@@ -54,6 +55,22 @@ def test_routes_are_the_only_model_configuration(tmp_path: Path) -> None:
     assert agent.retry.max_attempts_per_route == 3
     assert agent.routes[0].model_name == "model-a"
     assert agent.routes[0].api_key == "secret"
+
+
+def test_yaml_subset_dump_round_trips_model_group_values() -> None:
+    data = {
+        "lora_root": r"C:\Users\agent's data\.lora",
+        "agent": {"default_alias": "dev"},
+        "agents": [{
+            "alias": "dev",
+            "model_request": {
+                "routes": [{"id": "primary", "base_url": "https://example.test/v1#chat"}],
+                "fallback": ["primary"],
+            },
+        }],
+    }
+
+    assert parse_yaml_subset(dump_yaml_subset(data)) == data
 
 
 def test_unknown_model_request_field_is_rejected(tmp_path: Path) -> None:
@@ -184,3 +201,21 @@ def test_user_config_accepts_runtime_capacity_settings(tmp_path: Path) -> None:
         config = load_run_config(workspace_root=tmp_path)
 
     assert config.runtime_capacity.scope == "deployment"
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("max_steps: 0\n", "max_steps"),
+        ("delegation:\n  max_depth: 0\n", "delegation limits"),
+        ("delegation:\n  max_parallel: 0\n", "delegation limits"),
+    ],
+)
+def test_zero_limits_are_rejected_instead_of_replaced(
+    tmp_path: Path, content: str, message: str
+) -> None:
+    home = write_user_config(tmp_path, content)
+    with patch("lora.config.loader.Path.home", return_value=home), pytest.raises(
+        ValueError, match=message
+    ):
+        load_run_config(workspace_root=tmp_path)

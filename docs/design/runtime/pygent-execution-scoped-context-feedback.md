@@ -1,16 +1,28 @@
 # Pygent execution-scoped context extension feedback
 
-> 状态更新（Pygent 0.2.12）：Pygent 已提供受约束、可注册 codec 的 `Context`
-> 子类支持。Lora 已采用该能力统一 portable 模型投影与完整会话历史，因此本文描述的
-> `attach_runtime_context()` workaround 已被移除。`SessionManager` 等 live resource 仍不应
-> 进入 Context；相关 execution-scoped resource 建议依然适用于需要复用 graph 且不能在
-> 构造期注入的 live dependency。
+> 状态更新（Pygent 0.3.3）：Lora 现在直接以 `LoraContext(PygentAgentContext)`
+> 运行原生 ReAct agent，并使用 Pygent 的 compressor Module、context snapshot、codec
+> 和 execution recovery。0.3.3 原生的有界 `committed_messages` 已替代 Lora 曾经增加的
+> `full_history` 字段；本文描述的 `attach_runtime_context()` workaround 以及 Lora
+> 自有的压缩状态文件均已移除。`SessionManager` 等 live resource 仍不进入 Context；
+> 相关 execution-scoped resource 建议只适用于无法从 portable identity 重建的依赖。
 
 ## 当前适配结果
 
-Lora 现在直接使用 `LoraContext(Context)` 承载 `session_id`、case/run/turn
-identity、完整历史、模型投影状态和待提交文件副作用。`RuntimeService` 只在执行入口
+Lora 现在直接使用 `LoraContext(PygentAgentContext)` 承载 `session_id`、case/run/turn
+identity、模型投影、单次 invocation 的有界 commits 和待提交文件副作用。完整历史由
+`SessionManager` 持久化，不进入 Pygent invocation。`RuntimeService` 只在执行入口
 构造该 context；同一个 `LoraAgent` Module graph 可以跨 turn、跨 run 复用。
+
+成功轮次把该 context 通过 Pygent 原生 codec 写入现有 session 的
+`metadata.agent_context`；下一轮直接 decode，并把上次成功 checkpoint 之后已经落盘的
+消息补到模型投影。压缩期间不再维护平行的 transcript、model context 或压缩计数状态。
+
+永续记忆发布新 snapshot 后，下一轮通过 durable execution input 向原生 `ReActLayer`
+提交 `ReplaceMessageProjection`。replacement 明确包含 memory snapshot、最近一次 user/final
+assistant 交互和当前 user message，并以 `expected_revision` 校验投影版本；执行入口在
+replacement 与 ready input 都持久化后才放行首次模型调用。`covered_through` 只表示 snapshot
+的证据覆盖范围，不用于切分 Pygent Context 中的历史字段。
 
 原来的 `_LoraRunServices`、Agent 上的 run-bound 引用和 observer 隐藏队列已经删除。
 `EventStore`、prompt context view、`DiffTool` 等对象在使用点根据 portable identity
@@ -364,6 +376,14 @@ class LoraContext:
 8. 恢复执行可以通过 portable resource identity 和应用 resolver 重建所需资源。
 9. 两个并发 execution 可以共享显式声明为 workspace-scoped 的只读服务，同时隔离
    turn-scoped mutable state。
+
+## Pygent 0.3.0 Windows 取消兼容说明
+
+真实永续会话验收发现，Pygent 0.3.0 的原生 `BashTools` 在 Windows 取消或超时时只终止
+`bash.exe`，不会终止其 pytest/Python 子进程树。子进程继续持有 stdout pipe 时，输出捕获
+任务无法收到 EOF，execution 会留下孤儿进程。Lora 暂时通过
+`runtime/pygent_compat.py` 在 Windows 使用 `taskkill /T /F` 补齐进程树清理；其他平台仍
+直接使用原生实现。上游提供等价修复后应删除该兼容层，并保留取消真实子进程的回归测试。
 
 ## 期望结果
 

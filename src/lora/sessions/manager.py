@@ -17,6 +17,7 @@ from lora.core.io import (
     write_json,
     write_json_atomic,
 )
+from lora.core.redaction import redact_secrets
 from lora.schema import AgentSession, CaseRunRef, RunConfig, SessionRef, SessionSpec
 
 
@@ -86,6 +87,7 @@ class SessionManager:
         case_id = source_meta.get("case_id", "fork")
         target = self.create(case_id=case_id, mode="fork")
         target_dir = Path(target.session_dir)
+        target_session = self.load(target.session_id)
         # A fork is a semantic continuation at the source cursor. Copy every
         # durable conversation layer, not only the foreground context mirror.
         for name in (
@@ -109,11 +111,15 @@ class SessionManager:
             {
                 "session_id": target.session_id,
                 "session_dir": str(target_dir),
+                "created_at": target_session.created_at,
                 "updated_at": utc_now(),
             }
         )
         session = AgentSession.from_dict(data)
-        session.metadata.update({"forked_from": source_session_id})
+        session.metadata.update({"forked_from": source_session_id, "mode": "fork"})
+        reminder_state = target_dir / "state" / "reminders"
+        if reminder_state.exists():
+            shutil.rmtree(reminder_state)
         self._save_session(session)
         return target
 
@@ -213,7 +219,7 @@ class SessionManager:
                         case_run_ref.case_run_id,
                         turn_id,
                         str(message.get("role") or "user"),
-                        json.dumps(message, ensure_ascii=False, sort_keys=True),
+                        json.dumps(redact_secrets(message), ensure_ascii=False, sort_keys=True),
                         int(include_in_session),
                         utc_now(),
                     ),
@@ -239,7 +245,7 @@ class SessionManager:
     def _save_session(self, session: AgentSession) -> None:
         validate_path_id(session.session_id, "session_id")
         session_dir = self._session_dir(session.session_id)
-        write_json_atomic(session_dir / "session.json", session.to_dict())
+        write_json_atomic(session_dir / "session.json", redact_secrets(session.to_dict()))
 
     def _apply_history_checkpoints(self, session: AgentSession) -> AgentSession:
         database_path = self._checkpoint_database_path(session.session_id)

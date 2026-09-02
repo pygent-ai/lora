@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from lora.tracing import EventStore
+from lora.runtime.context_snapshots import ContextSnapshotStore
 
 from lora_api.dependencies import ApiContext, get_api_context
 from lora_api.models.responses import TraceEventsResponse
@@ -22,4 +23,9 @@ def get_trace_events(
         session_id=session_id,
         case_run_id=case_run_id,
         events=list(EventStore.iter_jsonl(store.events_path)),
+        context_snapshots=(
+            []
+            if store.session_dir is None
+            else ContextSnapshotStore(store.session_dir).list()
+        ),
     )

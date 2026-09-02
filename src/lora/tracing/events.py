@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from lora.core.io import append_jsonl, utc_now, write_json
+from lora.core.io import append_jsonl, utc_now, write_json, write_text
 from lora.core.redaction import redact_secrets
 from lora.schema import CaseRunRef, ContextEvent
 
@@ -214,7 +214,7 @@ class EventStore:
             "modules": event.payload.get("modules", []),
             "dynamic_inputs": event.payload.get("dynamic_inputs", {}),
         }
-        _write_text(run_text_path, persisted_prompt)
+        write_text(run_text_path, persisted_prompt)
         write_json(run_metadata_path, prompt_metadata)
         event.payload["prompt_text_path"] = str(run_text_path)
         event.payload["prompt_metadata_path"] = str(run_metadata_path)
@@ -224,7 +224,7 @@ class EventStore:
         session_prompt_dir = self.session_dir / "context" / "rendered_prompts" / str(event.case_run_id or "session")
         session_text_path = session_prompt_dir / f"{prompt_file_name}.txt"
         session_metadata_path = session_prompt_dir / f"{prompt_file_name}.json"
-        _write_text(session_text_path, persisted_prompt)
+        write_text(session_text_path, persisted_prompt)
         write_json(session_metadata_path, prompt_metadata)
         append_jsonl(
             self.session_dir / "logs" / "rendered_prompts.jsonl",
@@ -297,7 +297,8 @@ def _clone_event(event: ContextEvent) -> ContextEvent:
 
 
 def _message_record(event: ContextEvent) -> dict[str, Any]:
-    record = {
+    return {
+        **event.payload,
         "event_id": event.id,
         "session_id": event.session_id,
         "case_id": event.case_id,
@@ -307,11 +308,6 @@ def _message_record(event: ContextEvent) -> dict[str, Any]:
         "content": event.payload.get("content", ""),
         "created_at": event.timestamp,
     }
-    if event.payload.get("checkpoint_id") is not None:
-        record["checkpoint_id"] = event.payload.get("checkpoint_id")
-    if isinstance(event.payload.get("message"), dict):
-        record["message"] = event.payload.get("message")
-    return record
 
 
 def _tool_result_record(event: ContextEvent) -> dict[str, Any]:
@@ -401,8 +397,3 @@ def _next_jsonl_seq(path: Path) -> int:
             if line.strip():
                 count += 1
     return count + 1
-
-
-def _write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")

@@ -11,7 +11,7 @@ from typing import Any
 
 from pygent import thaw_json
 
-from lora.core.io import append_jsonl
+from lora.core.io import append_jsonl, plain_object
 from lora.schema import CaseRunRef
 from lora_api.container import ApiContext
 from lora_api.models.events import ExecutionEvent
@@ -28,9 +28,9 @@ async def stream_chat_turn(
     *,
     registry: ChatRunRegistry | None = None,
 ) -> AsyncIterator[str]:
-    registry = registry or context.chat_registry
+    active_registry = registry if registry is not None else context.chat_registry
     try:
-        run = await registry.resolve(context, request)
+        run = await active_registry.resolve(context, request)
     except Exception as exc:
         yield _sse(_transport_error_event(request.execution_id or "", exc))
         return
@@ -160,8 +160,11 @@ class ActiveChatRun:
                     )
                 await self.registry.attach(self)
                 self.ready.set()
-                output, _ = await self.execution_handle.result()
-                result = dict(thaw_json(output.data).get("result") or {})
+                execution_handle = self.execution_handle
+                if execution_handle is None:  # pragma: no cover - assignment invariant
+                    raise RuntimeError("chat execution did not start")
+                output, _ = await execution_handle.result()
+                result = plain_object(plain_object(output.data).get("result"))
                 status = str(result.get("status") or "passed")
         except asyncio.CancelledError:
             status = "skipped"
@@ -284,7 +287,7 @@ class ChatRunRegistry:
             return recovered
         if not request.message:
             raise ValueError("message is required when execution_id is not provided")
-        service = SessionService(context.manager)
+        service = SessionService(context.manager, context.reminders)
         session_id = request.session_id or service.create_session(case_id=request.case_id, mode="chat").session_id
         service.save_title_from_user_input(session_id, request.message)
         run_ref = context.manager.start_case_run(session_id, request.case_id, run_config=context.config)

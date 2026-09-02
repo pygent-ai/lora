@@ -10,15 +10,21 @@ from types import SimpleNamespace
 
 import pytest
 from pygent import AIMessage, Context, Module, ToolCall, UserMessage, thaw_json
+from pygent.agent import ReplaceMessageProjection, decode_react_projection_operation
 from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
-from pygent.runtime import ExecutionOptions
+from pygent.runtime import ExecutionOptions, HistoryStoreError
 from pygent.tool import AgentToolExecutor
 
 from lora.config import load_run_config
+from lora.schema import RunConfig
 from lora.runtime.context import LoraContext
+from lora.runtime.file_effects import FileEffectBaselineStore
 from lora.runtime.agent import PromptRenderContext, _render_available_tools_prompt
 from lora.runtime.deployment import migrate_legacy_model_deployments
-from lora.runtime.service import LoraRuntimeService
+from lora.runtime.service import (
+    PROJECTION_OPERATION_METADATA_KEY,
+    LoraRuntimeService,
+)
 from lora.sessions import SessionManager
 
 
@@ -52,14 +58,41 @@ class _WideManagedGraph(Module[UserMessage, AIMessage]):
         return AIMessage(content="done"), context
 
 
-def test_pygent_0_2_19_rejects_removed_mcp_sse_transport() -> None:
+@pytest.mark.asyncio
+async def test_prepare_turn_waits_for_initial_reminder_before_model_start(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = RunConfig(workspace_root=workspace, lora_root=workspace / ".lora")
+    manager = SessionManager(config)
+    session = manager.create("chat", mode="chat")
+    run_ref = manager.start_case_run(session.session_id, "chat", run_config=config)
+    service = LoraRuntimeService.__new__(LoraRuntimeService)
+    from lora.runtime.reminders import ReminderService
+
+    service.reminders = ReminderService(config)
+
+    message, _ = await service._prepare_turn(
+        manager=manager,
+        run_ref=run_ref,
+        message="hello",
+        config=config,
+        turn_id="turn-1",
+    )
+
+    assert FileEffectBaselineStore(session.session_dir).load() is None
+    assert "<system-reminder>" in message.content
+    await service.reminders.release_initial(session.session_id, "turn-1")
+    await service.reminders.close()
+
+
+def test_current_pygent_rejects_removed_mcp_sse_transport() -> None:
     service = LoraRuntimeService.__new__(LoraRuntimeService)
 
-    with pytest.raises(ValueError, match="Pygent 0.2.19.*use stdio"):
+    with pytest.raises(ValueError, match="installed Pygent.*use stdio"):
         service._mcp_transport(SimpleNamespace(transport="sse"))
 
 
-def test_pygent_0_2_19_migrates_legacy_model_route_snapshots(tmp_path: Path) -> None:
+def test_current_pygent_migrates_legacy_model_route_snapshots(tmp_path: Path) -> None:
     database = tmp_path / "model-deployments-v1.sqlite3"
     connection = sqlite3.connect(database)
     connection.executescript(
@@ -243,6 +276,53 @@ async def test_runtime_replays_completed_execution_through_pygent_handle() -> No
 
 
 @pytest.mark.asyncio
+async def test_preferred_durability_preserves_incompatible_history_and_starts_fresh(
+    tmp_path: Path,
+) -> None:
+    history_path = tmp_path / "executions-v1.sqlite3"
+    connection = sqlite3.connect(history_path)
+    connection.execute("CREATE TABLE legacy_events (id INTEGER PRIMARY KEY)")
+    connection.execute("PRAGMA user_version=1")
+    connection.commit()
+    connection.close()
+    config = load_run_config(workspace_root=tmp_path)
+    config.runtime_durability.history_path = str(history_path)
+
+    with pytest.warns(RuntimeWarning, match="preserving it"):
+        service = LoraRuntimeService(config)
+    try:
+        await service.initialize()
+    finally:
+        await service.close()
+
+    assert history_path.exists()
+    assert service.history_path == tmp_path / "executions-v1-schema-v7.sqlite3"
+    connection = sqlite3.connect(service.history_path)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone() == (7,)
+    finally:
+        connection.close()
+
+
+@pytest.mark.asyncio
+async def test_required_durability_rejects_incompatible_history(tmp_path: Path) -> None:
+    history_path = tmp_path / "executions-v1.sqlite3"
+    connection = sqlite3.connect(history_path)
+    connection.execute("CREATE TABLE legacy_events (id INTEGER PRIMARY KEY)")
+    connection.execute("PRAGMA user_version=1")
+    connection.commit()
+    connection.close()
+    config = load_run_config(workspace_root=tmp_path)
+    config.runtime_durability.mode = "required"
+    config.runtime_durability.history_path = str(history_path)
+    service = LoraRuntimeService(config)
+
+    with pytest.raises(HistoryStoreError, match="schema v7"):
+        await service.initialize()
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_allows_managed_graph_beyond_old_64_child_limit() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         service = LoraRuntimeService(load_run_config(workspace_root=Path(tmp)))
@@ -418,16 +498,14 @@ async def test_one_agent_definition_is_reused_with_isolated_run_contexts() -> No
             agent = service.new_agent(interactive_approvals=False)
             assert agent is service.new_agent(interactive_approvals=False)
 
-            first_message, first_context = service._prepare_turn(
-                agent=agent,
+            first_message, first_context = await service._prepare_turn(
                 manager=manager,
                 run_ref=first_run,
                 message="first",
                 config=config,
                 turn_id="turn-first",
             )
-            second_message, second_context = service._prepare_turn(
-                agent=agent,
+            second_message, second_context = await service._prepare_turn(
                 manager=manager,
                 run_ref=second_run,
                 message="second",
@@ -448,7 +526,8 @@ async def test_one_agent_definition_is_reused_with_isolated_run_contexts() -> No
             await service.close()
 
 
-def test_eternal_turn_context_carries_only_uncovered_history_suffix() -> None:
+@pytest.mark.asyncio
+async def test_eternal_turn_uses_native_projection_replacement() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = load_run_config(workspace_root=Path(tmp))
         config.eternal_conversation.enabled = True
@@ -471,9 +550,7 @@ def test_eternal_turn_context_carries_only_uncovered_history_suffix() -> None:
         run_ref = manager.start_case_run(session.session_id, "chat", run_config=config)
         service = LoraRuntimeService(config)
         try:
-            agent = service.new_agent(interactive_approvals=False)
-            _, context = service._prepare_turn(
-                agent=agent,
+            _, context = await service._prepare_turn(
                 manager=manager,
                 run_ref=run_ref,
                 message="next",
@@ -482,13 +559,81 @@ def test_eternal_turn_context_carries_only_uncovered_history_suffix() -> None:
             )
 
             assert context.memory_covered_through == 2
-            assert [item["content"] for item in context.history] == [
-                "working user",
-                "working answer",
+            assert context.committed_messages == ()
+            assert context.messages == ()
+            operation = decode_react_projection_operation(
+                context.metadata[PROJECTION_OPERATION_METADATA_KEY]
+            )
+            assert isinstance(operation, ReplaceMessageProjection)
+            assert operation.expected_revision == context.projection_revision + 1
+            assert [item.kind for item in operation.messages] == [
+                "lora.memory.snapshot",
+                None,
+                None,
+                "lora.chat.turn",
             ]
-            assert [item.content for item in context.messages] == [
+            assert [item.content for item in operation.messages[1:3]] == [
                 "working user",
                 "working answer",
             ]
         finally:
             manager.finish_case_run(run_ref, "passed")
+            await service.close()
+
+
+@pytest.mark.asyncio
+async def test_eternal_turn_keeps_unbounded_session_history_out_of_pygent_invocation() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = load_run_config(workspace_root=Path(tmp))
+        config.eternal_conversation.enabled = True
+        manager = SessionManager(config)
+        session_ref = manager.create(case_id="large-native", mode="chat")
+        session = manager.load(session_ref.session_id)
+        session.history = [
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"message-{index}",
+            }
+            for index in range(30_000)
+        ]
+        manager.save(session)
+        state_dir = Path(session.session_dir) / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "eternal-conversation.json").write_text(
+            json.dumps(
+                {
+                    "covered_through": 29_980,
+                    "snapshot_revision": 1,
+                    "snapshot": {"recent_context": ["bounded"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        run_ref = manager.start_case_run(
+            session.session_id,
+            "large-native",
+            run_config=config,
+        )
+        service = LoraRuntimeService(config)
+        try:
+            await service.initialize()
+            message, context = await service._prepare_turn(
+                manager=manager,
+                run_ref=run_ref,
+                message="continue",
+                config=config,
+                turn_id="turn-large",
+            )
+
+            assert context.messages == ()
+            assert context.committed_messages == ()
+            assert not hasattr(context, "full_history")
+            handle = await service.binding.bind(_DurableEcho()).start(message, context)
+            output, returned = await handle.result()
+        finally:
+            manager.finish_case_run(run_ref, "passed")
+            await service.close()
+
+    assert output.content == message.content
+    assert isinstance(returned, LoraContext)
+    assert returned.committed_messages == ()

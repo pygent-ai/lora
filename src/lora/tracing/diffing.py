@@ -10,6 +10,7 @@ from pygent import IdempotencyPolicy, ToolSideEffect, ToolKit, tool
 from pydantic import Field
 
 from lora.schema import CaseRunRef
+from lora.core.io import write_text
 
 from .events import EventStore
 
@@ -119,9 +120,9 @@ class DiffRecorder:
     ) -> DiffArtifact:
         diff_id = f"diff_{uuid.uuid4().hex}"
         if before.available and before.content is not None:
-            _write_text(Path(self._snapshot_path(effect.tool_call_id, "before", relative_path)), before.content)
+            write_text(Path(self._snapshot_path(effect.tool_call_id, "before", relative_path)), before.content)
         if after.available and after.content is not None:
-            _write_text(Path(self._snapshot_path(effect.tool_call_id, "after", relative_path)), after.content)
+            write_text(Path(self._snapshot_path(effect.tool_call_id, "after", relative_path)), after.content)
 
         missing_reason = _missing_patch_reason(effect.type, before, after)
         if missing_reason is not None:
@@ -142,7 +143,7 @@ class DiffRecorder:
         )
         patch = _normalize_patch_newlines("\n".join(patch_lines))
         patch_path = self.diffs_dir / "patches" / f"{diff_id}.patch"
-        _write_text(patch_path, patch)
+        write_text(patch_path, patch)
         return DiffArtifact(
             diff_id=diff_id,
             patch_available=True,
@@ -362,8 +363,3 @@ def _normalize_patch_newlines(patch: str) -> str:
     if not patch:
         return ""
     return patch if patch.endswith("\n") else f"{patch}\n"
-
-
-def _write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")

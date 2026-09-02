@@ -46,7 +46,7 @@ class TestGenerator:
     def generate(self, session_id: str, case_run_id: str) -> GeneratedTestResult:
         ref = self.session_manager.find_case_run(session_id, case_run_id)
         run_dir = Path(ref.run_dir)
-        verdict = _read_json(run_dir / "verdict.json")
+        verdict = read_json(run_dir / "verdict.json")
         status = str(verdict.get("status") or "error")
         if status == "passed":
             return GeneratedTestResult(
@@ -245,14 +245,10 @@ def _normalize_manifest_path(value: str) -> str:
     return Path(value).as_posix()
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    return read_json(path)
-
-
 def _read_optional_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    return _read_json(path)
+    return read_json(path)
 
 
 def _dump_yaml(data: dict[str, Any]) -> str:

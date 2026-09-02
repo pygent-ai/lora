@@ -1,13 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from lora.schema import BashCliPreset
 
 from .common import _hash_json
+
 
 def _always_enabled(ctx: "PromptRenderContext") -> bool:
     return True
@@ -152,14 +153,3 @@ class ModelRequestPrompt:
     request_system_prompt_hash: str | None
     modules: list[dict[str, Any]]
     injection_decision: PromptInjectionDecision
-
-class PromptContextView(Protocol):
-    """Narrow context-manager surface consumed by reminder renderers."""
-
-    workspace_root: Path
-    session_dir: Path
-    cli_bash_presets: list[Any]
-    user_lora_root: Path
-    project_lora_root: Path
-    user_skills_dir: Path
-    project_skills_dir: Path

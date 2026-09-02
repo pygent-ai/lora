@@ -51,7 +51,7 @@ The agent is a package because it contains several independently changing concer
 
 ## Composition and compatibility boundaries
 
-- `workflows/case_run.py` owns the case-run use case. `runtime/runner.py` remains a lazy compatibility facade, so runtime no longer depends on evaluation.
+- `workflows/case_run.py` is the sole case-run application entry point, so runtime no longer depends on evaluation.
 - `runtime/file_effect_models.py` holds dependency-light file-effect data contracts; observation remains in `tools.py` and deferred execution in `file_effects.py`.
 - `runtime/deployment.py` and `runtime/delegation.py` isolate Pygent adapter policy from the session-oriented `runtime/service.py` facade.
 - `runtime/context.py` is the execution-state boundary: portable run identity,

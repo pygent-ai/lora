@@ -12,6 +12,7 @@ from lora.sessions import SessionManager
 from .project_state import GuiProjectState, SessionScope
 
 if TYPE_CHECKING:
+    from lora.runtime.reminders import ReminderService
     from lora.runtime.service import LoraRuntimeService
 
 
@@ -28,6 +29,7 @@ class ApiContext:
     _manager: SessionManager | None = None
     _project_state: GuiProjectState | None = None
     _runtime_service: LoraRuntimeService | None = None
+    _reminders: ReminderService | None = None
     _chat_registry: Any | None = None
     _lock: RLock = field(default_factory=RLock)
 
@@ -58,8 +60,21 @@ class ApiContext:
             if self._runtime_service is None:
                 from lora.runtime.service import LoraRuntimeService
 
-                self._runtime_service = LoraRuntimeService(self.config)
+                self._runtime_service = LoraRuntimeService(
+                    self.config,
+                    reminders=self.reminders,
+                    own_reminders=True,
+                )
             return self._runtime_service
+
+    @property
+    def reminders(self) -> ReminderService:
+        with self._lock:
+            if self._reminders is None:
+                from lora.runtime.reminders import ReminderService
+
+                self._reminders = ReminderService(self.config)
+            return self._reminders
 
     @property
     def chat_registry(self) -> Any:
@@ -78,23 +93,31 @@ class ApiContext:
         with self._lock:
             runtime = self._runtime_service
             self._runtime_service = None
+            reminders = self._reminders
+            self._reminders = None
             registry = self._chat_registry
             self._chat_registry = None
         if registry is not None:
             await registry.close()
         if runtime is not None:
             await runtime.close(cancel=True)
+        elif reminders is not None:
+            await reminders.close()
 
     async def areload(self, overrides: dict[str, Any] | None = None) -> RunConfig:
         with self._lock:
             runtime = self._runtime_service
             self._runtime_service = None
+            reminders = self._reminders
+            self._reminders = None
         if runtime is not None:
             registry = self._chat_registry
             if registry is not None and hasattr(registry, "retire_runtime"):
                 await registry.retire_runtime(runtime)
             else:
                 await runtime.close(cancel=True)
+        elif reminders is not None:
+            await reminders.close()
         return self.reload(overrides)
 
     def reload(self, overrides: dict[str, Any] | None = None) -> RunConfig:

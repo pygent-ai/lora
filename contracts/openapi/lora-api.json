@@ -134,6 +134,129 @@
         "title": "HealthResponse",
         "type": "object"
       },
+      "ModelGroupSettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "fallback": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Fallback",
+            "type": "array"
+          },
+          "profile": {
+            "default": "default",
+            "minLength": 1,
+            "title": "Profile",
+            "type": "string"
+          },
+          "retry": {
+            "$ref": "#/components/schemas/ModelRetrySettingsRequest"
+          },
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/ModelRouteSettingsRequest"
+            },
+            "minItems": 1,
+            "title": "Routes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "routes",
+          "fallback"
+        ],
+        "title": "ModelGroupSettingsRequest",
+        "type": "object"
+      },
+      "ModelRetrySettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_idle_timeout_seconds": {
+            "default": 60.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Attempt Timeout Seconds",
+            "type": "number"
+          },
+          "backoff_initial": {
+            "default": 0.5,
+            "minimum": 0.0,
+            "title": "Backoff Initial",
+            "type": "number"
+          },
+          "backoff_maximum": {
+            "default": 4.0,
+            "minimum": 0.0,
+            "title": "Backoff Maximum",
+            "type": "number"
+          },
+          "backoff_multiplier": {
+            "default": 2.0,
+            "minimum": 1.0,
+            "title": "Backoff Multiplier",
+            "type": "number"
+          },
+          "max_attempts_per_route": {
+            "default": 2,
+            "minimum": 1.0,
+            "title": "Max Attempts Per Route",
+            "type": "integer"
+          }
+        },
+        "title": "ModelRetrySettingsRequest",
+        "type": "object"
+      },
+      "ModelRouteSettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "api_key_env": {
+            "minLength": 1,
+            "title": "Api Key Env",
+            "type": "string"
+          },
+          "base_url": {
+            "minLength": 1,
+            "title": "Base Url",
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "model_name": {
+            "minLength": 1,
+            "title": "Model Name",
+            "type": "string"
+          },
+          "provider": {
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "model_name",
+          "base_url",
+          "api_key_env"
+        ],
+        "title": "ModelRouteSettingsRequest",
+        "type": "object"
+      },
       "ProjectListResponse": {
         "properties": {
           "active": {
@@ -200,6 +323,10 @@
             "title": "Agent",
             "type": "string"
           },
+          "context_compression_trigger_ratio": {
+            "title": "Context Compression Trigger Ratio",
+            "type": "number"
+          },
           "context_window": {
             "anyOf": [
               {
@@ -210,6 +337,13 @@
               }
             ],
             "title": "Context Window"
+          },
+          "fallback": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fallback",
+            "type": "array"
           },
           "lora_root": {
             "title": "Lora Root",
@@ -222,6 +356,11 @@
           "profile": {
             "title": "Profile",
             "type": "string"
+          },
+          "retry": {
+            "additionalProperties": true,
+            "title": "Retry",
+            "type": "object"
           },
           "routes": {
             "items": {
@@ -246,9 +385,12 @@
           "agent",
           "profile",
           "routes",
+          "fallback",
+          "retry",
           "user_lora_root",
           "max_steps",
-          "context_window"
+          "context_window",
+          "context_compression_trigger_ratio"
         ],
         "title": "RuntimeConfigResponse",
         "type": "object"
@@ -538,6 +680,14 @@
             "title": "Case Run Id",
             "type": "string"
           },
+          "context_snapshots": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Context Snapshots",
+            "type": "array"
+          },
           "events": {
             "items": {
               "additionalProperties": true,
@@ -606,6 +756,16 @@
             ],
             "title": "Max Steps"
           },
+          "model_group": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelGroupSettingsRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "workspace_root": {
             "anyOf": [
               {
@@ -665,7 +825,7 @@
   },
   "info": {
     "title": "Lora Local API",
-    "version": "0.1.0"
+    "version": "0.3.2"
   },
   "openapi": "3.1.0",
   "paths": {

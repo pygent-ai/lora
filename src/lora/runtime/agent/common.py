@@ -3,28 +3,33 @@
 import json
 import os
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pygent import Context as PygentContext
 from pygent import Message as PygentMessage
-from pygent.runtime.codec import message_from_dict, message_to_dict
+from pygent.runtime.codec import context_from_dict, message_from_dict
 
-from lora.runtime.context import LoraContext
-from lora.runtime.context_compression import load_model_context
+from lora.runtime.context import LORA_CONTEXT_CODECS, LoraContext
+
+DEFAULT_REACT_MAX_STEPS = 500
+
 
 def _to_pygent_message(message: dict[str, Any]) -> PygentMessage | None:
     if message.get("role") == "system":
         return None
-    return message_from_dict(message)
+    wire_message = dict(message)
+    if wire_message.get("role") == "assistant":
+        # Pygent 0.3 makes usage part of the authoritative AIMessage wire
+        # contract. Lora sessions created by older releases legitimately lack
+        # it, so normalize them at the storage boundary instead of weakening
+        # Pygent's codec.
+        wire_message.setdefault("usage", {})
+    return message_from_dict(wire_message)
 
-
-def _message_content(message: Any) -> str:
-    content = getattr(message, "content", "")
-    return getattr(content, "data", content) or ""
 
 def _serialize_tool_payload_for_model(payload: dict[str, Any]) -> str:
     ordered = {
@@ -39,74 +44,51 @@ def _serialize_tool_payload_for_model(payload: dict[str, Any]) -> str:
     return json.dumps(ordered, ensure_ascii=False)
 
 
-def _initial_lora_context(*, context: LoraContext, session_dir: Path) -> tuple[LoraContext, bool]:
+def _initial_lora_context(
+    *,
+    context: LoraContext,
+    history: list[dict[str, Any]],
+    checkpoint: object | None = None,
+) -> tuple[LoraContext, bool]:
     if context.eternal_memory_enabled:
-        converted_messages = []
-        # Eternal-conversation contexts carry only the uncovered durable
-        # suffix. The absolute cursor remains metadata; slicing by it again
-        # would drop the working memory segment from the model projection.
-        for message in context.full_history:
-            converted = _to_pygent_message(message_to_dict(message))
-            if converted is not None:
-                converted_messages.append(converted)
-        return replace(context, messages=tuple(converted_messages)), False
-    state = load_model_context(session_dir)
-    if state and state.get("is_compacted") is True:
-        messages = [
-            item
-            for item in state.get("messages", [])
-            if isinstance(item, dict) and item.get("role") in {"system", "user", "assistant", "tool"}
-        ]
-        history_cutoff = int(state.get("history_cutoff") or len(context.history))
-        compacted_context = _pygent_context_from_model_messages(
-            context,
-            [
-                {"role": str(item.get("role")), "content": str(item.get("content") or "")}
-                for item in messages
-            ]
+        # Eternal sessions rebuild the active projection through Pygent's
+        # native ReplaceMessageProjection input. The durable SessionManager
+        # history is deliberately not part of the invocation Context.
+        return context, False
+    if (
+        checkpoint is not None
+        and (
+            not isinstance(checkpoint, Mapping)
+            or checkpoint.get("schema") != LoraContext.context_schema
+            or checkpoint.get("version") != LoraContext.context_schema_version
         )
-        for message in context.history[history_cutoff:]:
-            converted = _to_pygent_message(message)
-            if converted is not None:
-                compacted_context = compacted_context + converted
-        return replace(compacted_context, model_context_compacted=True), True
+    ):
+        # Pygent 0.3.3 replaced full_history with bounded native commits and
+        # changed the base Agent context schema. Rebuild older checkpoints
+        # from SessionManager's authoritative history.
+        checkpoint = None
+    if checkpoint is not None:
+        restored = context_from_dict(checkpoint, registry=LORA_CONTEXT_CODECS)
+        if not isinstance(restored, LoraContext):
+            raise TypeError("session agent context is not a LoraContext")
+        return (
+            replace(
+                context,
+                messages=restored.messages,
+                compression_count=restored.compression_count,
+                input_token_scale_ppm=restored.input_token_scale_ppm,
+                last_input_tokens=restored.last_input_tokens,
+                projection_revision=restored.projection_revision,
+            ),
+            True,
+        )
 
     converted_messages: list[PygentMessage] = []
-    for message in context.history:
+    for message in history:
         converted = _to_pygent_message(message)
         if converted is not None:
             converted_messages.append(converted)
     return replace(context, messages=tuple(converted_messages)), False
-
-
-def _pygent_context_from_model_messages(
-    context: LoraContext,
-    messages: list[dict[str, str]],
-) -> LoraContext:
-    system_prompt = next(
-        (str(message.get("content") or "") for message in messages if message.get("role") == "system"),
-        "",
-    )
-    converted = tuple(
-        item
-        for message in messages
-        if message.get("role") != "system"
-        and (item := _to_pygent_message(message)) is not None
-    )
-    return replace(context, system_prompt=system_prompt, messages=converted)
-
-
-def _pygent_context_messages(context: PygentContext) -> list[dict[str, Any]]:
-    messages = [message_to_dict(message) for message in context.messages]
-    if context.system_prompt:
-        messages.insert(0, {"role": "system", "content": context.system_prompt})
-    return messages
-
-
-def _split_current_message(context: PygentContext) -> tuple[PygentContext, PygentMessage]:
-    if not context.messages:
-        raise RuntimeError("model context does not contain a current message")
-    return replace(context, messages=context.messages[:-1]), context.messages[-1]
 
 
 def _latest_user_input_hash(history: list[dict[str, Any]]) -> str | None:

@@ -5,15 +5,16 @@ from .common import (
     _session_dir_for_run,
     _to_pygent_message,
 )
-from .core import LoraAgent
+from .core import LORA_PROJECTION_READY_KIND, LoraAgent
+from .compressor import LoraCompressorModule
 from .pipeline import (
-    ContextCompressionModule,
     DynamicPromptModule,
+    ForegroundModelModule,
     LoraToolAuthorization,
     PersistedDiffModule,
-    PreparedModelModule,
     PreparedToolModule,
-    SkillReminderModule,
+    RepeatedToolCallGuardModule,
+    SystemReminderModule,
     ToolAuditModule,
 )
 from .prompt_models import (
@@ -36,14 +37,16 @@ from .prompts import (
 
 __all__ = [
     "AgentContextManager",
-    "ContextCompressionModule",
     "DynamicPromptModule",
+    "ForegroundModelModule",
     "LoraAgent",
+    "LoraCompressorModule",
+    "LORA_PROJECTION_READY_KIND",
     "LoraToolAuthorization",
     "ModelRequestPrompt",
     "PersistedDiffModule",
-    "PreparedModelModule",
     "PreparedToolModule",
+    "RepeatedToolCallGuardModule",
     "PromptComposer",
     "PromptInjectionDecision",
     "PromptInjectionPolicy",
@@ -52,7 +55,7 @@ __all__ = [
     "PromptRenderContext",
     "PromptRequestContext",
     "RenderedPromptModule",
-    "SkillReminderModule",
+    "SystemReminderModule",
     "StaticPromptResult",
     "StaticPromptSessionCache",
     "ToolAuditModule",

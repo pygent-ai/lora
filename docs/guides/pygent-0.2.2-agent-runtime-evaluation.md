@@ -11,7 +11,7 @@ FastAPI SSE
     -> LoraAgent (one root per chat turn)
         -> ReActLayer
           -> DynamicPromptModule -> ContextCompressionModule -> ModelCallLayer
-          -> ToolCallLayer -> ToolAuditModule -> SkillReminderModule -> PersistedDiffModule
+          -> ToolCallLayer -> ToolAuditModule -> SystemReminderModule -> PersistedDiffModule
 ```
 
 默认容量策略位于 `lora_api/services/managed_chat_runtime.py`：

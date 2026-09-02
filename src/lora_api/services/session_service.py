@@ -10,6 +10,7 @@ from lora.core.io import validate_path_id
 from lora.core.io import write_json
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
+from lora.runtime.reminders import ReminderService
 from lora.tracing.events import EventStore
 
 from lora_api.container import ApiContext
@@ -24,8 +25,9 @@ from lora_api.project_state import active_project_scope_id, build_session_scopes
 
 
 class SessionService:
-    def __init__(self, manager: SessionManager):
+    def __init__(self, manager: SessionManager, reminders: ReminderService | None = None):
         self.manager = manager
+        self.reminders = reminders
 
     def list_chat_sessions(self, *, scope_id: str | None = None) -> list[SessionRecordResponse]:
         sessions_root = Path(self.manager.sessions_root)
@@ -43,6 +45,8 @@ class SessionService:
 
     def create_session(self, *, case_id: str = "chat", mode: str = "chat") -> SessionRecordResponse:
         ref = self.manager.create(case_id, mode=mode)
+        if self.reminders is not None:
+            self.reminders.prewarm_session(ref.session_id)
         metadata = read_json(Path(ref.session_dir) / "metadata.json")
         return _record_from_metadata(Path(ref.session_dir), metadata)
 

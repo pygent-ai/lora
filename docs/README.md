@@ -12,6 +12,7 @@ This directory contains project-level documentation. Package-local README files 
 - [Pygent 0.2.2 Feedback](design/runtime/pygent-0.2.2-feedback.md): concrete API and Runtime recommendations discovered during migration.
 - [Architecture](architecture/repository-layout.md): active repository layout and runtime boundaries.
 - [Design](design/agent/agent-context-architecture-zh.md): design notes for agent context, prompt composition, runtime behavior, self-optimization, and pygent runtime requirements.
+- [Lora Foreground ReAct Agent Capability Baseline](design/agent/foreground-react-agent-capability-and-pygent-requirements-zh.md): proposed foreground Agent behavior, prompt/input placement, runtime steering semantics, and the minimal Pygent framework capabilities required to support it.
 - [Product](product/README.md): product notes for the Electron + React transition, including message display guidelines.
 - [Planning](planning/superpowers/): historical specs and implementation plans.
 - [Backlog](backlog/unimplemented/README.md): known unimplemented or deferred areas.

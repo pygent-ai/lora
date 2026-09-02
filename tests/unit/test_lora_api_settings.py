@@ -191,3 +191,62 @@ def test_update_settings_retires_runtime_without_breaking_active_waiters(tmp_pat
 
     assert registry.retired == [runtime]
     assert runtime.closed == []
+
+
+def test_update_settings_persists_model_group_and_fallback_order(tmp_path: Path) -> None:
+    from lora_api.models.requests import UpdateSettingsRequest
+    from lora_api.routers.settings import update_settings
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    write_user_config(home, [
+        "runtime:",
+        "  approvals:",
+        "    enabled: true",
+    ])
+
+    request = UpdateSettingsRequest.model_validate({
+        "agent_alias": "dev",
+        "model_group": {
+            "profile": "production",
+            "routes": [
+                {
+                    "id": "primary",
+                    "provider": "openai",
+                    "model_name": "model-a",
+                    "base_url": "https://main.test/v1",
+                    "api_key_env": "MAIN_KEY",
+                },
+                {
+                    "id": "backup",
+                    "provider": "openai",
+                    "model_name": "model-b",
+                    "base_url": "https://backup.test/v1",
+                    "api_key_env": "BACKUP_KEY",
+                    "api_key": "backup-secret",
+                },
+            ],
+            "fallback": ["primary", "backup"],
+            "retry": {
+                "max_attempts_per_route": 3,
+                "attempt_idle_timeout_seconds": 45,
+                "backoff_initial": 0,
+                "backoff_maximum": 3,
+                "backoff_multiplier": 2,
+            },
+        },
+    })
+
+    with patch("lora.config.loader.Path.home", return_value=home):
+        context = ApiContext(workspace_root=str(workspace))
+        response = asyncio.run(update_settings(request, context=context))
+
+    saved = (home / ".lora" / "config.yaml").read_text(encoding="utf-8")
+    assert "enabled: true" in saved
+    assert response.agent == "dev"
+    assert response.profile == "production"
+    assert response.fallback == ["primary", "backup"]
+    assert response.retry["max_attempts_per_route"] == 3
+    assert [route["model_name"] for route in response.routes] == ["model-a", "model-b"]
+    assert (home / ".lora" / "credentials.env").read_text(encoding="utf-8") == "BACKUP_KEY=backup-secret\n"

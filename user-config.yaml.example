@@ -14,7 +14,7 @@ agents:
       fallback: [primary]
       retry:
         max_attempts_per_route: 2
-        attempt_timeout_seconds: 60
+        attempt_idle_timeout_seconds: 60
         backoff_initial: 0.5
         backoff_maximum: 4
         backoff_multiplier: 2

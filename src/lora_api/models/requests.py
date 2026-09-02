@@ -27,6 +27,53 @@ class ChatTurnRequest(BaseModel):
         return self
 
 
+class ModelRouteSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    api_key_env: str = Field(min_length=1)
+    api_key: str | None = None
+
+
+class ModelRetrySettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_attempts_per_route: int = Field(default=2, ge=1)
+    attempt_idle_timeout_seconds: float = Field(default=60.0, gt=0)
+    backoff_initial: float = Field(default=0.5, ge=0)
+    backoff_maximum: float = Field(default=4.0, ge=0)
+    backoff_multiplier: float = Field(default=2.0, ge=1)
+
+    @model_validator(mode="after")
+    def validate_backoff(self) -> "ModelRetrySettingsRequest":
+        if self.backoff_initial > self.backoff_maximum:
+            raise ValueError("backoff_initial must not exceed backoff_maximum")
+        return self
+
+
+class ModelGroupSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    profile: str = Field(default="default", min_length=1)
+    routes: list[ModelRouteSettingsRequest] = Field(min_length=1)
+    fallback: list[str] = Field(min_length=1)
+    retry: ModelRetrySettingsRequest = Field(default_factory=ModelRetrySettingsRequest)
+
+    @model_validator(mode="after")
+    def validate_routes_and_fallback(self) -> "ModelGroupSettingsRequest":
+        route_ids = [route.id.strip() for route in self.routes]
+        if len(route_ids) != len(set(route_ids)):
+            raise ValueError("model route ids must be unique")
+        fallback = [route_id.strip() for route_id in self.fallback]
+        if any(not route_id for route_id in fallback):
+            raise ValueError("fallback route ids must be non-empty")
+        if len(fallback) != len(set(fallback)):
+            raise ValueError("fallback route ids must be unique")
+        if unknown := set(fallback) - set(route_ids):
+            raise ValueError(f"fallback references unknown routes: {', '.join(sorted(unknown))}")
+        return self
+
+
 class UpdateSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_root: str | None = None
@@ -34,6 +81,7 @@ class UpdateSettingsRequest(BaseModel):
     max_steps: int | None = None
     context_window: int | None = None
     api_key: str | None = None
+    model_group: ModelGroupSettingsRequest | None = None
 
 
 class ToolApprovalRequest(BaseModel):

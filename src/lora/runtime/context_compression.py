@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-import uuid
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from typing import Any, Literal
 
-from lora.core.io import append_jsonl, read_json, utc_now, write_json, write_json_atomic
-from lora.schema import AgentSession, RunConfig
 from lora.tracing import EventStore
 
 
@@ -130,35 +125,12 @@ TOO_LARGE_FILE_READ_TEMPLATE = (
 
 
 @dataclass(frozen=True, slots=True)
-class ContextCompressionModelResult:
-    text: str
-    has_tool_call: bool = False
-
-
-@dataclass(frozen=True, slots=True)
 class FileReadRecord:
     path: str
     mode: Literal["full", "partial"]
     content: str
     range: str | None = None
     created_at: str | None = None
-
-
-@dataclass(slots=True)
-class ContextCompressionDecision:
-    status: Literal["skipped", "compacted", "failed"]
-    messages: list[dict[str, str]] = field(default_factory=list)
-    reason: str | None = None
-    compaction_id: str | None = None
-
-
-CompressionModelCaller = Callable[
-    [list[dict[str, Any]]],
-    Awaitable[ContextCompressionModelResult],
-]
-
-_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
-_SESSION_LOCKS_GUARD = asyncio.Lock()
 
 
 def parse_summary(text: str, *, has_tool_call: bool = False) -> str | None:
@@ -175,7 +147,11 @@ def parse_summary(text: str, *, has_tool_call: bool = False) -> str | None:
     return summary or None
 
 
-def collect_recent_file_reads(session_dir: str | Path, *, count: int = 5) -> list[FileReadRecord]:
+def collect_recent_file_reads(
+    session_dir: str | Path, *, count: int = 5
+) -> list[FileReadRecord]:
+    if count <= 0:
+        return []
     root = Path(session_dir)
     records = _collect_file_event_reads(root)
     if not records:
@@ -199,7 +175,9 @@ def render_file_read_block(
         ]
         if record.range is not None:
             attrs.append(f'range="{escape(record.range, quote=True)}"')
-        attrs.extend([f'truncated="{str(truncated).lower()}"', f'char_count="{char_count}"'])
+        attrs.extend(
+            [f'truncated="{str(truncated).lower()}"', f'char_count="{char_count}"']
+        )
         if truncated:
             scope = "full file" if record.mode == "full" else f"lines {record.range}"
             body = TOO_LARGE_FILE_READ_TEMPLATE.format(
@@ -222,198 +200,6 @@ def render_file_read_block(
         metadata.append(row)
     lines.append("</file-read>")
     return "\n".join(lines), metadata
-
-
-def load_model_context(session_dir: str | Path) -> dict[str, Any] | None:
-    path = Path(session_dir) / "model_context.json"
-    if not path.exists():
-        return None
-    return read_json(path)
-
-
-class ContextCompressionRunner:
-    def __init__(self, *, config: RunConfig, session_dir: str | Path):
-        self.config = config
-        self.session_dir = Path(session_dir)
-
-    async def maybe_compact(
-        self,
-        *,
-        session: AgentSession,
-        system_prompt: str,
-        model_messages: list[dict[str, Any]],
-        history_cutoff: int,
-        call_model: Callable[..., Awaitable[ContextCompressionModelResult]],
-    ) -> ContextCompressionDecision:
-        lock = await _session_lock(session.session_id)
-        async with lock:
-            self._refresh_session_state(session)
-            if session.status == "compacted":
-                return self._already_compacted_decision(session)
-            if session.status == "compression_failed":
-                return ContextCompressionDecision(status="failed", reason="session compression already failed")
-            if not self._should_compact(session):
-                return ContextCompressionDecision(status="skipped", reason="below threshold")
-
-            session.status = "compressing"
-            _persist_session(session)
-            compaction_id = f"compact_{uuid.uuid4().hex}"
-            transcript_path = self._write_transcript(
-                session=session,
-                system_prompt=system_prompt,
-                model_messages=model_messages,
-            )
-            compression_messages = [
-                *model_messages,
-                {"role": "user", "content": COMPRESSION_REQUEST_PROMPT},
-            ]
-            attempts_with_tools = 0
-            attempts_without_tools = 0
-            summary: str | None = None
-
-            for _ in range(5):
-                attempts_with_tools += 1
-                result = await _safe_call_model(
-                    call_model,
-                    compression_messages,
-                    system_prompt=system_prompt,
-                    tools_enabled=True,
-                )
-                if result is not None:
-                    summary = parse_summary(result.text, has_tool_call=result.has_tool_call)
-                    if summary is not None:
-                        break
-
-            if summary is None:
-                for _ in range(5):
-                    attempts_without_tools += 1
-                    result = await _safe_call_model(
-                        call_model,
-                        compression_messages,
-                        system_prompt=system_prompt,
-                        tools_enabled=False,
-                    )
-                    if result is not None:
-                        summary = parse_summary(result.text, has_tool_call=result.has_tool_call)
-                        if summary is not None:
-                            break
-
-            if summary is None:
-                session.status = "compression_failed"
-                session.metadata["context_compression_error"] = "summary parsing failed after 10 attempts"
-                _persist_session(session)
-                return ContextCompressionDecision(status="failed", reason="summary parsing failed")
-
-            file_read_xml, file_read_metadata = render_file_read_block(
-                collect_recent_file_reads(
-                    self.session_dir,
-                    count=self.config.context_compression_file_read_count,
-                ),
-                max_chars=self.config.context_compression_file_read_max_chars,
-            )
-            summary_with_transcript = _summary_with_transcript(summary, transcript_path)
-            user_content = _render_continuation_user_message(
-                system_reminder=_extract_system_reminder(model_messages),
-                file_read_xml=file_read_xml,
-                summary=summary_with_transcript,
-            )
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ]
-            model_context = {
-                "session_id": session.session_id,
-                "is_compacted": True,
-                "compaction_id": compaction_id,
-                "history_cutoff": history_cutoff,
-                "messages": messages,
-            }
-            write_json(self.session_dir / "model_context.json", model_context)
-            append_jsonl(
-                self.session_dir / "compactions.jsonl",
-                {
-                    "compaction_id": compaction_id,
-                    "session_id": session.session_id,
-                    "created_at": utc_now(),
-                    "summary": summary_with_transcript,
-                    "transcript_path": str(transcript_path),
-                    "file_reads": file_read_metadata,
-                    "attempts_with_tools": attempts_with_tools,
-                    "attempts_without_tools": attempts_without_tools,
-                    "fallback_without_tools": attempts_without_tools > 0,
-                },
-            )
-            session.status = "compacted"
-            session.metadata["context_compression_status"] = "compacted"
-            session.metadata["context_compression_id"] = compaction_id
-            _persist_session(session)
-            return ContextCompressionDecision(status="compacted", messages=messages, compaction_id=compaction_id)
-
-    def _refresh_session_state(self, session: AgentSession) -> None:
-        path = self.session_dir / "session.json"
-        if not path.exists():
-            return
-        data = read_json(path)
-        session.status = str(data.get("status") or session.status or "normal")
-        session.token_usage = dict(data.get("token_usage") or session.token_usage)
-        session.metadata.update(dict(data.get("metadata") or {}))
-
-    def _already_compacted_decision(self, session: AgentSession) -> ContextCompressionDecision:
-        state = load_model_context(self.session_dir)
-        if not state:
-            return ContextCompressionDecision(status="failed", reason="compacted session is missing model_context.json")
-        messages = [
-            {"role": str(message.get("role")), "content": str(message.get("content", ""))}
-            for message in state.get("messages", [])
-            if isinstance(message, dict)
-        ]
-        return ContextCompressionDecision(
-            status="compacted",
-            messages=messages,
-            reason="already compacted",
-            compaction_id=str(state.get("compaction_id") or ""),
-        )
-
-    def _should_compact(self, session: AgentSession) -> bool:
-        if not self.config.context_compression_enabled:
-            return False
-        if self.config.context_window is None or self.config.context_window <= 0:
-            return False
-        usage = _latest_token_usage(session)
-        context_tokens = usage.get("context_tokens", 0)
-        return context_tokens >= self.config.context_window * self.config.context_compression_trigger_ratio
-
-    def _write_transcript(
-        self,
-        *,
-        session: AgentSession,
-        system_prompt: str,
-        model_messages: list[dict[str, Any]],
-    ) -> Path:
-        path = self.session_dir / "transcript.jsonl"
-        now = utc_now()
-        append_jsonl(
-            path,
-            {
-                "type": "message",
-                "message_id": f"{session.session_id}:system",
-                "role": "system",
-                "content": system_prompt,
-                "created_at": now,
-            },
-        )
-        for index, message in enumerate(model_messages, start=1):
-            append_jsonl(
-                path,
-                {
-                    "type": "message",
-                    "message_id": str(message.get("id") or f"{session.session_id}:msg_{index}"),
-                    "role": str(message.get("role") or ""),
-                    "content": str(message.get("content") or ""),
-                    "created_at": now,
-                },
-            )
-        return path
 
 
 def _collect_file_event_reads(session_dir: Path) -> list[FileReadRecord]:
@@ -455,12 +241,15 @@ def _collect_tool_result_reads(session_dir: Path) -> list[FileReadRecord]:
         if call is None:
             continue
         result = row.get("result")
-        args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        raw_args = call.get("args")
+        args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
         path = _first_string(args, ("file_path",))
         content = _result_content(result)
         if path is None or content is None:
             continue
-        mode, range_text = _mode_and_range(result.get("range") if isinstance(result, dict) else None)
+        mode, range_text = _mode_and_range(
+            result.get("range") if isinstance(result, dict) else None
+        )
         records.append(
             FileReadRecord(
                 path=path,
@@ -496,105 +285,3 @@ def _first_string(mapping: dict[str, Any], names: tuple[str, ...]) -> str | None
         if isinstance(value, str) and value:
             return value
     return None
-
-
-async def _session_lock(session_id: str) -> asyncio.Lock:
-    async with _SESSION_LOCKS_GUARD:
-        lock = _SESSION_LOCKS.get(session_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            _SESSION_LOCKS[session_id] = lock
-        return lock
-
-
-async def _safe_call_model(
-    call_model: Callable[..., Awaitable[ContextCompressionModelResult]],
-    messages: list[dict[str, Any]],
-    *,
-    system_prompt: str,
-    tools_enabled: bool,
-) -> ContextCompressionModelResult | None:
-    try:
-        return await call_model(messages, system_prompt=system_prompt, tools_enabled=tools_enabled)
-    except Exception:  # noqa: BLE001 - compression attempts are retried by design.
-        return None
-
-
-def _latest_token_usage(session: AgentSession) -> dict[str, int]:
-    raw = dict(session.token_usage or session.metadata.get("token_usage") or {})
-    if not raw:
-        for message in reversed(session.history):
-            metadata = message.get("metadata")
-            usage = metadata.get("usage") if isinstance(metadata, dict) else None
-            if isinstance(usage, dict):
-                raw = dict(usage)
-                break
-    input_tokens = _int_value(raw, "latest_input_tokens", "input_tokens", "prompt_tokens")
-    output_tokens = _int_value(raw, "latest_output_tokens", "output_tokens", "completion_tokens")
-    context_tokens = _int_value(raw, "latest_context_tokens", "context_tokens", "total_tokens")
-    if context_tokens == 0 and (input_tokens or output_tokens):
-        context_tokens = input_tokens + output_tokens
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "context_tokens": context_tokens,
-    }
-
-
-def _int_value(mapping: dict[str, Any], *keys: str) -> int:
-    for key in keys:
-        value = mapping.get(key)
-        if value is None:
-            continue
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-    return 0
-
-
-def _extract_system_reminder(messages: list[dict[str, Any]]) -> str:
-    for message in reversed(messages):
-        content = str(message.get("content") or "")
-        end = content.rfind("</system-reminder>")
-        if end < 0:
-            continue
-        start = content.rfind("<system-reminder>", 0, end)
-        if start < 0:
-            continue
-        return content[start : end + len("</system-reminder>")]
-    return "<system-reminder>\n</system-reminder>"
-
-
-def _summary_with_transcript(summary: str, transcript_path: Path) -> str:
-    if TRANSCRIPT_POINTER in summary:
-        return summary
-    return f"{summary.rstrip()}\n{TRANSCRIPT_POINTER} {transcript_path}"
-
-
-def _render_continuation_user_message(
-    *,
-    system_reminder: str,
-    file_read_xml: str,
-    summary: str,
-) -> str:
-    return "\n".join(
-        [
-            system_reminder,
-            "<session-context>",
-            "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.",
-            "",
-            file_read_xml,
-            "",
-            "<summary>",
-            summary,
-            "</summary>",
-            "</session-context>",
-        ]
-    )
-
-
-def _persist_session(session: AgentSession) -> None:
-    session.updated_at = utc_now()
-    session_dir = Path(session.session_dir)
-    write_json_atomic(session_dir / "session.json", session.to_dict())

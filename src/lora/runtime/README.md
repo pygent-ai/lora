@@ -20,7 +20,6 @@ Owns model execution, tool execution, context management, and the high-level run
 - `deployment.py`: model-resource and workspace executor adapters.
 - `delegation.py`: delegation tool definitions and visibility policy.
 - `service.py`: session-oriented runtime facade used by API and CLI adapters.
-- `runner.py`: compatibility facade for the workflow-owned case runner.
 
 Compatibility imports from `lora.runtime.agent` and `lora.runtime` are preserved by package exports.
 

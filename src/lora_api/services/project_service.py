@@ -28,9 +28,18 @@ def config_response(config: RunConfig) -> RuntimeConfigResponse:
         agent=config.agent_alias,
         profile=config.resolved_agent.profile,
         routes=config.resolved_agent.safe_dict()["routes"],
+        fallback=list(config.resolved_agent.fallback),
+        retry={
+            "max_attempts_per_route": config.resolved_agent.retry.max_attempts_per_route,
+            "attempt_idle_timeout_seconds": config.resolved_agent.retry.attempt_idle_timeout_seconds,
+            "backoff_initial": config.resolved_agent.retry.backoff_initial,
+            "backoff_maximum": config.resolved_agent.retry.backoff_maximum,
+            "backoff_multiplier": config.resolved_agent.retry.backoff_multiplier,
+        },
         user_lora_root=config.user_lora_root or "",
         max_steps=config.max_steps,
         context_window=config.context_window,
+        context_compression_trigger_ratio=config.context_compression_trigger_ratio,
     )
 
 
