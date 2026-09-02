@@ -117,6 +117,51 @@ test("api client fetches tool results by tool call id", async () => {
   assert.deepEqual(response, { tool_call_id: "evt_1", result: "complete" });
 });
 
+test("api client sends a Pygent model group with ordered fallback routes", async () => {
+  const calls = [];
+  const client = createApiClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  await client.updateSettings({
+    workspaceRoot: "E:/Projects/lora",
+    agent: "dev",
+    profile: "production",
+    modelRoutes: [
+      { id: "primary", provider: "openai", model_name: "gpt-main", base_url: "https://main.test/v1", api_key_env: "MAIN_KEY", api_key: "" },
+      { id: "backup", provider: "openai", model_name: "gpt-backup", base_url: "https://backup.test/v1", api_key_env: "BACKUP_KEY", api_key: "backup-secret" },
+    ],
+    fallback: ["primary", "backup"],
+    retry: {
+      max_attempts_per_route: "3",
+      attempt_idle_timeout_seconds: "45",
+      backoff_initial: "0",
+      backoff_maximum: "3",
+      backoff_multiplier: "2",
+    },
+  });
+
+  assert.deepEqual(JSON.parse(calls[0].init.body).model_group, {
+    profile: "production",
+    routes: [
+      { id: "primary", provider: "openai", model_name: "gpt-main", base_url: "https://main.test/v1", api_key_env: "MAIN_KEY" },
+      { id: "backup", provider: "openai", model_name: "gpt-backup", base_url: "https://backup.test/v1", api_key_env: "BACKUP_KEY", api_key: "backup-secret" },
+    ],
+    fallback: ["primary", "backup"],
+    retry: {
+      max_attempts_per_route: 3,
+      attempt_idle_timeout_seconds: 45,
+      backoff_initial: 0,
+      backoff_maximum: 3,
+      backoff_multiplier: 2,
+    },
+  });
+});
+
 test("api client delivers runtime approval decisions", async () => {
   const calls = [];
   const client = createApiClient({

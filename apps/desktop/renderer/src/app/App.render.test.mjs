@@ -42,6 +42,95 @@ test("trace event updates scroll the inspector to the latest item", () => {
   assert.doesNotThrow(() => appModule.scrollTraceToLatest(null));
 });
 
+test("trace events are collapsed by default and expanded rows show untruncated content", () => {
+  const content = `<user-context>\n  <user-message>${"x".repeat(220)}FULL_END</user-message>\n</user-context>`;
+  const event = {
+    id: "event-1",
+    type: "conversation.user_message",
+    payload: { content, identity: "default" },
+  };
+
+  const collapsed = renderToStaticMarkup(
+    React.createElement(appModule.TraceEventRow, { event, tab: "Events" }),
+  );
+  const expanded = renderToStaticMarkup(
+    React.createElement(appModule.TraceEventRow, { event, tab: "Events", expanded: true }),
+  );
+
+  assert.match(collapsed, /aria-expanded="false"/);
+  assert.doesNotMatch(collapsed, /FULL_END/);
+  assert.match(expanded, /aria-expanded="true"/);
+  assert.match(expanded, /FULL_END/);
+  assert.doesNotMatch(expanded, /Payload/);
+  assert.doesNotMatch(expanded, /identity/);
+  assert.equal(expanded.match(/FULL_END/g)?.length, 1);
+});
+
+test("trace events without content expand to their complete payload", () => {
+  const event = {
+    id: "event-2",
+    type: "model.request",
+    payload: { model: "primary", messages: [{ role: "user", content: "hello" }] },
+  };
+  const expanded = renderToStaticMarkup(
+    React.createElement(appModule.TraceEventRow, { event, tab: "Events", expanded: true }),
+  );
+
+  assert.match(expanded, /&quot;model&quot;: &quot;primary&quot;/);
+  assert.match(expanded, /&quot;messages&quot;/);
+});
+
+test("trace panel provides expand-all and collapse-all controls", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(appModule.TracePanel, {
+      activeSession: { session_id: "session-1", last_case_run_id: "run-1" },
+      collapsed: false,
+      contextSnapshots: [],
+      events: [{ id: "event-1", type: "model.request", payload: { content: "request" } }],
+      settings: {},
+      onToggle() {},
+    }),
+  );
+
+  assert.match(html, />Expand all</);
+  assert.match(html, />Collapse all</);
+  assert.match(html, /aria-label="Expand model.request"/);
+  assert.match(html, /aria-label="Filter events by prefix"/);
+  assert.match(html, />model</);
+});
+
+test("trace event prefix filters are derived from the first type segment", () => {
+  const events = [
+    { type: "conversation.user_message" },
+    { type: "model.request" },
+    { type: "model.response" },
+    { type: "context.checkpoint" },
+    { type: "execution" },
+  ];
+
+  assert.deepEqual(appModule.eventPrefixGroups(events), [
+    { prefix: "context", count: 1 },
+    { prefix: "conversation", count: 1 },
+    { prefix: "execution", count: 1 },
+    { prefix: "model", count: 2 },
+  ]);
+  assert.deepEqual(
+    appModule.filterTraceEventsByPrefix(events, "model").map((event) => event.type),
+    ["model.request", "model.response"],
+  );
+  assert.equal(appModule.filterTraceEventsByPrefix(events, "all"), events);
+});
+
+test("trace expansion set toggles one event without mutating the current set", () => {
+  const current = new Set(["event-1"]);
+  const removed = appModule.toggleSetValue(current, "event-1");
+  const added = appModule.toggleSetValue(current, "event-2");
+
+  assert.deepEqual([...current], ["event-1"]);
+  assert.deepEqual([...removed], []);
+  assert.deepEqual([...added], ["event-1", "event-2"]);
+});
+
 test("conversation updates scroll the transcript to the latest message", () => {
   const transcript = { scrollTop: 120, scrollHeight: 1_280 };
 
@@ -71,6 +160,32 @@ test("trace files prioritize the action and path", () => {
   assert.equal(appModule.eventSummary(event), "E:\\Projects\\lora\\src\\app.js");
 });
 
+test("conversation tool messages show each actual result without the duplicated payload", () => {
+  const event = {
+    type: "conversation.tool_message",
+    payload: {
+      content: "",
+      role: "tool",
+      results: [
+        {
+          call_id: "call-1",
+          name: "bash",
+          status: "succeeded",
+          output: JSON.stringify({
+            status: "success",
+            result: JSON.stringify({ status: "success", result: "actual stdout", error: null }),
+            error: null,
+            tool_call_id: "call-1",
+          }),
+        },
+      ],
+    },
+  };
+
+  assert.equal(appModule.eventSummary(event), "bash  success");
+  assert.equal(appModule.traceEventDetails(event, "Events"), "bash  ·  success  ·  call-1\nactual stdout");
+});
+
 test("trace config formats model routes without object coercion", () => {
   assert.equal(
     appModule.formatConfigValue("routes", [
@@ -80,6 +195,96 @@ test("trace config formats model routes without object coercion", () => {
     "primary  openai / deepseek-v4-flash\nbackup  openai / gpt-5",
   );
   assert.equal(appModule.formatConfigValue("max_steps", 0), "0");
+  assert.equal(appModule.formatConfigValue("fallback", ["primary", "backup"]), "primary → backup");
+});
+
+test("context snapshots group model steps by run and compression version", () => {
+  const snapshots = [
+    { snapshot_id: "a", case_run_id: "run-1", compression_version: 0 },
+    { snapshot_id: "b", case_run_id: "run-1", compression_version: 0 },
+    { snapshot_id: "c", case_run_id: "run-1", compression_version: 1 },
+    { snapshot_id: "d", case_run_id: "run-2", compression_version: 0 },
+  ];
+
+  const runs = appModule.contextSnapshotRuns(snapshots);
+
+  assert.equal(runs.length, 2);
+  assert.deepEqual(runs[0].versions.map((item) => item.version), [0, 1]);
+  assert.deepEqual(runs[0].versions[0].snapshots.map((item) => item.snapshot_id), ["a", "b"]);
+  assert.equal(runs[1].versions[0].snapshots[0].snapshot_id, "d");
+});
+
+test("context snapshot phase distinguishes requests and responses", () => {
+  assert.equal(appModule.contextSnapshotPhase({ phase: "request" }), "Request");
+  assert.equal(appModule.contextSnapshotPhase({ phase: "response" }), "Response");
+  assert.equal(appModule.contextSnapshotPhase({}), "Request");
+});
+
+test("context snapshot merge removes replayed live events", () => {
+  assert.deepEqual(
+    appModule.mergeContextSnapshots(
+      [{ snapshot_id: "a" }],
+      [{ snapshot_id: "a" }, { snapshot_id: "b" }],
+    ).map((item) => item.snapshot_id),
+    ["a", "b"],
+  );
+});
+
+test("context inspector renders original and compressed versions as variable rows", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(appModule.ContextInspector, {
+      snapshots: [
+        {
+          snapshot_id: "original",
+          case_run_id: "run-1",
+          compression_version: 0,
+          projection_revision: 3,
+          system_prompt: "You are Lora.",
+          message_count: 1,
+          tool_count: 0,
+          messages: [{ role: "user", content: "Inspect the project." }],
+        },
+        {
+          snapshot_id: "compressed",
+          case_run_id: "run-1",
+          compression_version: 1,
+          phase: "response",
+          projection_revision: 4,
+          system_prompt: "You are Lora.",
+          message_count: 2,
+          tool_count: 1,
+          messages: [
+            { role: "assistant", content: "Compressed summary." },
+            { role: "tool", content: "read result" },
+          ],
+        },
+      ],
+    }),
+  );
+
+  assert.match(html, />v0</);
+  assert.match(html, />Original</);
+  assert.match(html, />v1</);
+  assert.match(html, />Compressed</);
+  assert.match(html, /Step 1\/1 · Response/);
+  assert.match(html, /context-variable-role">system</);
+  assert.match(html, /context-variable-role">assistant</);
+  assert.match(html, /context-variable-role">tool</);
+});
+
+test("model group validation requires unique routes and an active fallback", () => {
+  const valid = {
+    profile: "production",
+    modelRoutes: [
+      { id: "primary", provider: "openai", model_name: "main", base_url: "https://main.test", api_key_env: "MAIN_KEY" },
+      { id: "backup", provider: "openai", model_name: "backup", base_url: "https://backup.test", api_key_env: "BACKUP_KEY" },
+    ],
+    fallback: ["primary", "backup"],
+  };
+
+  assert.equal(appModule.modelGroupValidationError(valid), "");
+  assert.match(appModule.modelGroupValidationError({ ...valid, fallback: [] }), /at least one route/i);
+  assert.match(appModule.modelGroupValidationError({ ...valid, modelRoutes: [valid.modelRoutes[0], valid.modelRoutes[0]] }), /unique/i);
 });
 
 test("new chat stays enabled while another session is running", () => {
@@ -182,6 +387,25 @@ test("session live events survive switching away while another session is runnin
 
   assert.deepEqual(cache.get("session-1"), [first, second]);
   assert.equal(cache.has("session-2"), false);
+});
+
+test("initial workbench selects the first session from the active project only", () => {
+  const groups = [
+    {
+      scope: { scope_id: "project:E:/Projects/pygent" },
+      sessions: [{ session_id: "pygent-session" }],
+    },
+    {
+      scope: { scope_id: "project:E:/Projects/lora" },
+      sessions: [{ session_id: "lora-session" }],
+    },
+  ];
+
+  assert.equal(
+    appModule.firstSessionIdInScope(groups, "project:E:/Projects/lora"),
+    "lora-session",
+  );
+  assert.equal(appModule.firstSessionIdInScope(groups, "project:E:/Projects/missing"), "");
 });
 
 test("history, chat, and trace share one non-overlay grid", async () => {

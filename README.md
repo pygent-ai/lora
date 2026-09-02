@@ -1,8 +1,8 @@
 # Lora
 
-Lora 是基于 Pygent 0.2.19 的本地 Agent 开发与评测工具。API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
+Lora 是基于 Pygent 0.3.5 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
 
-本版本直接采用 Pygent 0.2.19 的 Execution schema v1，不读取或迁移旧 Runtime journal；默认数据库使用新的 `*-v1.sqlite3` 路径。
+本版本直接采用 Pygent 0.3.3 的 Execution schema v1，不读取或迁移旧 Runtime journal；默认数据库使用 `*-v1.sqlite3` 路径。若 `preferred`/`disabled` 持久化发现该路径中的 Pygent 内部 SQLite schema 不兼容，Lora 会保留旧库并切换到带 `-schema-v7` 后缀的新 journal；`required` 模式仍会明确失败。
 
 ## 安装
 

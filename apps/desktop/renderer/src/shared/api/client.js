@@ -82,7 +82,33 @@ export function settingsPayload(settings) {
     max_steps: Number.isFinite(settings.maxSteps) ? settings.maxSteps : undefined,
     context_window: contextWindow !== undefined ? contextWindow : null,
     api_key: cleanString(settings.apiKey),
+    model_group: modelGroupPayload(settings),
   });
+}
+
+function modelGroupPayload(settings) {
+  if (!Array.isArray(settings.modelRoutes)) {
+    return undefined;
+  }
+  return {
+    profile: settingsString(settings.profile) || "default",
+    routes: settings.modelRoutes.map((route) => compactObject({
+      id: settingsString(route.id),
+      provider: settingsString(route.provider),
+      model_name: settingsString(route.model_name),
+      base_url: settingsString(route.base_url),
+      api_key_env: settingsString(route.api_key_env),
+      api_key: cleanString(route.api_key),
+    })),
+    fallback: Array.isArray(settings.fallback) ? settings.fallback.map(settingsString) : [],
+    retry: {
+      max_attempts_per_route: settingsNumber(settings.retry?.max_attempts_per_route),
+      attempt_idle_timeout_seconds: settingsNumber(settings.retry?.attempt_idle_timeout_seconds),
+      backoff_initial: settingsNonNegativeNumber(settings.retry?.backoff_initial),
+      backoff_maximum: settingsNonNegativeNumber(settings.retry?.backoff_maximum),
+      backoff_multiplier: settingsNumber(settings.retry?.backoff_multiplier),
+    },
+  };
 }
 
 export function parseSseEvents(text) {
@@ -279,6 +305,14 @@ function settingsNumber(value) {
   }
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function settingsNonNegativeNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return undefined;
+  }
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
 }
 
 function cleanString(value) {

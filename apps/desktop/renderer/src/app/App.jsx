@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FolderCode,
+  ArrowDown,
+  ArrowUp,
   MessageSquarePlus,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  Plus,
   SendHorizontal,
   Settings as SettingsIcon,
   SlidersHorizontal,
@@ -34,12 +37,15 @@ const EMPTY_SETTINGS = {
   agent: "default",
   profile: "default",
   routes: [],
+  fallback: [],
+  retry: null,
   user_lora_root: "",
   max_steps: -1,
   context_window: null,
+  context_compression_trigger_ratio: 0.9,
 };
 
-const TRACE_TABS = ["Events", "Tools", "Files", "Config"];
+const TRACE_TABS = ["Events", "Context", "Tools", "Files", "Config"];
 const TOOL_ARGUMENT_PREVIEW_LIMIT = 4_000;
 const TOOL_RESULT_PREVIEW_LIMIT = 6_000;
 const TRACE_RENDER_LIMIT = 300;
@@ -59,6 +65,7 @@ export function App() {
   const [activityCollapseToken, setActivityCollapseToken] = useState(0);
   const [traceEvents, setTraceEvents] = useState([]);
   const [liveEvents, setLiveEvents] = useState([]);
+  const [contextSnapshots, setContextSnapshots] = useState([]);
   const [status, setStatus] = useState("Loading");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -123,12 +130,14 @@ export function App() {
       if (!session?.last_case_run_id) {
         if (token === traceLoadTokenRef.current) {
           setTraceEvents([]);
+          setContextSnapshots([]);
         }
         return;
       }
       const response = await api.getTraceEvents(session.session_id, session.last_case_run_id);
       if (token === traceLoadTokenRef.current) {
         setTraceEvents(response.events || []);
+        setContextSnapshots((current) => mergeContextSnapshots(response.context_snapshots || [], current));
       }
     },
     [api],
@@ -152,6 +161,7 @@ export function App() {
       setMessages(previewMessages);
       setTraceEvents([]);
       setLiveEvents(previewLiveEvents);
+      setContextSnapshots(contextSnapshotsFromEvents(previewLiveEvents));
       const detail = await api.getSession(sessionId);
       if (sessionToken !== sessionLoadTokenRef.current) {
         return;
@@ -189,13 +199,14 @@ export function App() {
       ]);
       const groups = nextSessionGroups.groups || [];
       const sessionList = flattenSessionGroups(groups);
+      const activeScopeId = nextSessionGroups.active_scope_id || scopeIdFromWorkspace(nextSettings.workspace_root);
       setSettings(nextSettings);
       setProjects(nextProjects.projects || []);
       setSessionGroups(groups);
-      setActiveScopeId(nextSessionGroups.active_scope_id || scopeIdFromWorkspace(nextSettings.workspace_root));
+      setActiveScopeId(activeScopeId);
       const targetSessionId =
         selectSessionId ||
-        (selectFirst ? sessionList[0]?.session_id : preserveSessionId);
+        (selectFirst ? firstSessionIdInScope(groups, activeScopeId) : preserveSessionId);
       const targetSession = sessionList.find((session) => session.session_id === targetSessionId);
       if (targetSessionId && targetSession) {
         await loadSession(targetSessionId, targetSession);
@@ -208,6 +219,7 @@ export function App() {
         setMessages([]);
         setTraceEvents([]);
         setLiveEvents([]);
+        setContextSnapshots([]);
       }
       setStatus("Ready");
     },
@@ -298,6 +310,9 @@ export function App() {
       setNotice("");
       setTraceEvents([]);
       setLiveEvents([]);
+      if (!initialSessionId) {
+        setContextSnapshots([]);
+      }
       const assistantId = `assistant-${Date.now()}`;
       let streamSessionId = initialSessionId || null;
       let streamMessages = messagesRef.current;
@@ -369,6 +384,9 @@ export function App() {
               );
               if (isStreamSessionVisible()) {
                 setLiveEvents(streamEvents);
+              }
+              if (eventKind === "lora.context.snapshot" && isStreamSessionVisible()) {
+                setContextSnapshots((current) => mergeContextSnapshots(current, [eventData]));
               }
               projectLiveExecutionEvent(updateVisibleMessages, assistantId, data);
               if (eventKind === "lora.approval.requested") {
@@ -446,6 +464,7 @@ export function App() {
         setMessages([]);
         setTraceEvents([]);
         setLiveEvents([]);
+        setContextSnapshots([]);
         pendingSessionMessagesRef.current.clear();
         sessionLiveEventsRef.current.clear();
         await refreshWorkbench({ selectFirst: true });
@@ -530,6 +549,7 @@ export function App() {
       <TracePanel
         activeSession={activeSession}
         collapsed={layout.traceCollapsed}
+        contextSnapshots={contextSnapshots}
         events={visibleTraceEvents}
         settings={settings}
         onToggle={() =>
@@ -1124,12 +1144,35 @@ function ToolCallRow({ call, api }) {
   );
 }
 
-function TracePanel({ collapsed, events, settings, activeSession, onToggle }) {
+export function TracePanel({ collapsed, contextSnapshots, events, settings, activeSession, onToggle }) {
   const [tab, setTab] = useState("Events");
+  const [eventPrefix, setEventPrefix] = useState("all");
+  const [expandedEventKeys, setExpandedEventKeys] = useState(() => new Set());
   const traceListRef = useRef(null);
-  const visibleEvents = useMemo(() => traceTabEvents(tab, events), [tab, events]);
+  const tabEvents = useMemo(() => traceTabEvents(tab, events), [tab, events]);
+  const prefixGroups = useMemo(
+    () => (tab === "Events" ? eventPrefixGroups(tabEvents) : []),
+    [tab, tabEvents],
+  );
+  const activePrefix = eventPrefix === "all" || prefixGroups.some((group) => group.prefix === eventPrefix)
+    ? eventPrefix
+    : "all";
+  const visibleEvents = useMemo(
+    () => filterTraceEventsByPrefix(tabEvents, activePrefix),
+    [tabEvents, activePrefix],
+  );
   const renderedEvents = useMemo(() => latestItems(visibleEvents, TRACE_RENDER_LIMIT), [visibleEvents]);
   const hiddenEventCount = Math.max(0, visibleEvents.length - renderedEvents.length);
+  const renderedEventKeys = useMemo(
+    () => renderedEvents.map((event, index) => traceEventKey(event, tab, index)),
+    [renderedEvents, tab],
+  );
+  const expandedCount = renderedEventKeys.filter((key) => expandedEventKeys.has(key)).length;
+
+  useEffect(() => {
+    setEventPrefix("all");
+    setExpandedEventKeys(new Set());
+  }, [tab, activeSession?.session_id, activeSession?.last_case_run_id]);
 
   useEffect(() => {
     if (!collapsed && tab !== "Config") {
@@ -1175,27 +1218,195 @@ function TracePanel({ collapsed, events, settings, activeSession, onToggle }) {
             </div>
           ))}
         </div>
+      ) : tab === "Context" ? (
+        <ContextInspector snapshots={contextSnapshots} />
       ) : (
-        <div className="trace-list" ref={traceListRef}>
-          {visibleEvents.length === 0 && <div className="empty-state">No {tab.toLowerCase()} yet</div>}
-          {hiddenEventCount > 0 && (
-            <div className="empty-state compact">Showing latest {renderedEvents.length} of {visibleEvents.length}</div>
-          )}
-          {renderedEvents.map((event, index) => (
-            <TraceEventRow event={event} tab={tab} key={`${event.type}-${event.id || index}`} />
-          ))}
+        <div className="trace-event-pane">
+          <div className="trace-list-controls">
+            <div className="trace-list-toolbar">
+              <span>{visibleEvents.length} {tab.toLowerCase()}</span>
+              <div className="trace-list-actions">
+                <button
+                  type="button"
+                  disabled={renderedEventKeys.length === 0 || expandedCount === renderedEventKeys.length}
+                  onClick={() => setExpandedEventKeys(new Set(renderedEventKeys))}
+                >
+                  Expand all
+                </button>
+                <button
+                  type="button"
+                  disabled={expandedCount === 0}
+                  onClick={() => setExpandedEventKeys(new Set())}
+                >
+                  Collapse all
+                </button>
+              </div>
+            </div>
+            {tab === "Events" && prefixGroups.length > 0 && (
+              <div className="trace-prefix-filters" aria-label="Filter events by prefix">
+                <button
+                  className={activePrefix === "all" ? "active" : ""}
+                  type="button"
+                  aria-pressed={activePrefix === "all"}
+                  onClick={() => setEventPrefix("all")}
+                >
+                  <span>All</span><strong>{tabEvents.length}</strong>
+                </button>
+                {prefixGroups.map((group) => (
+                  <button
+                    className={activePrefix === group.prefix ? "active" : ""}
+                    key={group.prefix}
+                    type="button"
+                    aria-pressed={activePrefix === group.prefix}
+                    onClick={() => setEventPrefix(group.prefix)}
+                  >
+                    <span>{group.prefix}</span><strong>{group.count}</strong>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="trace-list" ref={traceListRef}>
+            {visibleEvents.length === 0 && <div className="empty-state">No {tab.toLowerCase()} yet</div>}
+            {hiddenEventCount > 0 && (
+              <div className="empty-state compact">Showing latest {renderedEvents.length} of {visibleEvents.length}</div>
+            )}
+            {renderedEvents.map((event, index) => {
+              const key = renderedEventKeys[index];
+              return (
+                <TraceEventRow
+                  event={event}
+                  expanded={expandedEventKeys.has(key)}
+                  tab={tab}
+                  key={key}
+                  onToggle={() => setExpandedEventKeys((current) => toggleSetValue(current, key))}
+                />
+              );
+            })}
+          </div>
         </div>
       )}
     </aside>
   );
 }
 
-function TraceEventRow({ event, tab }) {
+export function ContextInspector({ snapshots }) {
+  const runs = useMemo(() => contextSnapshotRuns(snapshots), [snapshots]);
+  const latestRun = runs[runs.length - 1] || null;
+  const [runId, setRunId] = useState("");
+  const [version, setVersion] = useState(null);
+  const [snapshotId, setSnapshotId] = useState("");
+
+  useEffect(() => {
+    if (!runs.length) {
+      setRunId("");
+      setVersion(null);
+      setSnapshotId("");
+      return;
+    }
+    const selectedRun = runs.find((run) => run.id === runId) || latestRun;
+    const selectedVersion = selectedRun.versions.find((item) => item.version === version)
+      || selectedRun.versions[selectedRun.versions.length - 1];
+    const selectedSnapshot = selectedVersion.snapshots.find((item) => item.snapshot_id === snapshotId)
+      || selectedVersion.snapshots[selectedVersion.snapshots.length - 1];
+    if (runId !== selectedRun.id) setRunId(selectedRun.id);
+    if (version !== selectedVersion.version) setVersion(selectedVersion.version);
+    if (snapshotId !== selectedSnapshot.snapshot_id) setSnapshotId(selectedSnapshot.snapshot_id);
+  }, [runs, latestRun, runId, version, snapshotId]);
+
+  if (!latestRun) {
+    return <div className="empty-state context-empty">No model context captured yet</div>;
+  }
+  const selectedRun = runs.find((run) => run.id === runId) || latestRun;
+  const selectedVersion = selectedRun.versions.find((item) => item.version === version)
+    || selectedRun.versions[selectedRun.versions.length - 1];
+  const selectedSnapshot = selectedVersion.snapshots.find((item) => item.snapshot_id === snapshotId)
+    || selectedVersion.snapshots[selectedVersion.snapshots.length - 1];
+  const stepIndex = selectedVersion.snapshots.findIndex((item) => item.snapshot_id === selectedSnapshot.snapshot_id);
+
+  return (
+    <div className="context-inspector">
+      <div className="context-toolbar">
+        <label>
+          <span>Run</span>
+          <select value={selectedRun.id} onChange={(event) => { setRunId(event.target.value); setVersion(null); }}>
+            {runs.map((run, index) => (
+              <option value={run.id} key={run.id}>{`Run ${index + 1} · ${shortId(run.id)}`}</option>
+            ))}
+          </select>
+        </label>
+        <div className="context-stepper" aria-label="Context step">
+          <button type="button" disabled={stepIndex <= 0} onClick={() => setSnapshotId(selectedVersion.snapshots[stepIndex - 1].snapshot_id)}>‹</button>
+          <span>Step {stepIndex + 1}/{selectedVersion.snapshots.length} · {contextSnapshotPhase(selectedSnapshot)}</span>
+          <button type="button" disabled={stepIndex >= selectedVersion.snapshots.length - 1} onClick={() => setSnapshotId(selectedVersion.snapshots[stepIndex + 1].snapshot_id)}>›</button>
+        </div>
+      </div>
+      <div className="context-version-strip" aria-label="Context versions">
+        {selectedRun.versions.map((item) => (
+          <button
+            className={item.version === selectedVersion.version ? "context-version active" : "context-version"}
+            key={item.version}
+            type="button"
+            onClick={() => {
+              setVersion(item.version);
+              setSnapshotId(item.snapshots[item.snapshots.length - 1].snapshot_id);
+            }}
+          >
+            <strong>v{item.version}</strong>
+            <span>{item.version === 0 ? "Original" : "Compressed"}</span>
+          </button>
+        ))}
+      </div>
+      <div className="context-meta">
+        <span>{contextSnapshotPhase(selectedSnapshot)}</span>
+        <span>{selectedSnapshot.message_count || 0} messages</span>
+        <span>{selectedSnapshot.tool_count || 0} tools</span>
+        <span>rev {selectedSnapshot.projection_revision || 0}</span>
+      </div>
+      <div className="context-variable-list">
+        <ContextVariableRow index="S" role="system" value={{ role: "system", content: selectedSnapshot.system_prompt || "" }} />
+        {(selectedSnapshot.messages || []).map((message, index) => (
+          <ContextVariableRow
+            index={String(index)}
+            key={`${selectedSnapshot.snapshot_id}-${index}`}
+            role={message.role || "message"}
+            value={message}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ContextVariableRow({ index, role, value }) {
   const [expanded, setExpanded] = useState(false);
+  const detail = safeJsonStringify(value);
+  return (
+    <div className={`context-variable-row role-${role}${expanded ? " expanded" : ""}`}>
+      <button className="context-variable-main" type="button" aria-expanded={expanded} onClick={() => setExpanded((item) => !item)}>
+        <span className="context-variable-chevron">{expanded ? "▾" : "▸"}</span>
+        <span className="context-variable-index">{index}</span>
+        <span className="context-variable-role">{role}</span>
+        <span className="context-variable-preview">{contextMessageSummary(value) || "∅"}</span>
+      </button>
+      {expanded && (
+        <div className="context-variable-detail">
+          <button type="button" onClick={() => copyContextValue(detail)}>Copy</button>
+          <pre>{detail}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function TraceEventRow({ event, expanded = false, tab, onToggle = () => {} }) {
   const details = traceEventDetails(event, tab);
   const content = (
     <>
-      <strong className="trace-event-title">{eventTitle(event)}</strong>
+      <span className="trace-event-heading">
+        <strong className="trace-event-title">{eventTitle(event)}</strong>
+        {details && <span className="trace-event-chevron" aria-hidden="true">{expanded ? "−" : "+"}</span>}
+      </span>
       <span className="trace-event-summary">{eventSummary(event)}</span>
     </>
   );
@@ -1209,7 +1420,8 @@ function TraceEventRow({ event, tab }) {
             className="trace-event-toggle"
             type="button"
             aria-expanded={expanded}
-            onClick={() => setExpanded((value) => !value)}
+            aria-label={`${expanded ? "Collapse" : "Expand"} ${eventTitle(event)}`}
+            onClick={onToggle}
           >
             {content}
           </button>
@@ -1234,8 +1446,111 @@ export function scrollTranscriptToLatest(element) {
   }
 }
 
+export function mergeContextSnapshots(...collections) {
+  const merged = [];
+  const seen = new Set();
+  for (const collection of collections) {
+    for (const snapshot of Array.isArray(collection) ? collection : []) {
+      const id = String(snapshot?.snapshot_id || "");
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      merged.push(snapshot);
+    }
+  }
+  return merged;
+}
+
+export function toggleSetValue(values, value) {
+  const next = new Set(values);
+  if (next.has(value)) {
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  return next;
+}
+
+export function eventPrefixGroups(events) {
+  const counts = new Map();
+  for (const event of Array.isArray(events) ? events : []) {
+    const prefix = eventTypePrefix(event?.type);
+    counts.set(prefix, (counts.get(prefix) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([prefix, count]) => ({ prefix, count }))
+    .sort((left, right) => left.prefix.localeCompare(right.prefix));
+}
+
+export function filterTraceEventsByPrefix(events, prefix) {
+  const items = Array.isArray(events) ? events : [];
+  if (!prefix || prefix === "all") return items;
+  return items.filter((event) => eventTypePrefix(event?.type) === prefix);
+}
+
+function eventTypePrefix(type) {
+  const value = String(type || "event");
+  return value.split(".", 1)[0] || "event";
+}
+
+function traceEventKey(event, tab, index) {
+  return `${tab}:${event.type || "event"}:${event.id || index}`;
+}
+
+export function contextSnapshotsFromEvents(events) {
+  return mergeContextSnapshots(
+    (Array.isArray(events) ? events : [])
+      .filter((event) => event?.type === "lora.context.snapshot")
+      .map((event) => event.payload),
+  );
+}
+
+export function contextSnapshotRuns(snapshots) {
+  const runs = [];
+  const byRun = new Map();
+  for (const snapshot of mergeContextSnapshots(snapshots)) {
+    const runId = String(snapshot.case_run_id || "unknown-run");
+    let run = byRun.get(runId);
+    if (!run) {
+      run = { id: runId, versions: [], byVersion: new Map() };
+      byRun.set(runId, run);
+      runs.push(run);
+    }
+    const version = Math.max(0, Number(snapshot.compression_version) || 0);
+    let group = run.byVersion.get(version);
+    if (!group) {
+      group = { version, snapshots: [] };
+      run.byVersion.set(version, group);
+      run.versions.push(group);
+    }
+    group.snapshots.push(snapshot);
+  }
+  return runs.map((run) => ({
+    id: run.id,
+    versions: run.versions.sort((left, right) => left.version - right.version),
+  }));
+}
+
+export function contextSnapshotPhase(snapshot) {
+  return snapshot?.phase === "response" ? "Response" : "Request";
+}
+
+function contextMessageSummary(message) {
+  const content = String(message?.content || "").trim();
+  if (content) return limitText(content.replace(/\s+/g, " "), 180);
+  const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+  if (calls.length) return `calls ${calls.map((call) => call.name || "tool").join(", ")}`;
+  const results = Array.isArray(message?.results) ? message.results : [];
+  if (results.length) return results.map((result) => `${result.name || "tool"}: ${result.status || "result"}`).join(", ");
+  return String(message?.kind || "");
+}
+
+function copyContextValue(value) {
+  globalThis.navigator?.clipboard?.writeText?.(value).catch(() => {});
+}
+
 function SettingsPanel({ settings, disabled, onClose, onSave }) {
   const [draft, setDraft] = useState(() => settingsToDraft(settings));
+  const validationError = modelGroupValidationError(draft);
 
   useEffect(() => {
     setDraft(settingsToDraft(settings));
@@ -1245,13 +1560,69 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
     setDraft((current) => ({ ...current, [field]: value }));
   }
 
+  function setRoute(index, field, value) {
+    setDraft((current) => {
+      const routes = current.modelRoutes.map((route, routeIndex) =>
+        routeIndex === index ? { ...route, [field]: value } : route,
+      );
+      const previousId = current.modelRoutes[index]?.id;
+      const fallback = field === "id"
+        ? current.fallback.map((routeId) => (routeId === previousId ? value : routeId))
+        : current.fallback;
+      return { ...current, modelRoutes: routes, fallback };
+    });
+  }
+
+  function addRoute() {
+    setDraft((current) => {
+      const id = nextRouteId(current.modelRoutes);
+      return {
+        ...current,
+        modelRoutes: [...current.modelRoutes, emptyModelRoute(id)],
+        fallback: [...current.fallback, id],
+      };
+    });
+  }
+
+  function removeRoute(index) {
+    setDraft((current) => {
+      if (current.modelRoutes.length <= 1) return current;
+      const removedId = current.modelRoutes[index]?.id;
+      return {
+        ...current,
+        modelRoutes: current.modelRoutes.filter((_route, routeIndex) => routeIndex !== index),
+        fallback: current.fallback.filter((routeId) => routeId !== removedId),
+      };
+    });
+  }
+
+  function toggleFallback(routeId) {
+    setDraft((current) => ({
+      ...current,
+      fallback: current.fallback.includes(routeId)
+        ? current.fallback.filter((item) => item !== routeId)
+        : [...current.fallback, routeId],
+    }));
+  }
+
+  function moveFallback(routeId, direction) {
+    setDraft((current) => {
+      const index = current.fallback.indexOf(routeId);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.fallback.length) return current;
+      const fallback = [...current.fallback];
+      [fallback[index], fallback[target]] = [fallback[target], fallback[index]];
+      return { ...current, fallback };
+    });
+  }
+
   return (
     <div className="settings-backdrop" role="presentation">
       <section className="settings-panel" aria-label="Settings">
         <header className="settings-header">
           <div>
             <h2>Settings</h2>
-            <p>Save credentials and reload the local runtime.</p>
+            <p>Configure a Pygent model group, fallback order, and runtime defaults.</p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close settings" title="Close settings">
             <X aria-hidden="true" />
@@ -1267,6 +1638,81 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
             <span>Agent</span>
             <input value={draft.agent} onChange={(event) => setField("agent", event.target.value)} />
           </label>
+          <label>
+            <span>Model group profile</span>
+            <input value={draft.profile} onChange={(event) => setField("profile", event.target.value)} />
+          </label>
+          <section className="model-group-editor" aria-label="Model group routes">
+            <div className="model-group-heading">
+              <div>
+                <strong>Model routes</strong>
+                <span>Each failed route advances through the fallback order below.</span>
+              </div>
+              <button className="route-add" type="button" onClick={addRoute}>
+                <Plus aria-hidden="true" /> Add route
+              </button>
+            </div>
+            <div className="model-route-list">
+              {draft.modelRoutes.map((route, index) => (
+                <article className="model-route-card" key={`route-${index}`}>
+                  <div className="model-route-title">
+                    <span className="route-rank">{String(index + 1).padStart(2, "0")}</span>
+                    <strong>{route.id || `route-${index + 1}`}</strong>
+                    <button
+                      className="route-remove"
+                      disabled={draft.modelRoutes.length <= 1}
+                      type="button"
+                      onClick={() => removeRoute(index)}
+                      aria-label={`Remove ${route.id || `route ${index + 1}`}`}
+                    >
+                      <Trash2 aria-hidden="true" />
+                    </button>
+                  </div>
+                  <div className="model-route-grid">
+                    <label><span>Route ID</span><input value={route.id} onChange={(event) => setRoute(index, "id", event.target.value)} /></label>
+                    <label><span>Provider</span><input value={route.provider} onChange={(event) => setRoute(index, "provider", event.target.value)} /></label>
+                    <label><span>Model</span><input value={route.model_name} onChange={(event) => setRoute(index, "model_name", event.target.value)} /></label>
+                    <label><span>Base URL</span><input value={route.base_url} onChange={(event) => setRoute(index, "base_url", event.target.value)} /></label>
+                    <label><span>API key env</span><input value={route.api_key_env} onChange={(event) => setRoute(index, "api_key_env", event.target.value)} /></label>
+                    <label>
+                      <span>API key</span>
+                      <input type="password" autoComplete="off" placeholder={route.api_key_source === "missing" ? "Not configured" : "Leave blank to keep"} value={route.api_key} onChange={(event) => setRoute(index, "api_key", event.target.value)} />
+                    </label>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+          <section className="fallback-editor" aria-label="Fallback order">
+            <div className="model-group-heading">
+              <div>
+                <strong>Fallback order</strong>
+                <span>Top to bottom. Disabled routes remain configured but are not called.</span>
+              </div>
+            </div>
+            {fallbackDisplayRoutes(draft.modelRoutes, draft.fallback).map((route, displayIndex) => {
+              const priority = draft.fallback.indexOf(route.id);
+              const enabled = priority >= 0;
+              return (
+                <div className={`fallback-row ${enabled ? "enabled" : ""}`} key={`fallback-${displayIndex}`}>
+                  <label className="fallback-toggle">
+                    <input type="checkbox" checked={enabled} onChange={() => toggleFallback(route.id)} />
+                    <span>{enabled ? priority + 1 : "—"}</span>
+                    <strong>{route.id || "Unnamed route"}</strong>
+                    <small>{route.model_name || "No model"}</small>
+                  </label>
+                  <div className="fallback-order-actions">
+                    <button type="button" disabled={!enabled || priority === 0} onClick={() => moveFallback(route.id, -1)} aria-label={`Move ${route.id} up`}><ArrowUp aria-hidden="true" /></button>
+                    <button type="button" disabled={!enabled || priority === draft.fallback.length - 1} onClick={() => moveFallback(route.id, 1)} aria-label={`Move ${route.id} down`}><ArrowDown aria-hidden="true" /></button>
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+          <div className="retry-grid">
+            <label><span>Attempts / route</span><input min="1" type="number" value={draft.retry.max_attempts_per_route} onChange={(event) => setField("retry", { ...draft.retry, max_attempts_per_route: event.target.value })} /></label>
+            <label><span>Idle timeout (seconds)</span><input min="0.1" step="0.1" type="number" value={draft.retry.attempt_idle_timeout_seconds} onChange={(event) => setField("retry", { ...draft.retry, attempt_idle_timeout_seconds: event.target.value })} /></label>
+          </div>
           <label>
             <span>Max steps</span>
             <input
@@ -1285,31 +1731,14 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
               onChange={(event) => setField("contextWindow", event.target.value)}
             />
           </label>
-          <div className="readonly-field">
-            <span>API key env</span>
-            <strong>{settings.routes?.[0]?.api_key_env || "unconfigured"}</strong>
-          </div>
-          <div className="readonly-field">
-            <span>API key status</span>
-            <strong>{settings.routes?.[0]?.api_key_source === "missing" ? "Not configured" : `Configured (${settings.routes?.[0]?.api_key_source || "unknown"})`}</strong>
-          </div>
-          <label>
-            <span>API key</span>
-            <input
-              type="password"
-              autoComplete="off"
-              placeholder="Leave blank to keep current key"
-              value={draft.apiKey}
-              onChange={(event) => setField("apiKey", event.target.value)}
-            />
-          </label>
+          {validationError && <p className="settings-validation" role="alert">{validationError}</p>}
         </div>
 
         <footer className="settings-actions">
           <button className="plain-action" disabled={disabled} type="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="send" disabled={disabled} type="button" onClick={() => onSave(draft)}>
+          <button className="send" disabled={disabled || Boolean(validationError)} type="button" onClick={() => onSave(draft)}>
             Save and Reload
           </button>
         </footer>
@@ -1846,9 +2275,10 @@ function configRows(settings) {
     ["agent", settings.agent],
     ["profile", settings.profile],
     ["routes", settings.routes],
+    ["fallback", settings.fallback],
     ["max_steps", settings.max_steps],
     ["context_window", settings.context_window],
-    ["compression_trigger", compressionTriggerLabel(settings.context_window)],
+    ["compression_trigger", compressionTriggerLabel(settings.context_window, settings.context_compression_trigger_ratio)],
     ["user_lora_root", settings.user_lora_root],
   ];
 }
@@ -1866,6 +2296,9 @@ export function formatConfigValue(key, value) {
       return `${id}  ${provider} / ${model}`;
     }).join("\n");
   }
+  if (key === "fallback") {
+    return Array.isArray(value) && value.length ? value.join(" → ") : "-";
+  }
   if (value === undefined || value === null || value === "") {
     return "-";
   }
@@ -1874,6 +2307,11 @@ export function formatConfigValue(key, value) {
 
 function flattenSessionGroups(groups) {
   return groups.flatMap((group) => group.sessions || []);
+}
+
+export function firstSessionIdInScope(groups, activeScopeId) {
+  const activeGroup = (groups || []).find((group) => group.scope?.scope_id === activeScopeId);
+  return activeGroup?.sessions?.[0]?.session_id || "";
 }
 
 function latestItems(items, limit) {
@@ -1915,10 +2353,59 @@ function settingsToDraft(settings) {
   return {
     workspaceRoot: settings.workspace_root || "",
     agent: settings.agent || "",
+    profile: settings.profile || "default",
+    modelRoutes: (settings.routes || []).map((route) => ({ ...route, api_key: "" })),
+    fallback: Array.isArray(settings.fallback) && settings.fallback.length
+      ? [...settings.fallback]
+      : (settings.routes || []).map((route) => route.id),
+    retry: {
+      max_attempts_per_route: settings.retry?.max_attempts_per_route ?? 2,
+      attempt_idle_timeout_seconds: settings.retry?.attempt_idle_timeout_seconds ?? 60,
+      backoff_initial: settings.retry?.backoff_initial ?? 0.5,
+      backoff_maximum: settings.retry?.backoff_maximum ?? 4,
+      backoff_multiplier: settings.retry?.backoff_multiplier ?? 2,
+    },
     maxSteps: Number.isFinite(settings.max_steps) ? settings.max_steps : -1,
     contextWindow: Number.isFinite(settings.context_window) ? String(settings.context_window) : "",
     apiKey: "",
   };
+}
+
+function emptyModelRoute(id) {
+  return {
+    id,
+    provider: "openai",
+    model_name: "",
+    base_url: "https://api.openai.com/v1",
+    api_key_env: `${id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`,
+    api_key_source: "missing",
+    api_key: "",
+  };
+}
+
+function nextRouteId(routes) {
+  const used = new Set(routes.map((route) => route.id));
+  let index = routes.length + 1;
+  while (used.has(`route-${index}`)) index += 1;
+  return `route-${index}`;
+}
+
+function fallbackDisplayRoutes(routes, fallback) {
+  const ordered = fallback.map((routeId) => routes.find((route) => route.id === routeId)).filter(Boolean);
+  return [...ordered, ...routes.filter((route) => !fallback.includes(route.id))];
+}
+
+export function modelGroupValidationError(draft) {
+  if (!draft.profile?.trim()) return "Model group profile is required.";
+  if (!Array.isArray(draft.modelRoutes) || draft.modelRoutes.length === 0) return "Add at least one model route.";
+  const required = ["id", "provider", "model_name", "base_url", "api_key_env"];
+  for (const [index, route] of draft.modelRoutes.entries()) {
+    if (required.some((field) => !String(route[field] || "").trim())) return `Route ${index + 1} has incomplete fields.`;
+  }
+  const ids = draft.modelRoutes.map((route) => route.id.trim());
+  if (new Set(ids).size !== ids.length) return "Route IDs must be unique.";
+  if (!Array.isArray(draft.fallback) || draft.fallback.length === 0) return "Enable at least one route in the fallback order.";
+  return "";
 }
 
 export function settingsForSave(draft, settings) {
@@ -1966,8 +2453,10 @@ function formatContextWindow(value) {
   return Number.isFinite(value) ? `${value} tokens` : "unset";
 }
 
-function compressionTriggerLabel(contextWindow) {
-  return Number.isFinite(contextWindow) ? `${Math.floor(contextWindow * 0.9)} tokens` : "disabled";
+function compressionTriggerLabel(contextWindow, triggerRatio) {
+  return Number.isFinite(contextWindow) && Number.isFinite(triggerRatio)
+    ? `${Math.floor(contextWindow * triggerRatio)} tokens`
+    : "disabled";
 }
 
 function cleanContent(content) {
@@ -2107,11 +2596,11 @@ function toolCallDisplayLabel(call) {
 }
 
 function toolStatusLabel(status) {
-  const normalized = String(status || "running").trim().toLowerCase();
-  if (normalized.includes("error") || normalized.includes("fail")) {
+  const kind = statusKind(status);
+  if (kind === "error") {
     return "Error";
   }
-  if (normalized.includes("success") || normalized.includes("done") || normalized.includes("pass")) {
+  if (kind === "success") {
     return "Done";
   }
   return "Running";
@@ -2184,14 +2673,14 @@ function stringifyFullDetail(value) {
 }
 
 function activityTone(status) {
-  const value = String(status || "").toLowerCase();
-  if (value.includes("error") || value.includes("fail")) {
+  const kind = statusKind(status);
+  if (kind === "error") {
     return "error";
   }
-  if (value.includes("run") || value.includes("live")) {
+  if (kind === "running") {
     return "warning";
   }
-  if (value.includes("success") || value.includes("done") || value.includes("pass")) {
+  if (kind === "success") {
     return "success";
   }
   return "ready";
@@ -2209,6 +2698,15 @@ function activityToolBatchTitle(calls) {
 
 export function eventSummary(event) {
   const payload = event.payload || {};
+  if (event.type === "conversation.tool_message") {
+    const results = conversationToolMessageResults(payload);
+    if (results.length) {
+      return results
+        .map((result) => `${String(result.name || "tool")}  ${conversationToolResultStatus(result)}`)
+        .join("  ·  ");
+    }
+    return "No tool results";
+  }
   if (payload.trace_tool) {
     const status = String(payload.status || "running");
     const parts = [status];
@@ -2254,7 +2752,7 @@ export function eventTitle(event) {
   return event.type || "event";
 }
 
-function traceEventDetails(event, tab) {
+export function traceEventDetails(event, tab) {
   const payload = event.payload || {};
   if (tab === "Tools" && payload.trace_tool) {
     const sections = [];
@@ -2269,7 +2767,62 @@ function traceEventDetails(event, tab) {
   if (tab === "Files" && isFileTraceEvent(event)) {
     return safeJsonStringify(payload);
   }
+  if (tab === "Events") {
+    if (event.type === "conversation.tool_message") {
+      return conversationToolMessageDetails(payload);
+    }
+    const content = typeof payload.content === "string" ? payload.content : "";
+    return content || safeJsonStringify(payload);
+  }
   return "";
+}
+
+function conversationToolMessageResults(payload) {
+  const results = Array.isArray(payload?.results) ? payload.results : [];
+  return results.filter((result) => result && typeof result === "object");
+}
+
+function conversationToolResultEnvelope(result) {
+  return parseJsonObject(result?.output);
+}
+
+function conversationToolResultStatus(result) {
+  const envelope = conversationToolResultEnvelope(result);
+  return String(envelope.status || result?.status || (envelope.error || result?.error ? "error" : "result"));
+}
+
+function conversationToolResultValue(result) {
+  const envelope = conversationToolResultEnvelope(result);
+  let value;
+  if (envelope.error) {
+    value = envelope.error;
+  } else if (Object.prototype.hasOwnProperty.call(envelope, "result")) {
+    value = envelope.result;
+  } else {
+    value = result?.error || result?.output || "";
+  }
+  const nested = parseJsonObject(value);
+  if (nested.error) {
+    return nested.error;
+  }
+  if (Object.prototype.hasOwnProperty.call(nested, "result")) {
+    return nested.result;
+  }
+  return value;
+}
+
+function conversationToolMessageDetails(payload) {
+  const results = conversationToolMessageResults(payload);
+  if (!results.length) {
+    return "No tool results";
+  }
+  return results.map((result) => {
+    const name = String(result.name || "tool");
+    const status = conversationToolResultStatus(result);
+    const callId = String(result.call_id || "");
+    const heading = [name, status, callId].filter(Boolean).join("  ·  ");
+    return `${heading}\n${stringifyDetail(conversationToolResultValue(result))}`;
+  }).join("\n\n");
 }
 
 function isFileTraceEvent(event) {
@@ -2285,10 +2838,9 @@ function fileEventPath(event) {
 function fileEventAction(type) {
   const actions = {
     "file.read": "Read file",
-    "file.created": "Created file",
-    "file.written": "Wrote file",
-    "file.modified": "Modified file",
-    "file.deleted": "Deleted file",
+    "file.write": "Wrote file",
+    "file.edit": "Edited file",
+    "file.delete": "Deleted file",
     "diff.created": "Created diff",
   };
   return actions[String(type || "")] || String(type || "File event");
@@ -2309,11 +2861,11 @@ function eventTone(event) {
 }
 
 function statusTone(status) {
-  const value = String(status || "").toLowerCase();
-  if (value.includes("run") || value.includes("load")) {
+  const kind = statusKind(status);
+  if (kind === "running") {
     return "warning";
   }
-  if (value.includes("error") || value.includes("fail")) {
+  if (kind === "error") {
     return "error";
   }
   return "success";
@@ -2339,14 +2891,16 @@ function sessionStatusLabel(status) {
 }
 
 function sessionStatusKind(status) {
+  const kind = statusKind(status);
+  return kind === "running" || kind === "error" ? kind : "success";
+}
+
+function statusKind(status) {
   const value = String(status || "").toLowerCase();
-  if (value.includes("run")) {
-    return "running";
-  }
-  if (value.includes("error") || value.includes("fail")) {
-    return "error";
-  }
-  return "success";
+  if (value.includes("error") || value.includes("fail")) return "error";
+  if (value.includes("run") || value.includes("live") || value.includes("load")) return "running";
+  if (value.includes("success") || value.includes("done") || value.includes("pass")) return "success";
+  return "ready";
 }
 
 function shortPath(path) {

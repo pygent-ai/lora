@@ -1,7 +1,7 @@
 {
   "name": "@lora/desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.2",
   "type": "module",
   "main": "electron/main/main.mjs",
   "scripts": {
@@ -25,7 +25,7 @@
     "vite": "^7.2.7"
   },
   "devDependencies": {
-    "electron": "^39.2.7",
+    "electron": "39.8.10",
     "electron-builder": "^26.2.1"
   },
   "build": {
