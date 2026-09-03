@@ -17,7 +17,9 @@ export function createApiClient(options = {}) {
       signal,
     });
     if (!response.ok) {
-      throw new Error(await responseErrorText(response));
+      const error = new Error(await responseErrorText(response));
+      error.status = response.status;
+      throw error;
     }
     if (response.status === 204) {
       return null;

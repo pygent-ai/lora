@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from fastapi import HTTPException, Response
@@ -59,6 +61,34 @@ def test_health_exposes_backend_instance_header(
     assert payload.status == "ok"
     assert payload.service == "lora-api"
     assert response.headers["X-Lora-Backend-Instance"] == "desktop-instance-1"
+
+
+@pytest.mark.asyncio
+async def test_missing_session_returns_readable_404_after_listing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    app = create_app(workspace_root=str(tmp_path))
+    context = app.state.api_context
+    ref = context.manager.create("chat", mode="chat")
+    origin = "http://127.0.0.1:5173"
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+        headers={"Origin": origin},
+    ) as client:
+        groups = (await client.get("/sessions/groups")).json()
+        assert any(
+            session["session_id"] == ref.session_id
+            for group in groups["groups"]
+            for session in group["sessions"]
+        )
+        assert (await client.get(f"/sessions/{ref.session_id}")).status_code == 200
+        (Path(ref.session_dir) / "session.json").unlink()
+        response = await client.get(f"/sessions/{ref.session_id}")
+
+    assert response.status_code == 404
+    assert ref.session_id in response.json()["detail"]
+    assert response.headers["access-control-allow-origin"] == origin
+    assert (Path(ref.session_dir) / "metadata.json").is_file()
 
 
 @pytest.mark.asyncio

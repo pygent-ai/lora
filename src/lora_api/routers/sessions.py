@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from lora_api.dependencies import ApiContext, get_api_context
 from lora_api.models.requests import CreateSessionRequest
@@ -39,7 +39,13 @@ async def create_session(
 
 @router.get("/{session_id}", response_model=SessionDetailResponse)
 def get_session(session_id: str, context: ApiContext = Depends(get_api_context)) -> SessionDetailResponse:
-    return SessionService(context.manager).load_detail(session_id)
+    try:
+        return SessionService(context.manager).load_detail(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session {session_id!r} is unavailable in the current workspace",
+        ) from exc
 
 
 @router.delete("/{session_id}", response_model=DeleteResponse)

@@ -3,6 +3,29 @@ import assert from "node:assert/strict";
 
 import { createApiClient, parseSseEvents } from "./client.js";
 
+test("session errors preserve HTTP status for missing-session recovery", async () => {
+  const client = createApiClient({
+    fetchImpl: async () => new Response(JSON.stringify({ detail: "Session is unavailable" }), { status: 404 }),
+  });
+
+  await assert.rejects(client.getSession("missing-session"), (error) => {
+    assert.equal(error.status, 404);
+    assert.match(error.message, /Session is unavailable/);
+    return true;
+  });
+});
+
+test("session network failures remain distinguishable from missing sessions", async () => {
+  const failure = new TypeError("Failed to fetch");
+  const client = createApiClient({ fetchImpl: async () => { throw failure; } });
+
+  await assert.rejects(client.getSession("session-1"), (error) => {
+    assert.equal(error, failure);
+    assert.equal(error.status, undefined);
+    return true;
+  });
+});
+
 test("api client updates settings with backend snake_case fields", async () => {
   const calls = [];
   const client = createApiClient({

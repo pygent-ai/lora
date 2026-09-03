@@ -154,6 +154,7 @@ export function App() {
         setActiveSession(previewSession);
       }
       setStatus("Loading");
+      setNotice("");
       const pendingMessages = pendingSessionMessagesRef.current.get(sessionId);
       const previewMessages = selectSessionMessages(pendingMessages, []);
       const previewLiveEvents = sessionLiveEventsRef.current.get(sessionId) || [];
@@ -162,7 +163,27 @@ export function App() {
       setTraceEvents([]);
       setLiveEvents(previewLiveEvents);
       setContextSnapshots(contextSnapshotsFromEvents(previewLiveEvents));
-      const detail = await api.getSession(sessionId);
+      let detail;
+      try {
+        detail = await api.getSession(sessionId);
+      } catch (err) {
+        if (sessionToken !== sessionLoadTokenRef.current) {
+          return;
+        }
+        if (err?.status !== 404) {
+          throw err;
+        }
+        activeSessionIdRef.current = "";
+        messagesRef.current = [];
+        setActiveSession(null);
+        setMessages([]);
+        setTraceEvents([]);
+        setLiveEvents([]);
+        setContextSnapshots([]);
+        setNotice("This chat is unavailable in the current project. Select another chat or start a new one.");
+        setStatus("Ready");
+        return;
+      }
       if (sessionToken !== sessionLoadTokenRef.current) {
         return;
       }
