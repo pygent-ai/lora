@@ -81,7 +81,11 @@ class FileEffectTracker:
     ) -> list[FileEffect]:
         if tool_name == "bash":
             return self._bash_read_effects(args, tool_call_id)
-        path = self._path_from_args(args, allow_outside_workspace=tool_name == "read")
+        path = self._path_from_args(
+            args,
+            allow_outside_workspace=tool_name in {"write", "edit"}
+            or (tool_name == "read" and self.allow_read_outside_workspace),
+        )
         if path is None:
             return []
         if tool_name == "read":
@@ -303,7 +307,7 @@ class FileEffectTracker:
             candidate = self.workspace_root / candidate
         resolved = candidate.resolve()
         if not _is_relative_to(resolved, self.workspace_root) and not (
-            allow_outside_workspace and self.allow_read_outside_workspace
+            allow_outside_workspace
         ):
             raise ValueError(f"Path is outside workspace: {path}")
         return str(resolved)
@@ -328,7 +332,7 @@ class FileEffectTracker:
             try:
                 path = self._resolve_workspace_path(
                     raw_path,
-                    allow_outside_workspace=True,
+                    allow_outside_workspace=self.allow_read_outside_workspace,
                 )
             except ValueError:
                 # Bash has already executed by the time audit runs. An

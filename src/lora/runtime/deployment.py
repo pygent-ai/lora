@@ -149,7 +149,7 @@ class LoraModelResourceResolver:
 
 
 class WorkspaceToolExecutor(LocalToolExecutor):
-    """Deployment adapter for tools confined by Lora's workspace policy."""
+    """Deployment adapter for Lora's workspace-based standard tools."""
 
     sandbox_support = SandboxExecutorSupport(profiles=("workspace",))
 

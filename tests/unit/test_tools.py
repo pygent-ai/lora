@@ -551,7 +551,7 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(effects[0].type, "file.write")
             self.assertEqual(effects[0].path, str(package_file.resolve()))
 
-    def test_file_effect_tracker_rejects_declared_paths_outside_workspace(self) -> None:
+    def test_file_effect_tracker_records_declared_writes_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             FileEffectTracker = _file_effect_tracker_class()
             workspace = Path(tmp) / "workspace"
@@ -560,8 +560,10 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
             run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
             tracker = FileEffectTracker(workspace_root=workspace, store=EventStore(run))
 
-            with self.assertRaises(ValueError):
-                tracker.declared_effects("write", {"file_path": str(outside), "content": "x"}, tool_call_id="evt_tool")
+            effects = tracker.declared_effects("write", {"file_path": str(outside), "content": "x"}, tool_call_id="evt_tool")
+            self.assertEqual(len(effects), 1)
+            self.assertEqual(effects[0].path, str(outside.resolve()))
+            self.assertEqual(effects[0].type, "file.write")
 
     def test_file_effect_tracker_allows_outside_read_paths_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

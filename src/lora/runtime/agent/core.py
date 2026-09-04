@@ -521,7 +521,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         await aclose_if_supported(self.llm)
 
     def _register_default_tools(self) -> None:
-        self._standard_tools = StandardTools(workspace_root=self.workspace_root)
+        self._standard_tools = StandardTools(workspace_root=self.workspace_root, restrict_to_workspace=False)
         self._toolkit = ToolKit(
             self._standard_tools.bash.bash,
             self._standard_tools.files.read,

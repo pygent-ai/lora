@@ -335,7 +335,7 @@ class LoraRuntimeService:
         )
         self.runtime.attach_executor_registry(self.executor_registry)
         self._diff_executor = _DiffExecutor(self)
-        standard = StandardTools(workspace_root=config.workspace_root)
+        standard = StandardTools(workspace_root=config.workspace_root, restrict_to_workspace=False)
         ToolKit(
             standard.bash.bash,
             standard.files.read,

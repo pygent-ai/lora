@@ -101,6 +101,75 @@ class _ProjectionInvoker:
 
 
 @pytest.mark.asyncio
+async def test_authorized_external_file_tools_complete_with_audit(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "authorized"
+    external.mkdir()
+    target = external / "example.txt"
+    calls = [
+        ("write", {"file_path": str(target), "content": "before"}),
+        ("edit", {"file_path": str(target), "old_string": "before", "new_string": "after"}),
+        ("read", {"file_path": str(target)}),
+        ("glob", {"path": str(external), "pattern": "*.txt"}),
+        ("grep", {"path": str(external), "pattern": "after"}),
+        ("bash", {"working_directory": str(external), "command": "cat example.txt"}),
+        ("write", {"file_path": "local.txt", "content": "local"}),
+    ]
+
+    class Invoker(_ProjectionInvoker):
+        def execute(self, *, message: Any, context: Any, **_kwargs: Any) -> ModelExecution:
+            index = len(self.requests)
+            self.requests.append((message, context))
+
+            async def invoke(_emit: Any) -> ModelProviderResponse:
+                answer = AIMessage(content="done")
+                if index < len(calls):
+                    name, arguments = calls[index]
+                    answer = AIMessage(tool_calls=(ToolCall(
+                        call_id=f"external-{index}", name=name, arguments=arguments,
+                    ),))
+                return ModelProviderResponse(message=answer, usage={})
+
+            return ModelExecution(invoke)
+
+    config = load_run_config(workspace_root=workspace)
+    config.eternal_conversation.enabled = False
+    config.runtime_approvals.enabled = False
+    assert config.resolved_agent is not None
+    for route in config.resolved_agent.routes:
+        route.api_key = "test-key"
+        route.api_key_source = "test"
+    manager = SessionManager(config)
+    session = manager.create(case_id="external-tools", mode="chat")
+    run = manager.start_case_run(session.session_id, "external-tools", run_config=config)
+    invoker = Invoker()
+    service = LoraRuntimeService(config)
+    service._model_invokers[config.resolved_agent.alias] = invoker
+    for agent in service._agent_definitions.values():
+        agent.llm = invoker
+    try:
+        handle = await service.start_turn(
+            manager=manager, message=f"Read and write files in {external}; this path is authorized.",
+            run_ref=run, turn_id="external-tools", interactive_approvals=False,
+            deadline=time.monotonic() + 60,
+        )
+        output, _ = await handle.result()
+        assert output.content == "done"
+        assert len(invoker.requests) == len(calls) + 1
+        for message, _ in invoker.requests[1:]:
+            assert isinstance(message, ToolMessage)
+            assert all(result.status == "succeeded" for result in message.results)
+        assert target.read_text(encoding="utf-8") == "after"
+        assert (workspace / "local.txt").read_text(encoding="utf-8") == "local"
+        for index in (3, 5, 6):
+            assert "after" in str(invoker.requests[index][0].results[0].output)
+        assert "example.txt" in str(invoker.requests[4][0].results[0].output)
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_native_react_preserves_skill_cli_and_file_detection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -49,8 +49,7 @@ class DiffRecorder:
         try:
             relative_path = _relative_workspace_path(path, self.workspace_root)
         except ValueError:
-            # Shell tools can report an effect outside the configured project
-            # even when file tools themselves are workspace-scoped. Preserve
+            # File and shell tools can report effects outside the project. Preserve
             # that fact for audit without treating it as a project diff or
             # letting observation failure abort the agent turn.
             self.store.append(
