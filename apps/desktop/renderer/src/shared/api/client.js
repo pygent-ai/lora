@@ -47,6 +47,18 @@ export function createApiClient(options = {}) {
       jsonRequest(`/workspace/entries?scope_id=${encodeURIComponent(scopeId)}&path=${encodeURIComponent(path)}`, options),
     readWorkspaceFile: (scopeId, path, options = {}) =>
       jsonRequest(`/workspace/file?scope_id=${encodeURIComponent(scopeId)}&path=${encodeURIComponent(path)}`, options),
+    executeTerminalCommand: (scopeId, command, options = {}) =>
+      jsonRequest("/terminal/execute", {
+        ...options,
+        method: "POST",
+        body: { scope_id: scopeId, command },
+      }),
+    resetTerminal: (scopeId, options = {}) =>
+      jsonRequest("/terminal/reset", {
+        ...options,
+        method: "POST",
+        body: { scope_id: scopeId },
+      }),
     listSessions: (options = {}) => jsonRequest("/sessions", options),
     listSessionGroups: (options = {}) => jsonRequest("/sessions/groups", options),
     createSession: (request = {}, options = {}) =>

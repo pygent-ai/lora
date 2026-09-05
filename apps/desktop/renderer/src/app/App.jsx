@@ -19,6 +19,7 @@ import { createApiClient } from "../shared/api/client.js";
 import { ProjectPicker } from "../features/projects/ProjectPicker.jsx";
 import { projectPathKey } from "../features/projects/projectPaths.js";
 import { FileExplorer } from "../features/workspace/FileExplorer.jsx";
+import { PowerShellPanel } from "../features/workspace/PowerShellPanel.jsx";
 import { activityHeaderText, runTimingFields } from "./runTiming.js";
 import {
   adaptLayoutToCompactViewport,
@@ -1281,7 +1282,7 @@ export function TracePanel({ api, collapsed, contextSnapshots, events, settings,
       </header>
 
       <nav className="inspector-modes" aria-label="Inspector modes">
-        {["Trace", "Files"].map((item) => (
+        {["Trace", "Files", "PowerShell"].map((item) => (
           <button className={item === panelMode ? "active" : ""} key={item} type="button" onClick={() => setPanelMode(item)}>
             {item}
           </button>
@@ -1290,6 +1291,8 @@ export function TracePanel({ api, collapsed, contextSnapshots, events, settings,
 
       {panelMode === "Files" ? (
         <FileExplorer api={api} scopeId={projectScopeId} workspaceRoot={projectScopeId ? settings.workspace_root : ""} />
+      ) : panelMode === "PowerShell" ? (
+        <PowerShellPanel api={api} scopeId={projectScopeId} workspaceRoot={projectScopeId ? settings.workspace_root : ""} />
       ) : (
       <div className="trace-mode-content">
         <nav className="trace-tabs" aria-label="Trace tabs">

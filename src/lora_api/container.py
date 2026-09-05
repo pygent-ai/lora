@@ -31,6 +31,7 @@ class ApiContext:
     _runtime_service: LoraRuntimeService | None = None
     _reminders: ReminderService | None = None
     _chat_registry: Any | None = None
+    _terminal_service: Any | None = None
     _lock: RLock = field(default_factory=RLock)
 
     @property
@@ -83,6 +84,15 @@ class ApiContext:
                 raise RuntimeError("chat registry has not been configured")
             return self._chat_registry
 
+    @property
+    def terminal_service(self) -> Any:
+        with self._lock:
+            if self._terminal_service is None:
+                from lora_api.services.terminal_service import TerminalService
+
+                self._terminal_service = TerminalService()
+            return self._terminal_service
+
     def attach_chat_registry(self, registry: Any) -> None:
         with self._lock:
             if self._chat_registry is not None:
@@ -97,6 +107,10 @@ class ApiContext:
             self._reminders = None
             registry = self._chat_registry
             self._chat_registry = None
+            terminal_service = self._terminal_service
+            self._terminal_service = None
+        if terminal_service is not None:
+            terminal_service.close()
         if registry is not None:
             await registry.close()
         if runtime is not None:

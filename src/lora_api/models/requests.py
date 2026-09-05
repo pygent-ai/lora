@@ -90,3 +90,14 @@ class UpdateSettingsRequest(BaseModel):
 class ToolApprovalRequest(BaseModel):
     approved: bool
     comment: str = ""
+
+
+class TerminalCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scope_id: str = Field(min_length=1)
+    command: str = Field(min_length=1, max_length=32_000)
+
+
+class TerminalResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scope_id: str = Field(min_length=1)

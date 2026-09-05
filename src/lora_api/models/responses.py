@@ -105,6 +105,12 @@ class WorkspaceFileResponse(BaseModel):
     size: int
 
 
+class TerminalCommandResponse(BaseModel):
+    output: str
+    exit_code: int
+    cwd: str
+
+
 class TraceEventsResponse(BaseModel):
     session_id: str
     case_run_id: str

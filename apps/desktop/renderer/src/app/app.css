@@ -1176,7 +1176,7 @@ input:focus,
 
 .inspector-modes {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--line);
@@ -1324,6 +1324,128 @@ input:focus,
 .workspace-empty.compact { padding: 14px; }
 .workspace-error { padding: 8px 12px; color: var(--error); font-size: 11px; }
 .workspace-error.tree-error { padding-left: 36px; }
+
+.powershell-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  color: #d9e2ef;
+  background: #121820;
+}
+
+.terminal-toolbar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px 7px 12px;
+  border-bottom: 1px solid #2b3644;
+  color: #9cabbc;
+  background: #18212c;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.terminal-toolbar > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-toolbar button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid #344253;
+  border-radius: 4px;
+  color: #b8c5d4;
+  background: #202b38;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.terminal-toolbar button:hover:not(:disabled) { color: white; background: #293747; }
+.terminal-toolbar svg { width: 12px; height: 12px; }
+
+.terminal-output {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 13px 20px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.terminal-banner { margin-bottom: 14px; color: #718197; }
+.terminal-entry { margin-bottom: 12px; }
+.terminal-command { color: #f0f4f8; overflow-wrap: anywhere; }
+.terminal-command span { color: #54b3ff; }
+
+.terminal-entry pre {
+  margin: 5px 0 0;
+  color: #c6d0dc;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.terminal-exit { margin-top: 4px; color: #ff8395; }
+.terminal-running { color: #76c8ff; }
+
+.terminal-input-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  padding: 9px 10px;
+  border-top: 1px solid #2b3644;
+  background: #18212c;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
+.terminal-input-row > span { color: #54b3ff; }
+
+.terminal-input-row input {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid #344253;
+  border-radius: 4px;
+  outline: 0;
+  color: #edf3fa;
+  background: #11171f;
+  font: inherit;
+}
+
+.terminal-input-row input:focus { border-color: #4e9ddd; box-shadow: 0 0 0 2px rgba(78, 157, 221, 0.15); }
+
+.terminal-input-row button {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #3b78a8;
+  border-radius: 4px;
+  color: #dceeff;
+  background: #245f8c;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 .trace-header {
   min-width: 0;
@@ -2052,6 +2174,7 @@ input:focus,
 .app-shell.trace-collapsed .inspector-modes,
 .app-shell.trace-collapsed .trace-mode-content,
 .app-shell.trace-collapsed .file-explorer,
+.app-shell.trace-collapsed .powershell-panel,
 .app-shell.trace-collapsed .trace-tabs,
 .app-shell.trace-collapsed .trace-list,
 .app-shell.trace-collapsed .trace-event-pane {

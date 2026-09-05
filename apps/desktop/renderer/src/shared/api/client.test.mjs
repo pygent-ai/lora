@@ -179,6 +179,27 @@ test("api client lists and opens project files by scope", async () => {
   assert.equal(calls[1], "http://127.0.0.1:8765/workspace/file?scope_id=project%3AC%3A%2FProjects%2Flora&path=README.md");
 });
 
+test("api client executes and resets a scoped PowerShell session", async () => {
+  const calls = [];
+  const client = createApiClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  await client.executeTerminalCommand("project:C:/Projects/lora", "Get-Location");
+  await client.resetTerminal("project:C:/Projects/lora");
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8765/terminal/execute");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    scope_id: "project:C:/Projects/lora",
+    command: "Get-Location",
+  });
+  assert.equal(calls[1].url, "http://127.0.0.1:8765/terminal/reset");
+});
+
 test("api client fetches tool results by tool call id", async () => {
   const calls = [];
   const client = createApiClient({
