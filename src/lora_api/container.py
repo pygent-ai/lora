@@ -140,6 +140,7 @@ class ApiContext:
                 lora_root=scope.lora_root,
                 agent_alias=self.agent_alias or "default",
                 resolved_agent=self.config.resolved_agent,
+                runtime_approvals=self.config.runtime_approvals,
                 max_steps=self.max_steps if self.max_steps is not None else -1,
                 context_window=self.context_window,
             )

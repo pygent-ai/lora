@@ -25,9 +25,16 @@ from lora_api.project_state import active_project_scope_id, build_session_scopes
 
 
 class SessionService:
-    def __init__(self, manager: SessionManager, reminders: ReminderService | None = None):
+    def __init__(
+        self,
+        manager: SessionManager,
+        reminders: ReminderService | None = None,
+        *,
+        scope_id: str | None = None,
+    ):
         self.manager = manager
         self.reminders = reminders
+        self.scope_id = scope_id
 
     def list_chat_sessions(self, *, scope_id: str | None = None) -> list[SessionRecordResponse]:
         sessions_root = Path(self.manager.sessions_root)
@@ -48,14 +55,14 @@ class SessionService:
         if self.reminders is not None:
             self.reminders.prewarm_session(ref.session_id)
         metadata = read_json(Path(ref.session_dir) / "metadata.json")
-        return _record_from_metadata(Path(ref.session_dir), metadata)
+        return _record_from_metadata(Path(ref.session_dir), metadata, scope_id=self.scope_id)
 
     def load_detail(self, session_id: str) -> SessionDetailResponse:
         session = self.manager.load(session_id)
         metadata = read_json(Path(session.session_dir) / "metadata.json")
         return SessionDetailResponse(
-            session=_record_from_metadata(Path(session.session_dir), metadata),
-            history=session.history,
+            session=_record_from_metadata(Path(session.session_dir), metadata, scope_id=self.scope_id),
+            history=self.manager.history_with_run_timing(session),
             metadata=session.metadata,
         )
 
@@ -112,6 +119,31 @@ def session_groups_response(context: ApiContext) -> SessionGroupListResponse:
             )
         )
     return SessionGroupListResponse(active_scope_id=active_scope_id, groups=groups)
+
+
+def session_service_for_scope(
+    context: ApiContext,
+    scope_id: str | None,
+    *,
+    with_reminders: bool = False,
+) -> SessionService:
+    if not scope_id or scope_id == active_project_scope_id(context.config.workspace_root):
+        return SessionService(
+            context.manager,
+            context.reminders if with_reminders else None,
+            scope_id=scope_id,
+        )
+    scope = next(
+        (item for item in build_session_scopes(context.project_state, active_workspace_root=context.config.workspace_root)
+         if item.scope_id == scope_id),
+        None,
+    )
+    if scope is None:
+        raise ValueError(f"Unknown session scope: {scope_id}")
+    return SessionService(
+        SessionManager(context.config_for_scope(scope)),
+        scope_id=scope.scope_id,
+    )
 
 
 def _config_for_listing_scope(context: ApiContext, scope: Any) -> RunConfig:

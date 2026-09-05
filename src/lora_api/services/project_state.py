@@ -50,6 +50,26 @@ class GuiProjectState:
         self.recent_project_paths = recent[:12]
         self.save()
 
+    def forget_project(self, project_path: str | Path) -> bool:
+        resolved = _resolve_project(project_path)
+        recent = [
+            _resolve_project(item)
+            for item in self.recent_project_paths or []
+            if _resolve_project(item) != resolved
+        ]
+        removed = len(recent) != len(self.recent_project_paths or [])
+        if not removed:
+            return False
+        self.recent_project_paths = recent
+        if self.default_project_path == resolved:
+            self.default_project_path = recent[0] if recent else None
+        scope_id = f"project:{resolved}"
+        self.collapsed_scope_ids = [
+            item for item in self.collapsed_scope_ids or [] if item != scope_id
+        ]
+        self.save()
+        return True
+
     def save(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(

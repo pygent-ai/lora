@@ -11,6 +11,7 @@ class HealthResponse(BaseModel):
 
 
 class RuntimeConfigResponse(BaseModel):
+    approvals_enabled: bool
     workspace_root: str
     lora_root: str
     agent: str

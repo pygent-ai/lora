@@ -19,10 +19,31 @@ def project_list_response(context: ApiContext) -> ProjectListResponse:
     return ProjectListResponse(active=active, projects=projects)
 
 
+def remove_project(context: ApiContext, scope_id: str) -> bool:
+    active_scope_id = active_project_scope_id(context.config.workspace_root)
+    if scope_id == active_scope_id:
+        raise ValueError("Open another project before removing the active project")
+    scope = next(
+        (
+            item
+            for item in build_session_scopes(
+                context.project_state,
+                active_workspace_root=context.config.workspace_root,
+            )
+            if item.scope_id == scope_id and item.workspace_root is not None
+        ),
+        None,
+    )
+    if scope is None:
+        return False
+    return context.project_state.forget_project(scope.workspace_root)
+
+
 def config_response(config: RunConfig) -> RuntimeConfigResponse:
     if config.resolved_agent is None:
         raise ValueError("selected agent has no model routes")
     return RuntimeConfigResponse(
+        approvals_enabled=config.runtime_approvals.enabled,
         workspace_root=config.workspace_root,
         lora_root=config.lora_root,
         agent=config.agent_alias,

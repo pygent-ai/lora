@@ -132,7 +132,7 @@ class SessionManager:
         ref = CaseRunRef(session_id=session_id, case_id=case_id, case_run_id=case_run_id, run_dir=str(run_dir))
         config = run_config or self.config
         write_json(run_dir / "run_config.json", config.to_dict())
-        write_json(
+        write_json_atomic(
             run_dir / "run_metadata.json",
             {"status": "running", "started_at": utc_now(), **ref.to_dict()},
         )
@@ -146,7 +146,7 @@ class SessionManager:
         metadata_path = run_dir / "run_metadata.json"
         metadata = read_json(metadata_path)
         metadata.update({"status": status, "finished_at": utc_now()})
-        write_json(metadata_path, metadata)
+        write_json_atomic(metadata_path, metadata)
         session = self.load(case_run_ref.session_id)
         session.updated_at = utc_now()
         session.metadata.update(
@@ -177,6 +177,50 @@ class SessionManager:
         session = self.load(session_id)
         metadata = read_json(self._session_dir(session_id) / "metadata.json")
         return {"session": session.to_dict(), "metadata": metadata}
+
+    def history_with_run_timing(self, session: AgentSession) -> list[dict[str, Any]]:
+        """Project durable checkpoint ownership for the UI without changing model history.
+
+        Checkpoints form the suffix of raw history (older sessions may have a
+        legacy prefix). Verify each boundary instead of matching message text
+        or assuming that run ordering equals conversation ordering.
+        """
+        history = [dict(message) for message in session.history]
+        database_path = self._checkpoint_database_path(session.session_id)
+        if not database_path.exists():
+            return history
+        with closing(self._checkpoint_connection(database_path)) as connection:
+            rows = connection.execute(
+                """SELECT case_id, case_run_id, message_json
+                   FROM conversation_checkpoints
+                   WHERE include_in_session = 1 AND sequence <= ?
+                   ORDER BY sequence DESC""",
+                (int(session.metadata.get("history_checkpoint_seq") or 0),),
+            ).fetchall()
+        timings: dict[str, dict[str, Any]] = {}
+        for index, (case_id, run_id, message_json) in zip(
+            range(len(history) - 1, -1, -1), rows
+        ):
+            if history[index] != json.loads(message_json):
+                break
+            if run_id not in timings:
+                ref = CaseRunRef(
+                    session_id=session.session_id, case_id=case_id,
+                    case_run_id=run_id,
+                    run_dir=str(Path(session.session_dir) / "cases" / case_id / "runs" / run_id),
+                )
+                timings[run_id] = self.run_timing(ref)
+            history[index]["run_timing"] = timings[run_id]
+        return history
+
+    def run_timing(self, ref: CaseRunRef) -> dict[str, Any]:
+        metadata = read_json(Path(ref.run_dir) / "run_metadata.json", default={})
+        return {
+            "case_run_id": ref.case_run_id,
+            "started_at": metadata.get("started_at"),
+            "finished_at": metadata.get("finished_at"),
+            "status": metadata.get("status"),
+        }
 
     def save(self, session: AgentSession) -> None:
         session.updated_at = utc_now()

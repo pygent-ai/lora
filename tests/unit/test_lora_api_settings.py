@@ -7,6 +7,33 @@ from unittest.mock import patch
 from lora_api.dependencies import ApiContext
 
 
+def test_settings_toggle_approvals_persists_and_preserves_runtime(tmp_path: Path) -> None:
+    from lora.config import load_run_config
+    from lora_api.models.requests import UpdateSettingsRequest
+    from lora_api.routers.settings import get_settings, update_settings
+
+    home = tmp_path / "home"
+    write_user_config(home, [
+        "runtime:", "  approvals:", "    enabled: true",
+        "    timeout_seconds: 123", "    preauthorized_tools: [write]",
+    ])
+    with patch("lora.config.loader.Path.home", return_value=home):
+        context = ApiContext(workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json"))
+        assert get_settings(context).approvals_enabled is True
+        for enabled in (False, True):
+            response = asyncio.run(update_settings(
+                UpdateSettingsRequest(approvals_enabled=enabled), context=context,
+            ))
+            assert response.approvals_enabled is enabled
+            assert get_settings(context).approvals_enabled is enabled
+            config = load_run_config(workspace_root=tmp_path)
+            assert config.runtime_approvals.enabled is enabled
+            assert config.runtime_approvals.timeout_seconds == 123
+            assert config.runtime_approvals.preauthorized_tools == ("write",)
+        asyncio.run(update_settings(UpdateSettingsRequest(max_steps=7), context=context))
+        assert context.config.runtime_approvals.enabled is True
+
+
 class _RecordingChatRegistry:
     def __init__(self) -> None:
         self.closed = False

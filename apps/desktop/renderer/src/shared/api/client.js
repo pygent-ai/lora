@@ -38,6 +38,11 @@ export function createApiClient(options = {}) {
         body: settingsPayload(settings),
       }),
     listProjects: (options = {}) => jsonRequest("/projects", options),
+    removeProject: (scopeId, options = {}) =>
+      jsonRequest(`/projects?scope_id=${encodeURIComponent(scopeId)}`, {
+        ...options,
+        method: "DELETE",
+      }),
     listSessions: (options = {}) => jsonRequest("/sessions", options),
     listSessionGroups: (options = {}) => jsonRequest("/sessions/groups", options),
     createSession: (request = {}, options = {}) =>
@@ -47,11 +52,16 @@ export function createApiClient(options = {}) {
         body: {
           case_id: request.caseId || "chat",
           mode: request.mode || "chat",
+          scope_id: request.scopeId || undefined,
         },
       }),
-    getSession: (sessionId, options = {}) => jsonRequest(`/sessions/${encodeURIComponent(sessionId)}`, options),
-    deleteSession: (sessionId, options = {}) =>
-      jsonRequest(`/sessions/${encodeURIComponent(sessionId)}`, { ...options, method: "DELETE" }),
+    getSession: (sessionId, { scopeId, ...options } = {}) =>
+      jsonRequest(`/sessions/${encodeURIComponent(sessionId)}${scopeQuery(scopeId)}`, options),
+    deleteSession: (sessionId, { scopeId, ...options } = {}) =>
+      jsonRequest(`/sessions/${encodeURIComponent(sessionId)}${scopeQuery(scopeId)}`, {
+        ...options,
+        method: "DELETE",
+      }),
     getTraceEvents: (sessionId, caseRunId, options = {}) =>
       jsonRequest(
         `/traces/${encodeURIComponent(sessionId)}/${encodeURIComponent(caseRunId)}`,
@@ -82,8 +92,9 @@ export function settingsPayload(settings) {
     workspace_root: settingsString(settings.workspaceRoot),
     agent_alias: settingsString(settings.agent),
     max_steps: Number.isFinite(settings.maxSteps) ? settings.maxSteps : undefined,
-    context_window: contextWindow !== undefined ? contextWindow : null,
+    context_window: Object.hasOwn(settings, "contextWindow") ? contextWindow ?? null : undefined,
     api_key: cleanString(settings.apiKey),
+    approvals_enabled: typeof settings.approvalsEnabled === "boolean" ? settings.approvalsEnabled : undefined,
     model_group: modelGroupPayload(settings),
   });
 }
@@ -169,6 +180,7 @@ async function streamChatAttempt({ baseUrl, fetchImpl, request, onEvent, signal 
     body: JSON.stringify({
       message: request.executionId ? null : request.message,
       session_id: request.sessionId || null,
+      scope_id: request.scopeId || null,
       case_id: request.caseId || "chat",
       turn_id: request.turnId || null,
       execution_id: request.executionId || null,
@@ -290,6 +302,10 @@ function defaultBaseUrl() {
 
 function normalizeBaseUrl(value) {
   return value.replace(/\/+$/, "");
+}
+
+function scopeQuery(scopeId) {
+  return scopeId ? `?scope_id=${encodeURIComponent(scopeId)}` : "";
 }
 
 function settingsValue(value) {

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
-from lora.config import load_run_config, update_user_model_group
+from lora.config import load_run_config, update_user_model_group, update_user_approvals
 from lora.core.io import non_empty_string
 from lora.credentials import set_user_credential
 from lora_api.dependencies import ApiContext, get_api_context
@@ -26,6 +27,10 @@ async def update_settings(
     context: ApiContext = Depends(get_api_context),
 ) -> RuntimeConfigResponse:
     overrides = _settings_overrides(request)
+    if overrides.get("workspace_root"):
+        workspace = Path(overrides["workspace_root"]).expanduser()
+        if not workspace.is_dir():
+            raise HTTPException(status_code=400, detail="Project folder does not exist or is not accessible. Choose an existing folder.")
     user_lora_root = context.config.user_lora_root or ""
     agent_alias = overrides.get("agent_alias", context.agent_alias or context.config.agent_alias)
     if request.model_group is not None:
@@ -51,6 +56,8 @@ async def update_settings(
             raise ValueError("selected agent has no model routes")
         api_key_env = target_config.resolved_agent.routes[0].api_key_env
         set_user_credential(target_config.user_lora_root or "", api_key_env, api_key)
+    if request.approvals_enabled is not None:
+        update_user_approvals(user_lora_root, enabled=request.approvals_enabled)
     config = await context.areload(overrides)
     context.remember_project(config.workspace_root)
     return config_response(config)

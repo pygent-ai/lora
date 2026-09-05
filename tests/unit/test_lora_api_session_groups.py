@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from lora.core.io import read_json, write_json
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
@@ -35,6 +37,30 @@ def test_session_groups_are_partitioned_by_remembered_project(tmp_path: Path) ->
     assert groups["conversation"].scope.label == "Chat"
     assert [record.title for record in groups[scope_a].sessions] == ["Project A chat"]
     assert [record.title for record in groups[scope_b].sessions] == ["Project B chat"]
+
+
+def test_conversation_scope_can_create_and_load_a_chat(tmp_path: Path) -> None:
+    from lora_api.models.requests import CreateSessionRequest
+    from lora_api.routers.sessions import create_session, delete_session, get_session, list_session_groups
+
+    project = tmp_path / "project"
+    project.mkdir()
+    config = RunConfig(workspace_root=str(project), lora_root=str(project / ".lora"))
+    context = ApiContext(workspace_root=str(project), state_path=str(tmp_path / "state.json"), _config=config)
+
+    created = asyncio.run(create_session(CreateSessionRequest(scope_id="conversation"), context=context))
+    loaded = get_session(created.session_id, scope_id="conversation", context=context)
+
+    assert created.scope_id == "conversation"
+    assert loaded.session.scope_id == "conversation"
+    assert loaded.session.session_id == created.session_id
+    groups = {group.scope.scope_id: group for group in list_session_groups(context=context).groups}
+    assert [item.session_id for item in groups["conversation"].sessions] == [created.session_id]
+    assert groups[f"project:{project.resolve()}"].sessions == []
+
+    assert delete_session(created.session_id, scope_id="conversation", context=context).deleted is True
+    groups = {group.scope.scope_id: group for group in list_session_groups(context=context).groups}
+    assert groups["conversation"].sessions == []
 
 
 def test_update_settings_remembers_switched_workspace_for_project_list(tmp_path: Path) -> None:
@@ -74,6 +100,43 @@ def test_project_list_omits_missing_recent_directories(tmp_path: Path) -> None:
     response = list_projects(context=context)
 
     assert [item.scope_id for item in response.projects] == [f"project:{project.resolve()}"]
+
+
+def test_non_active_project_can_be_removed_without_deleting_files(tmp_path: Path) -> None:
+    from lora_api.routers.projects import delete_project, list_projects
+
+    active = tmp_path / "active"
+    removable = tmp_path / "removable"
+    active.mkdir()
+    removable.mkdir()
+    marker = removable / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    context = ApiContext(workspace_root=str(active), state_path=str(tmp_path / "state.json"))
+    context.remember_project(removable)
+    context.remember_project(active)
+
+    response = delete_project(f"project:{removable.resolve()}", context=context)
+
+    assert response.deleted is True
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert [item.scope_id for item in list_projects(context=context).projects] == [
+        f"project:{active.resolve()}"
+    ]
+
+
+def test_active_project_cannot_be_removed(tmp_path: Path) -> None:
+    from fastapi import HTTPException
+    from lora_api.routers.projects import delete_project
+
+    active = tmp_path / "active"
+    active.mkdir()
+    context = ApiContext(workspace_root=str(active), state_path=str(tmp_path / "state.json"))
+    context.remember_project(active)
+
+    with pytest.raises(HTTPException) as exc_info:
+        delete_project(f"project:{active.resolve()}", context=context)
+
+    assert exc_info.value.status_code == 409
 
 
 def test_session_groups_ignore_project_lora_yaml(tmp_path: Path) -> None:

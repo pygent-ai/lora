@@ -112,10 +112,11 @@ async function createWindow() {
 }
 
 ipcMain.handle("backend:status", () => backendStatus);
-ipcMain.handle("project:choose-directory", async () => {
+ipcMain.handle("project:choose-directory", async (_event, defaultPath) => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory", "createDirectory"],
     title: "Choose Project",
+    defaultPath: typeof defaultPath === "string" && path.isAbsolute(defaultPath) ? defaultPath : undefined,
   });
   return result.canceled ? null : result.filePaths[0] || null;
 });

@@ -6,12 +6,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class CreateSessionRequest(BaseModel):
     case_id: str = "chat"
     mode: str = "chat"
+    scope_id: str | None = None
 
 
 class ChatTurnRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message: str | None = Field(default=None, min_length=1)
     session_id: str | None = None
+    scope_id: str | None = None
     case_id: str = "chat"
     turn_id: str | None = None
     execution_id: str | None = None
@@ -76,6 +78,7 @@ class ModelGroupSettingsRequest(BaseModel):
 
 class UpdateSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    approvals_enabled: bool | None = None
     workspace_root: str | None = None
     agent_alias: str | None = None
     max_steps: int | None = None

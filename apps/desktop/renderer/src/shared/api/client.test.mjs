@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createApiClient, parseSseEvents } from "./client.js";
+import { createApiClient, parseSseEvents, settingsPayload } from "./client.js";
+
+test("permission settings preserve false and omit unspecified modes", () => {
+  assert.equal(settingsPayload({ approvalsEnabled: false }).approvals_enabled, false);
+  assert.equal(settingsPayload({ approvalsEnabled: true }).approvals_enabled, true);
+  assert.equal(Object.hasOwn(settingsPayload({ workspaceRoot: "workspace" }), "approvals_enabled"), false);
+});
 
 test("session errors preserve HTTP status for missing-session recovery", async () => {
   const client = createApiClient({
@@ -118,6 +124,42 @@ test("api client lists session groups for directory-scoped sidebar", async () =>
     active_scope_id: "project:E:/Projects/lora",
     groups: [],
   });
+});
+
+test("api client creates and loads a conversation-scoped chat", async () => {
+  const calls = [];
+  const client = createApiClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  await client.createSession({ scopeId: "conversation" });
+  await client.getSession("chat one", { scopeId: "conversation" });
+
+  assert.equal(JSON.parse(calls[0].init.body).scope_id, "conversation");
+  assert.equal(calls[1].url, "http://127.0.0.1:8765/sessions/chat%20one?scope_id=conversation");
+});
+
+test("api client removes a project from the sidebar by scope", async () => {
+  const calls = [];
+  const client = createApiClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response('{"deleted":true}', {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+
+  await client.removeProject("project:C:/Projects/other");
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8765/projects?scope_id=project%3AC%3A%2FProjects%2Fother");
+  assert.equal(calls[0].init.method, "DELETE");
 });
 
 test("api client fetches tool results by tool call id", async () => {

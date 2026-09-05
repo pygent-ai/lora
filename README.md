@@ -50,6 +50,18 @@ uv run lora credentials validate
 
 `~/.lora/config.yaml` 同时承载模型、运行时和工具审批策略（`runtime.approvals`）配置，对所有项目共用。`preauthorized_tools` 中列出的工具会自动放行；`runtime.approvals.enabled: false` 会放行所有高风险工具，请谨慎使用。
 
+在前端 Settings 中，将「Tool permissions / 工具权限」选择为「Full access / 完全访问」，点击「Save and Reload」即可保存，对所有工作区的后续运行生效；正在运行的任务保留原权限。选择「Require approval / 逐次审批」可恢复审批。
+
+也可以直接在该配置文件中设置以下内容，然后重启 Lora 服务：
+
+```yaml
+runtime:
+  approvals:
+    enabled: false
+```
+
+如果已有 `runtime` 或 `approvals` 配置，请合并到已有节点中。此开关仅控制 Lora 的工具审批，不会提升操作系统权限。恢复逐次审批时改回 `enabled: true`。
+
 ```yaml
 runtime:
   durability:

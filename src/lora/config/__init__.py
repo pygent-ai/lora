@@ -9,7 +9,7 @@ from .loader import (
     load_mapping_file,
     load_run_config,
 )
-from .editor import update_user_model_group
+from .editor import update_user_model_group, update_user_approvals
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -18,4 +18,5 @@ __all__ = [
     "load_mapping_file",
     "load_run_config",
     "update_user_model_group",
+    "update_user_approvals",
 ]

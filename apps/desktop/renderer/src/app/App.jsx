@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Folder,
   FolderCode,
   ArrowDown,
   ArrowUp,
-  MessageSquarePlus,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -11,12 +11,14 @@ import {
   Plus,
   SendHorizontal,
   Settings as SettingsIcon,
-  SlidersHorizontal,
   Trash2,
   X,
 } from "lucide-react";
 
 import { createApiClient } from "../shared/api/client.js";
+import { ProjectPicker } from "../features/projects/ProjectPicker.jsx";
+import { projectPathKey } from "../features/projects/projectPaths.js";
+import { activityHeaderText, runTimingFields } from "./runTiming.js";
 import {
   adaptLayoutToCompactViewport,
   COMPACT_LAYOUT_QUERY,
@@ -72,6 +74,7 @@ export function App() {
   const [runningSessionIds, setRunningSessionIds] = useState({});
   const [approvals, setApprovals] = useState([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const activeSessionIdRef = useRef("");
   const messagesRef = useRef([]);
   const runningSessionIdsRef = useRef({});
@@ -165,7 +168,7 @@ export function App() {
       setContextSnapshots(contextSnapshotsFromEvents(previewLiveEvents));
       let detail;
       try {
-        detail = await api.getSession(sessionId);
+        detail = await api.getSession(sessionId, { scopeId: previewSession?.scope_id });
       } catch (err) {
         if (sessionToken !== sessionLoadTokenRef.current) {
           return;
@@ -224,11 +227,11 @@ export function App() {
       setSettings(nextSettings);
       setProjects(nextProjects.projects || []);
       setSessionGroups(groups);
-      setActiveScopeId(activeScopeId);
       const targetSessionId =
         selectSessionId ||
         (selectFirst ? firstSessionIdInScope(groups, activeScopeId) : preserveSessionId);
       const targetSession = sessionList.find((session) => session.session_id === targetSessionId);
+      setActiveScopeId(targetSession?.scope_id || activeScopeId);
       if (targetSessionId && targetSession) {
         await loadSession(targetSessionId, targetSession);
       } else {
@@ -266,16 +269,26 @@ export function App() {
     };
   }, [refreshWorkbench]);
 
-  const handleCreateSession = useCallback(async () => {
+  const handleCreateSession = useCallback(async (scope = null) => {
     try {
       setError("");
-      const session = await api.createSession({ caseId: "chat", mode: "chat" });
+      setNotice("");
+      const targetWorkspace = scope?.workspace_root || "";
+      if (targetWorkspace && projectPathKey(targetWorkspace) !== projectPathKey(settings.workspace_root)) {
+        setStatus("Opening project");
+        await api.updateSettings({ workspaceRoot: targetWorkspace, agent: "" });
+      }
+      const session = await api.createSession({
+        caseId: "chat",
+        mode: "chat",
+        scopeId: scope?.scope_id === "conversation" ? "conversation" : undefined,
+      });
       await refreshWorkbench({ selectSessionId: session.session_id });
       setNotice("New chat created");
     } catch (err) {
       setError(readableError(err));
     }
-  }, [api, refreshWorkbench]);
+  }, [api, refreshWorkbench, settings.workspace_root]);
 
   const handleDeleteSession = useCallback(
     async (sessionId, scope) => {
@@ -284,7 +297,7 @@ export function App() {
         if (scope?.workspace_root && scope.workspace_root !== settings.workspace_root) {
           await api.updateSettings({ workspaceRoot: scope.workspace_root });
         }
-        await api.deleteSession(sessionId);
+        await api.deleteSession(sessionId, { scopeId: scope?.scope_id });
         pendingSessionMessagesRef.current.delete(sessionId);
         sessionLiveEventsRef.current.delete(sessionId);
         await refreshWorkbench({ selectFirst: true });
@@ -295,6 +308,29 @@ export function App() {
     },
     [api, refreshWorkbench, settings.workspace_root],
   );
+
+  const handleDeleteProject = useCallback(async (scope) => {
+    if (!scope?.scope_id) return;
+    try {
+      setError("");
+      setNotice("");
+      if (scope.scope_id === scopeIdFromWorkspace(settings.workspace_root)) {
+        const fallback = projects.find(
+          (project) => projectPathKey(project.workspace_root) !== projectPathKey(scope.workspace_root),
+        );
+        if (!fallback) {
+          throw new Error("Open another project before removing this one.");
+        }
+        setStatus("Opening project");
+        await api.updateSettings({ workspaceRoot: fallback.workspace_root, agent: "" });
+      }
+      await api.removeProject(scope.scope_id);
+      await refreshWorkbench({ selectFirst: true });
+      setNotice("Project removed from sidebar");
+    } catch (err) {
+      setError(readableError(err));
+    }
+  }, [api, projects, refreshWorkbench, settings.workspace_root]);
 
   const handleSelectSession = useCallback(
     async (session, scope) => {
@@ -386,7 +422,12 @@ export function App() {
 
       try {
         await api.streamChat(
-          { message, sessionId: streamSessionId, caseId: "chat" },
+          {
+            message,
+            sessionId: streamSessionId,
+            caseId: "chat",
+            scopeId: activeSession?.scope_id,
+          },
           {
             onEvent: ({ data }) => {
               const eventKind = data.kind || "";
@@ -470,7 +511,7 @@ export function App() {
         }
       }
     },
-    [api, refreshWorkbench, setSessionRunning],
+    [activeSession?.scope_id, api, refreshWorkbench, setSessionRunning],
   );
 
   const handleSaveSettings = useCallback(
@@ -498,27 +539,25 @@ export function App() {
     [api, refreshWorkbench, settings],
   );
 
-  const handleChooseProject = useCallback(async () => {
-    const chooseDirectory = globalThis.window?.loraDesktop?.chooseProjectDirectory;
-    if (typeof chooseDirectory !== "function") {
-      setSettingsOpen(true);
-      return;
+  const handleChooseProject = useCallback(() => setProjectPickerOpen(true), []);
+
+  const handleSwitchProject = useCallback(async (workspaceRoot) => {
+    if (Object.keys(runningSessionIdsRef.current).length) {
+      throw new Error("Wait for running chats to finish before switching projects.");
     }
+    if (projectPathKey(workspaceRoot) === projectPathKey(settings.workspace_root)) return;
     try {
-      const workspaceRoot = await chooseDirectory();
-      if (!workspaceRoot) {
-        return;
-      }
-      await handleSaveSettings({
-        ...settingsToDraft(settings),
-        workspaceRoot,
-        agent: "",
-      });
+      setStatus("Opening project");
+      setError("");
+      setNotice("");
+      await api.updateSettings({ workspaceRoot, agent: "" });
+      await refreshWorkbench({ selectFirst: true });
+      setNotice("Project opened");
     } catch (err) {
       setStatus("Error");
-      setError(readableError(err));
+      throw new Error(readableError(err));
     }
-  }, [handleSaveSettings, settings]);
+  }, [api, refreshWorkbench, settings.workspace_root]);
 
   const appClassName = appLayoutClassName(layout);
 
@@ -547,9 +586,9 @@ export function App() {
         activeSessionId={activeSessionId}
         onCreateSession={handleCreateSession}
         onDeleteSession={handleDeleteSession}
+        onDeleteProject={handleDeleteProject}
         onSelectSession={handleSelectSession}
         onChooseProject={handleChooseProject}
-        chooseProjectDisabled={hasRunningSessions}
         onOpenSettings={() => setSettingsOpen(true)}
         onToggle={() =>
           setLayout((current) => toggleHistory(current, { compact: current.compact }))
@@ -590,6 +629,11 @@ export function App() {
           onSave={handleSaveSettings}
         />
       )}
+      {projectPickerOpen && (
+        <ProjectPicker projects={projects} currentPath={settings.workspace_root}
+          disabled={hasRunningSessions} onSelect={handleSwitchProject}
+          onClose={() => setProjectPickerOpen(false)} />
+      )}
     </main>
   );
 }
@@ -614,9 +658,9 @@ export function SessionSidebar({
   activeSessionId,
   onCreateSession,
   onDeleteSession,
+  onDeleteProject,
   onSelectSession,
   onChooseProject,
-  chooseProjectDisabled = false,
   onOpenSettings,
   onToggle,
 }) {
@@ -637,9 +681,12 @@ export function SessionSidebar({
         <div className="history-top">
           <div className="brand">
             <h1 className="brand-title">{collapsed ? "L" : "Lora"}</h1>
-            <p className="brand-path" title={settings.workspace_root}>
-              {shortPath(settings.workspace_root) || "No workspace"}
-            </p>
+          </div>
+          <div className="history-header-actions" aria-label="Create">
+            <button className="icon-button header-action" title="New chat" aria-label="New chat in current project"
+              type="button" onClick={() => onCreateSession()}><Plus aria-hidden="true" /></button>
+            <button className="icon-button header-action" title="Open project" aria-label="Open project"
+              aria-haspopup="dialog" type="button" onClick={onChooseProject}><Folder aria-hidden="true" /></button>
           </div>
           <button
             className="icon-button rail-button"
@@ -651,29 +698,45 @@ export function SessionSidebar({
           </button>
         </div>
 
-        <button className="primary-action" title="New chat" type="button" onClick={onCreateSession}>
-          <MessageSquarePlus aria-hidden="true" />
-          <span className="action-label">New Chat</span>
-        </button>
-
         <div className="section-label">Sessions</div>
         <div className="session-groups">
           {sessionGroups.length === 0 && <div className="empty-state">No chats yet</div>}
           {sessionGroups.map((group) => {
             const scope = group.scope || {};
             const isCollapsed = collapsedGroups[scope.scope_id] ?? group.collapsed;
+            const isCurrentProject = scope.scope_id === scopeIdFromWorkspace(settings.workspace_root);
+            const canSwitchBeforeRemoving = !scope.workspace_root || projects.some(
+              (project) => project.workspace_root
+                && projectPathKey(project.workspace_root) !== projectPathKey(scope.workspace_root),
+            );
             return (
               <section className="session-group" key={scope.scope_id || scope.label}>
                 <button
-                  className={scope.scope_id === activeScopeId ? "session-group-header active" : "session-group-header"}
+                  className={`${scope.scope_id === activeScopeId ? "session-group-header active" : "session-group-header"} has-new-chat${scope.workspace_root ? " has-project-actions" : ""}`}
                   title={scope.tooltip || scope.label}
                   type="button"
                   onClick={() => toggleGroup(scope.scope_id)}
                 >
                   {scope.workspace_root && <FolderCode aria-hidden="true" />}
                   <span className="group-label">{scope.label || "Workspace"}</span>
-                  <span className="group-count">{group.sessions?.length || 0}</span>
                 </button>
+                <div className="session-group-actions">
+                  <button className="session-group-new-chat" type="button"
+                      aria-label={`New chat in ${scope.label || "project"}`}
+                      title={`New chat in ${scope.label || "project"}`}
+                      onClick={() => onCreateSession(scope)}>
+                    <Plus aria-hidden="true" />
+                  </button>
+                  {scope.workspace_root && (
+                    <button className="session-group-delete" type="button"
+                        disabled={isCurrentProject && !canSwitchBeforeRemoving}
+                        aria-label={`Remove project ${scope.label || "project"}`}
+                        title={isCurrentProject && !canSwitchBeforeRemoving ? "Open another project before removing this one" : "Remove project from sidebar"}
+                        onClick={() => onDeleteProject(scope)}>
+                      <Trash2 aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
                 {!isCollapsed && (
                   <div className="session-list">
                     {(group.sessions || []).length === 0 && <div className="empty-state compact">No chats yet</div>}
@@ -702,16 +765,6 @@ export function SessionSidebar({
             <span>{primaryModel(settings)}</span>
             <span>{projects.length ? `${projects.length} workspace` : "active workspace only"}</span>
           </div>
-          <button
-            className="plain-action"
-            disabled={chooseProjectDisabled}
-            title="Switch workspace"
-            type="button"
-            onClick={onChooseProject}
-          >
-            <SlidersHorizontal aria-hidden="true" />
-            <span className="plain-action-label">Choose Project</span>
-          </button>
           <button className="plain-action" title="Settings" type="button" onClick={onOpenSettings}>
             <SettingsIcon aria-hidden="true" />
             <span className="plain-action-label">Settings</span>
@@ -1569,7 +1622,7 @@ function copyContextValue(value) {
   globalThis.navigator?.clipboard?.writeText?.(value).catch(() => {});
 }
 
-function SettingsPanel({ settings, disabled, onClose, onSave }) {
+export function SettingsPanel({ settings, disabled, onClose, onSave }) {
   const [draft, setDraft] = useState(() => settingsToDraft(settings));
   const validationError = modelGroupValidationError(draft);
 
@@ -1752,6 +1805,22 @@ function SettingsPanel({ settings, disabled, onClose, onSave }) {
               onChange={(event) => setField("contextWindow", event.target.value)}
             />
           </label>
+          <label>
+            <span>Tool permissions / 工具权限</span>
+            <select
+              value={draft.approvalsEnabled ? "approval" : "full-access"}
+              disabled={disabled}
+              aria-describedby="tool-permissions-help"
+              onChange={(event) => setField("approvalsEnabled", event.target.value === "approval")}
+            >
+              <option value="approval">Require approval / 逐次审批</option>
+              <option value="full-access">Full access / 完全访问</option>
+            </select>
+          </label>
+          <p id="tool-permissions-help">
+            完全访问会自动允许所有工具调用；逐次审批会要求确认写入和外部操作（已预授权的工具除外）。
+            保存后对所有工作区的新运行生效，正在运行的任务保留原权限。
+          </p>
           {validationError && <p className="settings-validation" role="alert">{validationError}</p>}
         </div>
 
@@ -1808,15 +1877,22 @@ export function historyToMessages(history) {
       segment.push(history[index]);
       index += 1;
     }
-    rendered.push(...renderTurnSegment(segment, `history-${index}`));
+    rendered.push(...renderTurnSegment(segment, `history-${index}`, message.run_timing));
   }
   return rendered.filter(Boolean);
 }
 
-function renderTurnSegment(segment, idPrefix) {
+function renderTurnSegment(segment, idPrefix, timing = segment.find((message) => message?.run_timing)?.run_timing) {
+  let lastToolCallIndex = -1;
+  segment.forEach((message, index) => {
+    if (String(message?.role || "") === "assistant" && toolCallsFromMessage(message).length > 0) {
+      lastToolCallIndex = index;
+    }
+  });
   let finalAssistantIndex = -1;
   segment.forEach((message, index) => {
     if (
+      index > lastToolCallIndex &&
       String(message?.role || "") === "assistant" &&
       cleanContent(String(message?.content || "")).trim() &&
       toolCallsFromMessage(message).length === 0
@@ -1860,8 +1936,7 @@ function renderTurnSegment(segment, idPrefix) {
       role: "assistant",
       content: finalContent,
       status: "success",
-      startedAt: sections.length > 0 ? 0 : undefined,
-      endedAt: sections.length > 0 ? 0 : undefined,
+      ...runTimingFields(timing),
       sections: finalizeToolSections(sections),
     },
   ];
@@ -1912,6 +1987,9 @@ function projectLiveExecutionEvent(setMessages, assistantId, event) {
 export function projectLiveAssistantEvent(message, event, now = Date.now()) {
   const kind = String(event?.kind || "");
   const payload = event?.data && typeof event.data === "object" ? event.data : {};
+  if (payload.run_timing) {
+    message = { ...message, ...runTimingFields(payload.run_timing) };
+  }
 
   if (kind === "model.reasoning.delta") {
     const delta = String(payload.text || "");
@@ -1960,7 +2038,7 @@ export function projectLiveAssistantEvent(message, event, now = Date.now()) {
     return {
       ...message,
       content: cleanContent(String(message.content || "")),
-      endedAt: now,
+      endedAt: message.endedAt ?? now,
       sections: finalizeToolSections(message.sections || []),
       status: "success",
     };
@@ -1970,7 +2048,7 @@ export function projectLiveAssistantEvent(message, event, now = Date.now()) {
     return {
       ...message,
       content: String(payload.reason || "Chat cancelled."),
-      endedAt: now,
+      endedAt: message.endedAt ?? now,
       sections: finalizeToolSections(message.sections || []),
       status: "error",
     };
@@ -1980,26 +2058,13 @@ export function projectLiveAssistantEvent(message, event, now = Date.now()) {
     return {
       ...message,
       content: `Error: ${payload.error || payload.message || "chat failed"}`,
-      endedAt: now,
+      endedAt: message.endedAt ?? now,
       sections: finalizeToolSections(message.sections || []),
       status: "error",
     };
   }
 
   return message;
-}
-
-function activityHeaderText(message, now) {
-  const startedAt = Number.isFinite(message.startedAt) ? message.startedAt : now;
-  const endedAt = Number.isFinite(message.endedAt) ? message.endedAt : now;
-  const duration = formatProcessedDuration((endedAt - startedAt) / 1000);
-  if (message.status === "running") {
-    return `Processing for ${duration}`;
-  }
-  if (message.status === "error") {
-    return `Failed after ${duration}`;
-  }
-  return `Processed for ${duration}`;
 }
 
 function visibleActivitySections(message) {
@@ -2108,12 +2173,23 @@ function appendToolCallsSection(sections, calls) {
     return Array.isArray(sections) ? sections : [];
   }
   const nextSections = Array.isArray(sections) ? [...sections] : [];
-  const last = nextSections[nextSections.length - 1];
-  if (last?.type === "tools" && last.status === "running") {
-    nextSections[nextSections.length - 1] = {
-      ...last,
-      calls: mergeToolCalls(last.calls || [], safeCalls),
+  let toolSectionIndex = nextSections.length - 1;
+  while (
+    toolSectionIndex >= 0 &&
+    nextSections[toolSectionIndex]?.type === "text" &&
+    nextSections[toolSectionIndex]?.title === "Thinking"
+  ) {
+    toolSectionIndex -= 1;
+  }
+  const previousToolSection = nextSections[toolSectionIndex];
+  if (previousToolSection?.type === "tools") {
+    const mergedSection = {
+      ...previousToolSection,
+      status: "running",
+      calls: mergeToolCalls(previousToolSection.calls || [], safeCalls),
     };
+    nextSections.splice(toolSectionIndex, 1);
+    nextSections.push(mergedSection);
     return nextSections;
   }
   nextSections.push({
@@ -2167,16 +2243,6 @@ function toolGroupTitle(section) {
   const count = calls.length;
   const verb = section.status === "running" ? "Executing" : "Executed";
   return `${verb} ${count} tool call${count === 1 ? "" : "s"}`;
-}
-
-function formatProcessedDuration(seconds) {
-  const value = Math.max(0, Math.round(Number(seconds) || 0));
-  if (value < 60) {
-    return `${value}s`;
-  }
-  const minutes = Math.floor(value / 60);
-  const remainder = value % 60;
-  return remainder > 0 ? `${minutes}min${remainder}s` : `${minutes}min`;
 }
 
 function traceTabEvents(tab, events) {
@@ -2372,6 +2438,7 @@ function compactLayoutMatches() {
 
 function settingsToDraft(settings) {
   return {
+    approvalsEnabled: settings.approvals_enabled !== false,
     workspaceRoot: settings.workspace_root || "",
     agent: settings.agent || "",
     profile: settings.profile || "default",

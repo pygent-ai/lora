@@ -9,3 +9,16 @@ This layer adapts `src/lora` core capabilities to HTTP and server-sent event bou
 - `routers/`: HTTP transport and request validation.
 - `services/`: use-case adapters with no dependency on FastAPI wiring.
 - `models/`: API-specific event and payload contracts.
+
+Task duration is owned by the case run's `run_metadata.json`. Session history
+messages expose `run_timing` with `case_run_id`, `started_at`, `finished_at`, and
+`status`; timestamps are UTC ISO 8601 strings, and unavailable values are null.
+Checkpoint sequence and run identity associate this data with conversation
+boundaries without adding display metadata to model-visible history. Legacy
+messages without a verified checkpoint boundary have no `run_timing`.
+
+Chat start and terminal SSE events expose the same object in `data.run_timing`,
+including on reconnect. Active streams wait for final run persistence before
+publishing a terminal event. The desktop uses this contract for both live and
+restored messages, freezes completed durations, and omits elapsed time when it
+is unknown. Durations are displayed in whole seconds, rounded down.

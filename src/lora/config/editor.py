@@ -39,7 +39,21 @@ def update_user_model_group(
     if agent_config is None:
         data["agent"] = {"default_alias": alias}
 
-    root.mkdir(parents=True, exist_ok=True)
+    return _write_config(path, data)
+
+
+def update_user_approvals(user_lora_root: str | Path, *, enabled: bool) -> Path:
+    """Persist tool approval mode while preserving other runtime settings."""
+    path = Path(user_lora_root).expanduser().resolve() / USER_CONFIG_FILENAME
+    data = parse_yaml_subset(path.read_text(encoding="utf-8")) if path.exists() else {}
+    runtime = data.setdefault("runtime", {})
+    approvals = runtime.setdefault("approvals", {})
+    approvals["enabled"] = enabled
+    return _write_config(path, data)
+
+
+def _write_config(path: Path, data: dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8") as handle:
@@ -52,4 +66,4 @@ def update_user_model_group(
     return path
 
 
-__all__ = ["update_user_model_group"]
+__all__ = ["update_user_model_group", "update_user_approvals"]

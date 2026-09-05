@@ -31,6 +31,8 @@ agents:
 
 runtime:
   approvals:
+    # Full access: set enabled to false to allow all tools without approval prompts.
+    # Set enabled to true to require approval, except for preauthorized_tools.
     enabled: true
     timeout_seconds: 300
     preauthorized_tools: []

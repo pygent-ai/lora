@@ -16,10 +16,22 @@ from lora.schema import CaseRunRef
 from lora_api.container import ApiContext
 from lora_api.models.events import ExecutionEvent
 from lora_api.models.requests import ChatTurnRequest
-from lora_api.services.session_service import SessionService
+from lora_api.services.session_service import session_service_for_scope
 
 CHAT_DISCONNECT_GRACE_SECONDS = 60.0
 CHAT_KEEPALIVE_SECONDS = 10.0
+_TERMINAL_EVENTS = {
+    "execution.completed", "execution.failed", "execution.cancelled",
+    "execution.deadline_exceeded",
+}
+
+
+def _with_run_timing(event: ExecutionEvent, manager: Any, ref: CaseRunRef) -> ExecutionEvent:
+    if event.kind not in _TERMINAL_EVENTS | {"execution.started", "lora.chat.started"}:
+        return event
+    return event.model_copy(update={
+        "data": {**event.data, "run_timing": manager.run_timing(ref)},
+    })
 
 
 async def stream_chat_turn(
@@ -60,6 +72,7 @@ class ActiveChatRun:
     subscribers: int = 0
     startup_error: BaseException | None = None
     recovery_execution_id: str | None = None
+    owns_runtime: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
@@ -120,6 +133,11 @@ class ActiveChatRun:
                             break
                         pending_event = None
                         event = _execution_event(raw)
+                        if event.kind in _TERMINAL_EVENTS and self.task is not None:
+                            # Publish completion only after run metadata and history
+                            # are durable, so the client's immediate reload is final.
+                            await asyncio.shield(self.task)
+                        event = _with_run_timing(event, self.manager, self.run_ref)
                         if log_model_text_deltas:
                             _append_model_text_delta(
                                 event,
@@ -202,6 +220,7 @@ class ActiveChatRun:
 class AttachedExecutionRun:
     execution_handle: Any
     run_ref: CaseRunRef | None = None
+    manager: Any | None = None
 
     async def events(
         self,
@@ -212,6 +231,8 @@ class AttachedExecutionRun:
         async with self.execution_handle.subscribe(after=after) as events:
             async for raw in events:
                 event = _execution_event(raw)
+                if self.manager is not None and self.run_ref is not None:
+                    event = _with_run_timing(event, self.manager, self.run_ref)
                 if log_model_text_deltas and self.run_ref is not None:
                     _append_model_text_delta(
                         event,
@@ -260,7 +281,8 @@ class ChatRunRegistry:
                 return None
             snapshot = await handle.snapshot()
             if snapshot.status.terminal:
-                return AttachedExecutionRun(handle)
+                run_ref = await context.runtime_service.recovery_case_run(request.execution_id)
+                return AttachedExecutionRun(handle, run_ref, context.manager)
             run_ref = await context.runtime_service.recovery_case_run(
                 request.execution_id
             )
@@ -287,16 +309,31 @@ class ChatRunRegistry:
             return recovered
         if not request.message:
             raise ValueError("message is required when execution_id is not provided")
-        service = SessionService(context.manager, context.reminders)
+        service = session_service_for_scope(
+            context,
+            request.scope_id,
+            with_reminders=True,
+        )
+        manager = service.manager
+        runtime_service = context.runtime_service
+        owns_runtime = False
+        if request.scope_id and manager is not context.manager:
+            from lora.runtime.service import LoraRuntimeService
+
+            Path(manager.config.workspace_root).mkdir(parents=True, exist_ok=True)
+            runtime_service = LoraRuntimeService(manager.config)
+            service.reminders = runtime_service.reminders
+            owns_runtime = True
         session_id = request.session_id or service.create_session(case_id=request.case_id, mode="chat").session_id
         service.save_title_from_user_input(session_id, request.message)
-        run_ref = context.manager.start_case_run(session_id, request.case_id, run_config=context.config)
+        run_ref = manager.start_case_run(session_id, request.case_id, run_config=manager.config)
         active = ActiveChatRun(
-            runtime_service=context.runtime_service,
-            manager=context.manager,
+            runtime_service=runtime_service,
+            manager=manager,
             request=request.model_copy(update={"session_id": session_id}),
             run_ref=run_ref,
             registry=self,
+            owns_runtime=owns_runtime,
         )
         async with self._lock:
             self._case_runs[run_ref.case_run_id] = active
@@ -309,7 +346,7 @@ class ChatRunRegistry:
                 self._runs[active.execution_id] = active
 
     async def remove(self, active: ActiveChatRun) -> None:
-        runtime_to_close = None
+        runtime_to_close = active.runtime_service if getattr(active, "owns_runtime", False) else None
         async with self._lock:
             if active.execution_id is not None and self._runs.get(active.execution_id) is active:
                 del self._runs[active.execution_id]

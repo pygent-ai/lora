@@ -6,10 +6,30 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
+import { activityHeaderText } from "./runTiming.js";
 
 const desktopRoot = fileURLToPath(new URL("../../../", import.meta.url));
 let appModule;
 let vite;
+
+test("completion, replay, and history replacement share the durable run duration", () => {
+  const timing = {
+    case_run_id: "run-1", started_at: "2026-09-04T10:00:00Z",
+    finished_at: "2026-09-04T10:00:17Z", status: "passed",
+  };
+  const event = { kind: "execution.completed", data: { run_timing: timing } };
+  const live = appModule.projectLiveAssistantEvent({
+    role: "assistant", content: "Done", status: "running", startedAt: 1, sections: [],
+  }, event, 9999999999999);
+  const [, restored] = appModule.historyToMessages([
+    { role: "user", content: "Do this", run_timing: timing },
+    { role: "assistant", content: "Done", run_timing: timing },
+  ]);
+  for (const message of [live, restored, appModule.projectLiveAssistantEvent(live, event, 1)]) {
+    assert.equal(activityHeaderText(message, 0), "Processed for 17s");
+    assert.equal(message.caseRunId, "run-1");
+  }
+});
 
 before(async () => {
   vite = await createServer({
@@ -25,12 +45,24 @@ after(async () => {
   await vite?.close();
 });
 
+test("settings displays the saved tool permission mode", () => {
+  for (const enabled of [true, false]) {
+    const html = renderToStaticMarkup(React.createElement(appModule.SettingsPanel, {
+      settings: { approvals_enabled: enabled }, disabled: false,
+      onClose() {}, onSave() {},
+    }));
+    assert.match(html, /工具权限/);
+    assert.match(html, new RegExp(`value="${enabled ? "approval" : "full-access"}" selected=""`));
+    assert.match(html, /Save and Reload/);
+  }
+});
+
 test("desktop app renders its initial workbench", async () => {
   const html = renderToStaticMarkup(React.createElement(appModule.App));
 
   assert.match(html, /class="app-shell/);
   assert.match(html, /aria-label="Workbench"/);
-  assert.match(html, /Choose Project/);
+  assert.match(html, /aria-label="Open project"/);
 });
 
 test("trace event updates scroll the inspector to the latest item", () => {
@@ -305,8 +337,37 @@ test("new chat stays enabled while another session is running", () => {
     }),
   );
 
-  assert.match(html, /class="primary-action"[^>]*title="New chat"/);
-  assert.doesNotMatch(html, /class="primary-action"[^>]*disabled/);
+  assert.match(html, /class="icon-button header-action"[^>]*title="New chat"/);
+  assert.doesNotMatch(html, /title="New chat"[^>]*disabled/);
+});
+
+test("project groups create chats directly and omit session counts", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(appModule.SessionSidebar, {
+      collapsed: false,
+      settings: { workspace_root: "C:/Projects/lora", agent: "default", routes: [] },
+      projects: [{ workspace_root: "C:/Projects/lora" }, { workspace_root: "C:/Projects/other" }],
+      sessionGroups: [
+        { scope: { scope_id: "project:C:/Projects/lora", label: "lora", workspace_root: "C:/Projects/lora" },
+          sessions: [{ session_id: "chat-1", title: "First chat" }] },
+        { scope: { scope_id: "project:C:/Projects/other", label: "other", workspace_root: "C:/Projects/other" }, sessions: [] },
+        { scope: { scope_id: "conversation", label: "Chat", workspace_root: null }, sessions: [] },
+      ],
+      activeScopeId: "project:C:/Projects/lora",
+      activeSessionId: "chat-1",
+      onCreateSession() {}, onDeleteSession() {}, onSelectSession() {},
+      onChooseProject() {}, onOpenSettings() {}, onToggle() {},
+    }),
+  );
+
+  assert.match(html, /title="Open project"/);
+  assert.match(html, /aria-label="New chat in lora"/);
+  assert.match(html, /aria-label="New chat in Chat"/);
+  assert.match(html, /aria-label="Remove project lora"/);
+  assert.match(html, /aria-label="Remove project other"/);
+  assert.doesNotMatch(html, /aria-label="Remove project Chat"/);
+  assert.doesNotMatch(html, /group-count/);
+  assert.doesNotMatch(html, />Choose Project</);
 });
 
 test("switching workspace clears an unchanged agent override", () => {
@@ -511,6 +572,76 @@ test("assistant text becomes activity only when the same model turn proceeds to 
   assert.equal(withTool.content, "");
   assert.equal(withTool.sections[0].title, "Assistant content");
   assert.equal(withTool.sections[1].calls[0].id, "call-2");
+});
+
+test("sequential tool calls merge when no assistant text separates them", () => {
+  const initial = { role: "assistant", content: "", status: "running", sections: [] };
+  const events = [
+    { kind: "model.tool_call.completed", data: { call_id: "call-a", name: "read", arguments: {} } },
+    { kind: "tool.completed", data: { call_id: "call-a" } },
+    { kind: "model.tool_call.completed", data: { call_id: "call-b", name: "glob", arguments: {} } },
+    { kind: "tool.completed", data: { call_id: "call-b" } },
+  ];
+  const live = events.reduce(
+    (message, event) => appModule.projectLiveAssistantEvent(message, event, 2),
+    initial,
+  );
+  const [, history] = appModule.historyToMessages([
+    { role: "user", content: "Inspect." },
+    { role: "assistant", content: "", tool_calls: [{ id: "call-a", function: { name: "read", arguments: {} } }] },
+    { role: "tool", content: "result-a", tool_call_id: "call-a", name: "read" },
+    { role: "assistant", content: "", tool_calls: [{ id: "call-b", function: { name: "glob", arguments: {} } }] },
+    { role: "tool", content: "result-b", tool_call_id: "call-b", name: "glob" },
+  ]);
+
+  for (const message of [live, history]) {
+    const toolSections = message.sections.filter((section) => section.type === "tools");
+    assert.equal(toolSections.length, 1);
+    assert.deepEqual(toolSections[0].calls.map((call) => call.id), ["call-a", "call-b"]);
+    assert.equal(toolSections[0].status, "done");
+  }
+});
+
+test("assistant text keeps sequential tool calls in separate groups", () => {
+  const initial = { role: "assistant", content: "", status: "running", sections: [] };
+  const events = [
+    { kind: "model.tool_call.completed", data: { call_id: "call-a", name: "read", arguments: {} } },
+    { kind: "tool.completed", data: { call_id: "call-a" } },
+    { kind: "model.text.delta", data: { text: "Checking another source." } },
+    { kind: "model.tool_call.completed", data: { call_id: "call-b", name: "glob", arguments: {} } },
+  ];
+  const live = events.reduce(
+    (current, event) => appModule.projectLiveAssistantEvent(current, event, 2),
+    initial,
+  );
+  const [, history] = appModule.historyToMessages([
+    { role: "user", content: "Inspect." },
+    { role: "assistant", content: "", tool_calls: [{ id: "call-a", function: { name: "read", arguments: {} } }] },
+    { role: "tool", content: "result-a", tool_call_id: "call-a", name: "read" },
+    { role: "assistant", content: "Checking another source." },
+    { role: "assistant", content: "", tool_calls: [{ id: "call-b", function: { name: "glob", arguments: {} } }] },
+  ]);
+
+  for (const message of [live, history]) {
+    assert.deepEqual(message.sections.map((section) => section.type), ["tools", "text", "tools"]);
+    assert.equal(message.content, "");
+  }
+});
+
+test("hidden reasoning does not split otherwise adjacent tool calls", () => {
+  const [, message] = appModule.historyToMessages([
+    { role: "user", content: "Inspect." },
+    { role: "assistant", content: "", tool_calls: [{ id: "call-a", function: { name: "read", arguments: {} } }] },
+    { role: "tool", content: "result-a", tool_call_id: "call-a", name: "read" },
+    { role: "assistant", content: "", reasoning_content: "Need another source." },
+    { role: "assistant", content: "", tool_calls: [{ id: "call-b", function: { name: "glob", arguments: {} } }] },
+  ]);
+
+  assert.equal(message.sections.filter((section) => section.type === "tools").length, 1);
+  assert.deepEqual(
+    message.sections.find((section) => section.type === "tools").calls.map((call) => call.id),
+    ["call-a", "call-b"],
+  );
 });
 
 test("a tool failure stays local when the agent execution recovers", () => {
