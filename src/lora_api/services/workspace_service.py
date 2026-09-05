@@ -10,8 +10,6 @@ from lora_api.models.responses import (
 )
 from lora_api.project_state import active_project_scope_id, build_session_scopes
 
-IGNORED_DIRECTORIES = {".git", ".lora", ".venv", "node_modules", "__pycache__"}
-IGNORED_FILES = {".env", "nul"}
 MAX_DIRECTORY_ENTRIES = 2_000
 MAX_TEXT_FILE_BYTES = 1_000_000
 
@@ -28,10 +26,6 @@ def list_workspace_entries(
         raise NotADirectoryError(relative_path or ".")
     entries: list[WorkspaceEntryResponse] = []
     for child in sorted(directory.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold())):
-        if child.is_dir() and child.name in IGNORED_DIRECTORIES:
-            continue
-        if child.is_file() and (child.name.casefold() in IGNORED_FILES or child.name.startswith(".pygent_bash_output_")):
-            continue
         try:
             resolved = child.resolve()
             resolved.relative_to(root)

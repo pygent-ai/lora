@@ -8,10 +8,10 @@ import {
   toggleTrace,
 } from "./layoutState.js";
 
-test("desktop workbench layout state starts with history and trace expanded", () => {
+test("desktop workbench starts with navigation visible and inspector tucked away", () => {
   assert.deepEqual(createInitialLayoutState(), {
     historyCollapsed: false,
-    traceCollapsed: false,
+    traceCollapsed: true,
   });
 });
 
@@ -22,15 +22,15 @@ test("desktop workbench layout state toggles history and trace independently", (
 
   assert.deepEqual(historyCollapsed, {
     historyCollapsed: true,
-    traceCollapsed: false,
+    traceCollapsed: true,
   });
   assert.deepEqual(traceCollapsed, {
     historyCollapsed: true,
-    traceCollapsed: true,
+    traceCollapsed: false,
   });
   assert.deepEqual(toggleHistory(traceCollapsed), {
     historyCollapsed: false,
-    traceCollapsed: true,
+    traceCollapsed: false,
   });
 });
 

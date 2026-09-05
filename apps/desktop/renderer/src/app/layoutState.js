@@ -1,9 +1,9 @@
-export const COMPACT_LAYOUT_QUERY = "(max-width: 1280px)";
+export const COMPACT_LAYOUT_QUERY = "(max-width: 1100px)";
 
 export function createInitialLayoutState({ compact = false } = {}) {
   return {
     historyCollapsed: compact,
-    traceCollapsed: compact,
+    traceCollapsed: true,
   };
 }
 

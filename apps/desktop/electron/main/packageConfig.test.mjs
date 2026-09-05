@@ -31,6 +31,10 @@ test("Choose Project uses the native directory picker", () => {
   assert.match(electronPreload, /project:choose-directory/);
 });
 
+test("desktop window does not show the default Electron menu", () => {
+  assert.match(electronMain, /mainWindow\.removeMenu\(\)/);
+});
+
 test("electron-builder bundles the PyInstaller lora-api output", () => {
   const extraResources = packageJson.build.extraResources;
 

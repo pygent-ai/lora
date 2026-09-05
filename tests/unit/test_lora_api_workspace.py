@@ -19,8 +19,10 @@ def test_workspace_lists_directories_first_and_reads_text(tmp_path: Path) -> Non
     (project / "src").mkdir()
     (project / "src" / "main.py").write_bytes(b"print('ok')\n")
     (project / "README.md").write_text("# Demo\n", encoding="utf-8")
-    (project / ".git").mkdir()
+    for name in (".git", ".lora", ".venv", "node_modules", "__pycache__"):
+        (project / name).mkdir()
     (project / ".env").write_text("SECRET=value", encoding="utf-8")
+    (project / ".pygent_bash_output_test").write_text("output", encoding="utf-8")
     scope_id = f"project:{project.resolve()}"
 
     root = list_workspace_entries(context, scope_id=scope_id)
@@ -28,7 +30,14 @@ def test_workspace_lists_directories_first_and_reads_text(tmp_path: Path) -> Non
     opened = read_workspace_file(context, scope_id=scope_id, relative_path="src/main.py")
 
     assert [(item.name, item.kind) for item in root.entries] == [
+        (".git", "directory"),
+        (".lora", "directory"),
+        (".venv", "directory"),
+        ("__pycache__", "directory"),
+        ("node_modules", "directory"),
         ("src", "directory"),
+        (".env", "file"),
+        (".pygent_bash_output_test", "file"),
         ("README.md", "file"),
     ]
     assert [item.path for item in source.entries] == ["src/main.py"]

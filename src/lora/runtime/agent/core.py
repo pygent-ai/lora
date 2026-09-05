@@ -99,11 +99,6 @@ class _DeepSeekAdapter(OpenAICompatibleAdapter):
         return freeze_json_object(body)
 
 
-def _route_supports_streaming(route: Any) -> bool:
-    """DeepSeek can emit malformed JSON fragments for long streamed tool arguments."""
-    return "api.deepseek.com" not in route.base_url.lower()
-
-
 def _preferred_model_route(config: ResolvedAgentConfig) -> ModelRouteConfig:
     routes_by_id = {route.id: route for route in config.routes}
     return routes_by_id[config.fallback[0]]
@@ -235,7 +230,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 for route in routes
             },
             capabilities={
-                route.id: ModelProviderCapabilities(streaming=_route_supports_streaming(route)) for route in routes
+                route.id: ModelProviderCapabilities(streaming=True) for route in routes
             },
         )
 

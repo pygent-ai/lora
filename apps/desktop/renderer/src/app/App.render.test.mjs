@@ -112,7 +112,7 @@ test("trace events without content expand to their complete payload", () => {
   assert.match(expanded, /&quot;messages&quot;/);
 });
 
-test("trace panel provides expand-all and collapse-all controls", () => {
+test("trace panel starts with an overview and retains raw-event navigation", () => {
   const html = renderToStaticMarkup(
     React.createElement(appModule.TracePanel, {
       activeSession: { session_id: "session-1", last_case_run_id: "run-1" },
@@ -124,11 +124,11 @@ test("trace panel provides expand-all and collapse-all controls", () => {
     }),
   );
 
-  assert.match(html, />Expand all</);
-  assert.match(html, />Collapse all</);
-  assert.match(html, /aria-label="Expand model.request"/);
-  assert.match(html, /aria-label="Filter events by prefix"/);
-  assert.match(html, />model</);
+  assert.match(html, /当前任务/);
+  assert.match(html, /原始事件/);
+  assert.match(html, /工具调用/);
+  assert.match(html, /aria-label="Trace tabs"/);
+  assert.doesNotMatch(html, /aria-label="Expand model.request"/);
 });
 
 test("trace event prefix filters are derived from the first type segment", () => {
@@ -341,6 +341,17 @@ test("new chat stays enabled while another session is running", () => {
   assert.doesNotMatch(html, /title="New chat"[^>]*disabled/);
 });
 
+test("legacy model tool IDs pair calls with their results", () => {
+  const tools = appModule.traceToolEvents([
+    { id: "evt-call", type: "tool.call", payload: { model_tool_call_id: "model-1", tool_name: "read", args: { path: "README.md" } } },
+    { id: "evt-result", type: "tool.result", payload: { model_tool_call_id: "model-1", tool_call_id: "legacy-event-id", result: "actual file content" } },
+  ]);
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].payload.status, "success");
+  assert.equal(tools[0].payload.result, "actual file content");
+  assert.match(appModule.traceEventDetails(tools[0], "Tools"), /actual file content/);
+});
+
 test("project groups create chats directly and omit session counts", () => {
   const html = renderToStaticMarkup(
     React.createElement(appModule.SessionSidebar, {
@@ -482,7 +493,6 @@ test("history, chat, and trace share one non-overlay grid", async () => {
   );
   assert.doesNotMatch(css, /\.trace\s*{[^}]*position:\s*fixed/);
   assert.doesNotMatch(css, /\.workbench\s*{/);
-  assert.doesNotMatch(css, /@media\s*\(max-width:/);
 });
 
 test("layout mode is represented by the same state that drives panel toggles", () => {

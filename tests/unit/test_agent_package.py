@@ -42,7 +42,6 @@ from lora.runtime.agent.core import (
     _actual_model_route,
     _model_route_trace_payload,
     _preferred_model_route,
-    _route_supports_streaming,
     _verify_ssl_from_env,
 )
 from lora.runtime.agent.common import DEFAULT_REACT_MAX_STEPS
@@ -101,9 +100,17 @@ def test_lora_foreground_uses_pygent_030_native_agent_and_compressor(
     assert model_agent.foreground.react.max_model_calls == DEFAULT_REACT_MAX_STEPS
 
 
-def test_deepseek_routes_disable_streaming_for_reliable_tool_arguments() -> None:
-    assert _route_supports_streaming(SimpleNamespace(base_url="https://api.deepseek.com")) is False
-    assert _route_supports_streaming(SimpleNamespace(base_url="https://api.openai.com/v1")) is True
+@pytest.mark.parametrize("base_url", ["https://api.deepseek.com", "https://api.openai.com/v1"])
+def test_model_invoker_enables_streaming_for_all_routes(monkeypatch, base_url: str) -> None:
+    from lora.runtime.agent import core
+
+    route = SimpleNamespace(id="primary", provider="openai", base_url=base_url, api_key="test")
+    agent = SimpleNamespace(_resolved_routes=lambda: (route,))
+    monkeypatch.setattr(core, "OpenAICompatibleClient", lambda **kwargs: object())
+    monkeypatch.setattr(core, "DefaultModelInvoker", lambda **kwargs: kwargs)
+
+    invoker = LoraAgent._build_model_invoker(agent)
+    assert invoker["capabilities"]["primary"].streaming is True
 
 
 def test_coding_agent_uses_provider_generation_defaults(tmp_path: Path) -> None:

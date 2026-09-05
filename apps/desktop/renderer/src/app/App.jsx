@@ -4,19 +4,22 @@ import {
   FolderCode,
   ArrowDown,
   ArrowUp,
+  ChevronRight,
+  Check,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Plus,
-  SendHorizontal,
+  Search,
   Settings as SettingsIcon,
   Trash2,
   X,
 } from "lucide-react";
 
 import { createApiClient } from "../shared/api/client.js";
-import { ProjectPicker } from "../features/projects/ProjectPicker.jsx";
+import { loadWorkbenchPreferences, saveWorkbenchPreferences } from "./workbenchPreferences.js";
+import { DEFAULT_PANEL_WIDTHS, PANEL_LIMITS, normalizePanelWidths, fitPanelWidths } from "./panelWidths.js";
 import { projectPathKey } from "../features/projects/projectPaths.js";
 import { FileExplorer } from "../features/workspace/FileExplorer.jsx";
 import { PowerShellPanel } from "../features/workspace/PowerShellPanel.jsx";
@@ -49,18 +52,37 @@ const EMPTY_SETTINGS = {
   context_compression_trigger_ratio: 0.9,
 };
 
-const TRACE_TABS = ["Events", "Context", "Tools", "Changes", "Config"];
+const TRACE_TABS = ["Overview", "Tools", "Changes", "Events", "Context", "Config"];
+const INSPECTOR_LABELS = { Overview: "概览", Events: "事件", Context: "上下文", Tools: "工具", Changes: "文件活动", Config: "配置", Trace: "执行详情", Files: "文件", PowerShell: "终端" };
 const TOOL_ARGUMENT_PREVIEW_LIMIT = 4_000;
 const TOOL_RESULT_PREVIEW_LIMIT = 6_000;
 const TRACE_RENDER_LIMIT = 300;
 
 export function App() {
   const api = useMemo(() => createApiClient(), []);
+  const workbenchRef = useRef(null);
+  const [panelWidths, setPanelWidths] = useState(() => normalizePanelWidths(loadWorkbenchPreferences().panelWidths));
+  const [workbenchWidth, setWorkbenchWidth] = useState(globalThis.window?.innerWidth || 1360);
+  const [resizingPanel, setResizingPanel] = useState(false);
+  useEffect(() => {
+    const node = workbenchRef.current;
+    const observer = new ResizeObserver(([entry]) => setWorkbenchWidth(entry.contentRect.width));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!resizingPanel) saveWorkbenchPreferences({ panelWidths });
+  }, [panelWidths, resizingPanel]);
   const [layout, setLayout] = useState(() => {
     const compact = compactLayoutMatches();
-    return { ...createInitialLayoutState({ compact }), compact };
+    const saved = loadWorkbenchPreferences().layout;
+    const initial = createInitialLayoutState({ compact });
+    return { ...initial, ...(!compact && saved && typeof saved.historyCollapsed === "boolean" && typeof saved.traceCollapsed === "boolean" ? saved : {}), compact };
   });
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
+  useEffect(() => {
+    if (!layout.compact) saveWorkbenchPreferences({ layout: { historyCollapsed: layout.historyCollapsed, traceCollapsed: layout.traceCollapsed } });
+  }, [layout]);
   const [projects, setProjects] = useState([]);
   const [sessionGroups, setSessionGroups] = useState([]);
   const [activeScopeId, setActiveScopeId] = useState("");
@@ -76,7 +98,7 @@ export function App() {
   const [runningSessionIds, setRunningSessionIds] = useState({});
   const [approvals, setApprovals] = useState([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const projectChooserBusyRef = useRef(false);
   const activeSessionIdRef = useRef("");
   const messagesRef = useRef([]);
   const runningSessionIdsRef = useRef({});
@@ -109,10 +131,12 @@ export function App() {
     }
     const compactLayout = matchMedia(COMPACT_LAYOUT_QUERY);
     const syncCompactLayout = (event) => {
-      setLayout((current) => ({
-        ...adaptLayoutToCompactViewport(current, event.matches),
-        compact: event.matches,
-      }));
+      setLayout((current) => {
+        const saved = loadWorkbenchPreferences().layout;
+        const restored = !event.matches && current.compact && saved && typeof saved.historyCollapsed === "boolean" && typeof saved.traceCollapsed === "boolean"
+          ? saved : current;
+        return { ...adaptLayoutToCompactViewport(restored, event.matches), compact: event.matches };
+      });
     };
     syncCompactLayout(compactLayout);
     compactLayout.addEventListener("change", syncCompactLayout);
@@ -541,27 +565,48 @@ export function App() {
     [api, refreshWorkbench, settings],
   );
 
-  const handleChooseProject = useCallback(() => setProjectPickerOpen(true), []);
-
-  const handleSwitchProject = useCallback(async (workspaceRoot) => {
-    if (Object.keys(runningSessionIdsRef.current).length) {
-      throw new Error("Wait for running chats to finish before switching projects.");
-    }
-    if (projectPathKey(workspaceRoot) === projectPathKey(settings.workspace_root)) return;
+  const handleChooseProject = useCallback(async (newTask = false) => {
+    if (projectChooserBusyRef.current) return;
+    projectChooserBusyRef.current = true;
     try {
-      setStatus("Opening project");
       setError("");
       setNotice("");
+      const chooseDirectory = globalThis.window?.loraDesktop?.chooseProjectDirectory;
+      if (typeof chooseDirectory !== "function") {
+        setError("请在桌面应用中打开项目，以使用系统文件夹选择器。");
+        return;
+      }
+      const workspaceRoot = await chooseDirectory(settings.workspace_root);
+      if (!workspaceRoot || projectPathKey(workspaceRoot) === projectPathKey(settings.workspace_root)) return;
+      if (Object.keys(runningSessionIdsRef.current).length) {
+        setError("当前任务结束后即可切换项目。");
+        return;
+      }
+      setStatus("Opening project");
       await api.updateSettings({ workspaceRoot, agent: "" });
-      await refreshWorkbench({ selectFirst: true });
+      if (newTask === true) {
+        const session = await api.createSession({ caseId: "chat", mode: "chat" });
+        await refreshWorkbench({ selectSessionId: session.session_id });
+      } else {
+        await refreshWorkbench({ selectFirst: true });
+      }
       setNotice("Project opened");
     } catch (err) {
       setStatus("Error");
-      throw new Error(readableError(err));
+      setError(readableError(err));
+    } finally {
+      projectChooserBusyRef.current = false;
     }
   }, [api, refreshWorkbench, settings.workspace_root]);
 
   const appClassName = appLayoutClassName(layout);
+  const fittedWidths = fitPanelWidths(panelWidths, layout, workbenchWidth);
+  function resizePanel(side, width) {
+    const other = side === "history" ? fittedWidths.trace : fittedWidths.history;
+    const [minimum, maximum] = PANEL_LIMITS[side];
+    const limit = Math.max(minimum, Math.min(maximum, workbenchWidth - other - 320));
+    setPanelWidths((current) => ({ ...current, [side]: Math.max(minimum, Math.min(limit, width)) }));
+  }
 
   async function handleApproval(approval, approved) {
     try {
@@ -578,7 +623,9 @@ export function App() {
   }
 
   return (
-    <main aria-label="Workbench" className={appClassName}>
+    <main ref={workbenchRef} aria-label="Workbench" className={`${appClassName}${resizingPanel ? " resizing-panels" : ""}`} style={{ "--history-width": `${fittedWidths.history}px`, "--trace-width": `${fittedWidths.trace}px` }}>
+      {!layout.historyCollapsed && <PanelDivider side="history" width={fittedWidths.history} max={Math.max(200, Math.min(480, workbenchWidth - fittedWidths.trace - 320))} onResize={(width) => resizePanel("history", width)} onDragging={setResizingPanel} />}
+      {!layout.traceCollapsed && <PanelDivider side="trace" width={fittedWidths.trace} max={Math.max(260, Math.min(720, workbenchWidth - fittedWidths.history - 320))} onResize={(width) => resizePanel("trace", width)} onDragging={setResizingPanel} />}
       <SessionSidebar
         collapsed={layout.historyCollapsed}
         settings={settings}
@@ -607,6 +654,13 @@ export function App() {
         api={api}
         onSendMessage={handleSendMessage}
         onApproval={handleApproval}
+        projects={projects}
+        onSelectProject={handleCreateSession}
+        onChooseProject={() => handleChooseProject(true)}
+        onChangePermissions={async (approvalsEnabled) => {
+          const nextSettings = await api.updateSettings({ approvalsEnabled });
+          setSettings(nextSettings);
+        }}
       />
       <TracePanel
         api={api}
@@ -632,13 +686,40 @@ export function App() {
           onSave={handleSaveSettings}
         />
       )}
-      {projectPickerOpen && (
-        <ProjectPicker projects={projects} currentPath={settings.workspace_root}
-          disabled={hasRunningSessions} onSelect={handleSwitchProject}
-          onClose={() => setProjectPickerOpen(false)} />
-      )}
     </main>
   );
+}
+
+function PanelDivider({ side, width, max, onResize, onDragging }) {
+  const dragRef = useRef(null);
+  function stop(event) {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    onDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+  return <div className={`panel-divider panel-divider-${side}`} role="separator" aria-label={side === "history" ? "调整项目面板宽度" : "调整详情面板宽度"}
+    aria-orientation="vertical" aria-valuemin={PANEL_LIMITS[side][0]} aria-valuemax={max} aria-valuenow={width} tabIndex={0}
+    title="拖动调整宽度，双击恢复默认；方向键微调"
+    onPointerDown={(event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.currentTarget.focus();
+      dragRef.current = { x:event.clientX, width };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      onDragging(true);
+    }}
+    onPointerMove={(event) => {
+      if (dragRef.current) onResize(dragRef.current.width + (event.clientX - dragRef.current.x) * (side === "history" ? 1 : -1));
+    }} onPointerUp={stop} onPointerCancel={stop} onLostPointerCapture={stop}
+    onDoubleClick={() => onResize(DEFAULT_PANEL_WIDTHS[side])}
+    onKeyDown={(event) => {
+      if (event.key === "Home") { event.preventDefault(); onResize(DEFAULT_PANEL_WIDTHS[side]); }
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        onResize(width + (event.key === "ArrowRight" ? 1 : -1) * (side === "history" ? 1 : -1) * (event.shiftKey ? 40 : 10));
+      }
+    }} />;
 }
 
 export function appLayoutClassName(layout) {
@@ -668,6 +749,9 @@ export function SessionSidebar({
   onToggle,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState({});
+  const [query, setQuery] = useState("");
+  const search = query.trim().toLocaleLowerCase();
+  const filteredGroups = sessionGroups.map((group) => ({ ...group, sessions: (group.sessions || []).filter((session) => !search || `${session.title || ""} ${session.session_id || ""} ${group.scope?.label || ""}`.toLocaleLowerCase().includes(search)) })).filter((group) => !search || group.sessions.length);
   const [acknowledgedStatuses, setAcknowledgedStatuses] = useState(loadAcknowledgedSessionStatuses);
 
   function toggleGroup(scopeId) {
@@ -701,12 +785,17 @@ export function SessionSidebar({
           </button>
         </div>
 
-        <div className="section-label">Sessions</div>
+        {!collapsed && <>
+          <button className="new-task-button" type="button" onClick={() => onCreateSession()}><Plus size={18} aria-hidden="true" />新建任务</button>
+          <label className="session-search"><Search size={16} aria-hidden="true" /><input aria-label="搜索任务" placeholder="搜索任务或项目" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+        </>}
+        <div className="section-label">项目与任务</div>
         <div className="session-groups">
           {sessionGroups.length === 0 && <div className="empty-state">No chats yet</div>}
-          {sessionGroups.map((group) => {
+          {search && filteredGroups.length === 0 && <div className="empty-state">没有匹配的任务，试试其他关键词。</div>}
+          {filteredGroups.map((group) => {
             const scope = group.scope || {};
-            const isCollapsed = collapsedGroups[scope.scope_id] ?? group.collapsed;
+            const isCollapsed = !search && (collapsedGroups[scope.scope_id] ?? group.collapsed);
             const isCurrentProject = scope.scope_id === scopeIdFromWorkspace(settings.workspace_root);
             const canSwitchBeforeRemoving = !scope.workspace_root || projects.some(
               (project) => project.workspace_root
@@ -770,7 +859,7 @@ export function SessionSidebar({
           </div>
           <button className="plain-action" title="Settings" type="button" onClick={onOpenSettings}>
             <SettingsIcon aria-hidden="true" />
-            <span className="plain-action-label">Settings</span>
+            <span className="plain-action-label">设置</span>
           </button>
         </div>
       </div>
@@ -804,6 +893,7 @@ function SessionRow({
       tabIndex={0}
       onClick={selectSession}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           selectSession();
@@ -836,45 +926,65 @@ function SessionRow({
   );
 }
 
-function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, approvals, api, onSendMessage, onApproval }) {
+function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, approvals, api, onSendMessage, onApproval, projects = [], onSelectProject, onChooseProject, onChangePermissions }) {
   const [draft, setDraft] = useState("");
+  const [configuring, setConfiguring] = useState(false);
+  const [configError, setConfigError] = useState("");
+  const empty = messages.length === 0;
+  const selectedScope = activeSession?.scope_id || scopeIdFromWorkspace(settings.workspace_root);
+  async function configure(action) {
+    setConfiguring(true);
+    setConfigError("");
+    try { await action(); } catch (err) { setConfigError(readableError(err)); }
+    finally { setConfiguring(false); }
+  }
   const transcriptRef = useRef(null);
+  const composerRef = useRef(null);
+  const followTranscriptRef = useRef(true);
+  const [awayFromLatest, setAwayFromLatest] = useState(false);
   const chatTitle = activeSession?.title || "Select or create a chat session";
 
   useEffect(() => {
-    scrollTranscriptToLatest(transcriptRef.current);
+    if (followTranscriptRef.current) scrollTranscriptToLatest(transcriptRef.current);
   }, [messages, activityCollapseToken]);
+  useEffect(() => {
+    followTranscriptRef.current = true;
+    setAwayFromLatest(false);
+    scrollTranscriptToLatest(transcriptRef.current);
+  }, [activeSession?.session_id]);
+  useEffect(() => {
+    const input = composerRef.current;
+    if (input) { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 200)}px`; }
+  }, [draft]);
 
   function submit() {
     const text = draft.trim();
-    if (!text) {
+    if (!text || running || configuring) {
       return;
     }
     setDraft("");
+    followTranscriptRef.current = true;
     onSendMessage(text);
   }
 
   return (
-    <section className="chat" aria-label="Chat">
+    <section className={`chat${empty ? " chat-empty" : ""}`} aria-label="Chat">
       <header className="chat-header">
         <div className="chat-title">
           <h2 title={chatTitle}>{chatTitle}</h2>
           <p>
-            {settings.agent || "default"} / {primaryModel(settings)} / max_steps {settings.max_steps}
-            {" / "}
-            context {formatContextWindow(settings.context_window)}
+            <span title={settings.workspace_root}>{activeSession?.scope_id === "conversation" ? "独立对话" : shortPath(settings.workspace_root) || "未选择项目"}</span>
+            <span aria-hidden="true"> · </span>{primaryModel(settings)}
           </p>
         </div>
         <div className={`status-pill ${statusTone(status)}`}>{statusLabel(status)}</div>
       </header>
 
-      <div className="transcript" ref={transcriptRef}>
-        {messages.length === 0 && (
-          <div className="welcome">
-            <h3>Lora Workbench</h3>
-            <p>Start a chat, inspect runtime events, and tune the local runtime from Settings.</p>
-          </div>
-        )}
+      <div className="transcript" ref={transcriptRef} onScroll={(event) => {
+        const node = event.currentTarget;
+        followTranscriptRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 64;
+        setAwayFromLatest(!followTranscriptRef.current);
+      }}>
         {messages.map((message) => (
           <MessageRow key={message.id} message={message} activityCollapseToken={activityCollapseToken} api={api} />
         ))}
@@ -895,10 +1005,23 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
       ))}
 
       <footer className="composer">
+        {messages.length === 0 && (
+          <div className="welcome">
+            <span className="welcome-eyebrow">LORA WORKSPACE</span>
+            <h3>从一个任务开始</h3>
+            <p>描述你的目标，Lora 会结合当前项目分析、执行并整理结果。</p>
+            <div className="starter-actions">{["介绍这个项目的结构", "检查当前代码中的问题", "梳理待完成的工作"].map((prompt) => <button key={prompt} type="button" onClick={() => { setDraft(prompt); composerRef.current?.focus(); }}>{prompt}<ArrowUp size={16} aria-hidden="true" /></button>)}</div>
+          </div>
+        )}
+
+        {awayFromLatest && <button className="jump-latest" type="button" onClick={() => { followTranscriptRef.current = true; scrollTranscriptToLatest(transcriptRef.current); setAwayFromLatest(false); }}><ArrowDown size={14} />回到最新</button>}
+        <div className="composer-surface">
         <div className="composer-box">
           <textarea
-            disabled={running}
-            placeholder={running ? "Lora is running..." : "Message Lora..."}
+            ref={composerRef}
+            aria-label="任务内容"
+            disabled={running || configuring}
+            placeholder={running ? "Lora 正在执行任务…" : "描述任务，或继续追问…"}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -908,14 +1031,77 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
               }
             }}
           />
-          <button className="send" disabled={running || !draft.trim()} type="button" onClick={submit}>
-            <SendHorizontal aria-hidden="true" />
-            {running ? "Running" : "Send"}
-          </button>
+        </div>
+        <div className="composer-context">
+          {!empty ? <span className="composer-option" title={selectedScope === "conversation" ? "独立对话" : selectedScope.slice(8)}>
+            <FolderCode size={14} aria-hidden="true" />
+            {selectedScope === "conversation" ? "独立对话" : projects.find((project) => scopeIdFromWorkspace(project.workspace_root) === selectedScope)?.label || shortPath(selectedScope.slice(8))}
+          </span> : <ComposerMenu label="任务项目" icon={<FolderCode size={14} aria-hidden="true" />} value={selectedScope} disabled={running || configuring} onChange={(value) => {
+              if (value === "browse") void configure(() => onChooseProject());
+              else void configure(() => onSelectProject(value === "conversation" ? { scope_id: "conversation" } : { scope_id: value, workspace_root: value.slice(8) }));
+            }} options={[
+              { value:"conversation", label:"独立对话" },
+              ...(settings.workspace_root && !projects.some((project) => projectPathKey(project.workspace_root) === projectPathKey(settings.workspace_root)) ? [{ value:scopeIdFromWorkspace(settings.workspace_root), label:shortPath(settings.workspace_root), description:settings.workspace_root }] : []),
+              ...projects.map((project) => ({ value:scopeIdFromWorkspace(project.workspace_root), label:project.label || shortPath(project.workspace_root), description:project.workspace_root })),
+              { value:"browse", label:"选择其他文件夹…", action:true },
+            ]} />}
+          <ComposerMenu label="任务权限（全局）" title="全局权限设置，对后续新运行生效" value={settings.approvals_enabled === false ? "full" : "ask"} disabled={running || configuring} onChange={(value) => void configure(() => onChangePermissions(value === "ask"))}
+            options={[{ value:"ask", label:"逐次审批" }, { value:"full", label:"完全访问" }]} />
+          <div className="composer-send-actions">
+            <span className="composer-hint">Enter 发送 · Shift + Enter 换行</span>
+            <button className="send" aria-label={running ? "执行中" : "发送"} title={running ? "执行中" : "发送"} disabled={running || configuring || !draft.trim()} type="button" onClick={submit}>
+              <ArrowUp aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+        {configError && <p className="composer-config-error" role="alert">{configError}</p>}
         </div>
       </footer>
     </section>
   );
+}
+
+function ComposerMenu({ label, title, icon, value, options, disabled, onChange }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const items = menuRef.current?.querySelectorAll('[role^="menuitem"]');
+    const selected = options.findIndex((option) => option.value === value);
+    items?.[Math.max(0, selected)]?.focus();
+    const dismiss = (event) => { if (!rootRef.current?.contains(event.target)) setOpen(false); };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [open]);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  return <div className="composer-menu" ref={rootRef} onBlur={(event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+  }}>
+    <button ref={triggerRef} className="composer-menu-trigger" type="button" title={title} aria-label={label} aria-haspopup="menu" aria-expanded={open} disabled={disabled}
+      onClick={() => setOpen((current) => !current)} onKeyDown={(event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); }
+      }}>
+      {icon}<span>{options.find((option) => option.value === value)?.label || label}</span><ChevronRight size={12} className="composer-menu-chevron" aria-hidden="true" />
+    </button>
+    {open && <div ref={menuRef} className="composer-menu-popup" role="menu" aria-label={label} onKeyDown={(event) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); triggerRef.current?.focus(); }
+      const items = Array.from(menuRef.current.querySelectorAll('[role^="menuitem"]'));
+      const index = items.indexOf(document.activeElement);
+      const target = event.key === "ArrowDown" ? (index + 1) % items.length : event.key === "ArrowUp" ? (index - 1 + items.length) % items.length : event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : -1;
+      if (target >= 0) { event.preventDefault(); items[target]?.focus(); }
+    }}>
+      <div className="composer-menu-heading">{label}</div>
+      {options.map((option) => <button key={option.value} type="button" tabIndex={-1} role={option.action ? "menuitem" : "menuitemradio"} aria-checked={option.action ? undefined : value === option.value}
+        className={`composer-menu-item${option.action ? " menu-action" : ""}`} title={option.description}
+        onClick={() => { setOpen(false); triggerRef.current?.focus(); if (option.value !== value) onChange(option.value); }}>
+        <span>{option.label}{option.description && <small>{option.description}</small>}</span>
+        {value === option.value && <Check size={14} aria-hidden="true" />}
+        {option.action && <Folder size={14} aria-hidden="true" />}
+      </button>)}
+    </div>}
+  </div>;
 }
 
 function MessageRow({ message, activityCollapseToken, api }) {
@@ -1057,7 +1243,7 @@ function renderInlineSegment(segment, key) {
 
 function ActivityMessage({ message, collapseToken, api }) {
   return (
-    <article className="message assistant">
+    <article className={`message assistant${message.status === "running" ? " is-running" : ""}`}>
       <div className="avatar">L</div>
       <div className="bubble">
         <AssistantActivity message={message} collapseToken={collapseToken} api={api} />
@@ -1098,7 +1284,7 @@ function AssistantActivity({ message, collapseToken, api }) {
       >
         <span className="activity-title">
           <span>{header}</span>
-          <span className="activity-toggle">{expanded ? "v" : ">"}</span>
+          <ChevronRight className="activity-chevron" aria-hidden="true" />
         </span>
       </button>
       {showDetail && (
@@ -1158,7 +1344,7 @@ function ToolGroup({ section, api }) {
         onClick={() => setExpanded((value) => !value)}
       >
         <span>{toolGroupTitle(section)}</span>
-        <span className="activity-toggle">{expanded ? "v" : ">"}</span>
+        <ChevronRight className="activity-chevron" aria-hidden="true" />
       </button>
       {expanded && (
         <div className="tool-group-body">
@@ -1223,9 +1409,10 @@ function ToolCallRow({ call, api }) {
 
 export function TracePanel({ api, collapsed, contextSnapshots, events, settings, activeSession, onToggle }) {
   const [panelMode, setPanelMode] = useState("Trace");
-  const [tab, setTab] = useState("Events");
+  const [tab, setTab] = useState("Overview");
   const [eventPrefix, setEventPrefix] = useState("all");
   const [expandedEventKeys, setExpandedEventKeys] = useState(() => new Set());
+  const overviewTools = useMemo(() => traceToolEvents(events), [events]);
   const traceListRef = useRef(null);
   const tabEvents = useMemo(() => traceTabEvents(tab, events), [tab, events]);
   const prefixGroups = useMemo(
@@ -1265,9 +1452,9 @@ export function TracePanel({ api, collapsed, contextSnapshots, events, settings,
     <aside className="trace" aria-label="Trace inspector">
       <header className="trace-header">
         <div className="trace-title">
-          <h3>{panelMode}</h3>
+          <h3>{INSPECTOR_LABELS[panelMode]}</h3>
           <p>{panelMode === "Trace"
-            ? <>Session: {shortId(activeSession?.session_id) || "none"} / Run: {shortId(activeSession?.last_case_run_id) || "ready"}</>
+            ? "运行概览、工具结果与原始记录"
             : projectScopeId ? settings.workspace_root : "No project selected"}</p>
         </div>
         <button
@@ -1278,13 +1465,13 @@ export function TracePanel({ api, collapsed, contextSnapshots, events, settings,
         >
           {collapsed ? <PanelRightOpen aria-hidden="true" /> : <PanelRightClose aria-hidden="true" />}
         </button>
-        <div className="vertical-label">{panelMode.toUpperCase()}</div>
+        <div className="vertical-label">详情</div>
       </header>
 
       <nav className="inspector-modes" aria-label="Inspector modes">
         {["Trace", "Files", "PowerShell"].map((item) => (
           <button className={item === panelMode ? "active" : ""} key={item} type="button" onClick={() => setPanelMode(item)}>
-            {item}
+            {INSPECTOR_LABELS[item]}
           </button>
         ))}
       </nav>
@@ -1298,12 +1485,27 @@ export function TracePanel({ api, collapsed, contextSnapshots, events, settings,
         <nav className="trace-tabs" aria-label="Trace tabs">
           {TRACE_TABS.map((item) => (
             <button className={item === tab ? "tab active" : "tab"} key={item} type="button" onClick={() => setTab(item)}>
-              {item}
+              {INSPECTOR_LABELS[item]}
             </button>
           ))}
         </nav>
 
-        {tab === "Config" ? (
+        {tab === "Overview" ? (
+          <div className="run-overview">
+            <span className="section-label">当前任务</span>
+            <h4>{activeSession?.title || "还没有任务"}</h4>
+            <p className="overview-status">{!events.length ? "执行任务后，这里会显示工具活动与文件记录。" : "执行记录已就绪，可按需查看工具结果与原始事件。"}</p>
+            <div className="overview-metrics">
+              <button type="button" onClick={() => setTab("Tools")}><strong>{overviewTools.length}</strong><span>工具调用</span></button>
+              <button type="button" onClick={() => setTab("Changes")}><strong>{traceTabEvents("Changes", events).length}</strong><span>文件活动</span></button>
+              <button type="button" onClick={() => setTab("Events")}><strong>{events.length}</strong><span>原始事件</span></button>
+            </div>
+            <h5>最近工具活动</h5>
+            {overviewTools.slice(-6).map((event, index) => { const key = `overview-${event.id || index}`; return <TraceEventRow key={key} event={event} tab="Tools" expanded={expandedEventKeys.has(key)} onToggle={() => setExpandedEventKeys((current) => toggleSetValue(current, key))} />; })}
+            {!overviewTools.length && <p className="empty-state">暂无工具调用</p>}
+            <details className="overview-identifiers"><summary>运行标识</summary><p>Session: {activeSession?.session_id || "—"}</p><p>Run: {activeSession?.last_case_run_id || "—"}</p></details>
+          </div>
+        ) : tab === "Config" ? (
         <div className="config-list">
           {configRows(settings).map(([key, value]) => (
             <div className="config-row" key={key}>
@@ -1646,7 +1848,14 @@ function copyContextValue(value) {
 
 export function SettingsPanel({ settings, disabled, onClose, onSave }) {
   const [draft, setDraft] = useState(() => settingsToDraft(settings));
+  const settingsRef = useRef(null);
   const validationError = modelGroupValidationError(draft);
+
+  useEffect(() => {
+    const previous = document.activeElement;
+    settingsRef.current?.querySelector("button")?.focus();
+    return () => previous?.focus?.();
+  }, []);
 
   useEffect(() => {
     setDraft(settingsToDraft(settings));
@@ -1714,11 +1923,19 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
 
   return (
     <div className="settings-backdrop" role="presentation">
-      <section className="settings-panel" aria-label="Settings">
+      <section className="settings-panel" aria-label="Settings" role="dialog" aria-modal="true" ref={settingsRef} onKeyDown={(event) => {
+        if (event.key === "Escape") { event.stopPropagation(); onClose(); }
+        if (event.key === "Tab") {
+          const items = [...settingsRef.current.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [tabindex="0"]')].filter((node) => node.getClientRects().length);
+          const first = items[0], last = items.at(-1);
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        }
+      }}>
         <header className="settings-header">
           <div>
-            <h2>Settings</h2>
-            <p>Configure a Pygent model group, fallback order, and runtime defaults.</p>
+            <h2>设置</h2>
+            <p>管理模型连接、运行参数与工具权限。</p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close settings" title="Close settings">
             <X aria-hidden="true" />
@@ -1726,6 +1943,9 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
         </header>
 
         <div className="settings-form">
+          <details className="settings-disclosure">
+          <summary>项目与 Agent <span>工作目录与配置档案</span></summary>
+          <div className="settings-disclosure-body">
           <label>
             <span>Workspace</span>
             <input value={draft.workspaceRoot} onChange={(event) => setField("workspaceRoot", event.target.value)} />
@@ -1738,14 +1958,16 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
             <span>Model group profile</span>
             <input value={draft.profile} onChange={(event) => setField("profile", event.target.value)} />
           </label>
+          </div>
+          </details>
           <section className="model-group-editor" aria-label="Model group routes">
             <div className="model-group-heading">
               <div>
-                <strong>Model routes</strong>
-                <span>Each failed route advances through the fallback order below.</span>
+                <strong>模型连接</strong>
+                <span>先配置模型与密钥；失败回退策略可在高级设置中调整。</span>
               </div>
               <button className="route-add" type="button" onClick={addRoute}>
-                <Plus aria-hidden="true" /> Add route
+                <Plus aria-hidden="true" /> 添加模型
               </button>
             </div>
             <div className="model-route-list">
@@ -1765,20 +1987,23 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
                     </button>
                   </div>
                   <div className="model-route-grid">
-                    <label><span>Route ID</span><input value={route.id} onChange={(event) => setRoute(index, "id", event.target.value)} /></label>
-                    <label><span>Provider</span><input value={route.provider} onChange={(event) => setRoute(index, "provider", event.target.value)} /></label>
-                    <label><span>Model</span><input value={route.model_name} onChange={(event) => setRoute(index, "model_name", event.target.value)} /></label>
-                    <label><span>Base URL</span><input value={route.base_url} onChange={(event) => setRoute(index, "base_url", event.target.value)} /></label>
-                    <label><span>API key env</span><input value={route.api_key_env} onChange={(event) => setRoute(index, "api_key_env", event.target.value)} /></label>
-                    <label>
-                      <span>API key</span>
-                      <input type="password" autoComplete="off" placeholder={route.api_key_source === "missing" ? "Not configured" : "Leave blank to keep"} value={route.api_key} onChange={(event) => setRoute(index, "api_key", event.target.value)} />
+                    <label><span>模型名称</span><input value={route.model_name} onChange={(event) => setRoute(index, "model_name", event.target.value)} /></label>
+                    <label><span>服务地址 · Base URL</span><input value={route.base_url} onChange={(event) => setRoute(index, "base_url", event.target.value)} /></label>
+                    <label className="route-secret">
+                      <span>API 密钥</span>
+                      <input type="password" autoComplete="off" placeholder={route.api_key_source === "missing" ? "尚未配置" : "留空保留已有密钥"} value={route.api_key} onChange={(event) => setRoute(index, "api_key", event.target.value)} />
                     </label>
+                    <details className="route-advanced"><summary>高级连接参数</summary><div className="model-route-grid">
+                      <label><span>连接标识 · Route ID</span><input value={route.id} onChange={(event) => setRoute(index, "id", event.target.value)} /></label>
+                      <label><span>协议适配器 · Provider</span><input value={route.provider} onChange={(event) => setRoute(index, "provider", event.target.value)} /></label>
+                      <label><span>密钥环境变量</span><input value={route.api_key_env} onChange={(event) => setRoute(index, "api_key_env", event.target.value)} /></label>
+                    </div></details>
                   </div>
                 </article>
               ))}
             </div>
           </section>
+          <details className="settings-disclosure"><summary>高级运行设置 <span>回退顺序、重试与上下文</span></summary><div className="settings-disclosure-body">
           <section className="fallback-editor" aria-label="Fallback order">
             <div className="model-group-heading">
               <div>
@@ -1827,6 +2052,8 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
               onChange={(event) => setField("contextWindow", event.target.value)}
             />
           </label>
+          </div></details>
+          <div className="settings-permissions">
           <label>
             <span>Tool permissions / 工具权限</span>
             <select
@@ -1843,15 +2070,16 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
             完全访问会自动允许所有工具调用；逐次审批会要求确认写入和外部操作（已预授权的工具除外）。
             保存后对所有工作区的新运行生效，正在运行的任务保留原权限。
           </p>
+          </div>
           {validationError && <p className="settings-validation" role="alert">{validationError}</p>}
         </div>
 
         <footer className="settings-actions">
           <button className="plain-action" disabled={disabled} type="button" onClick={onClose}>
-            Cancel
+            取消
           </button>
-          <button className="send" disabled={disabled || Boolean(validationError)} type="button" onClick={() => onSave(draft)}>
-            Save and Reload
+          <button className="send" aria-label="Save and Reload" disabled={disabled || Boolean(validationError)} type="button" onClick={() => onSave(draft)}>
+            保存并应用
           </button>
         </footer>
       </section>
@@ -2314,7 +2542,7 @@ export function traceToolEvents(events) {
     const payload = event.payload || {};
 
     if (type === "tool.call") {
-      const callId = String(payload.tool_call_id || payload.id || event.id || "");
+      const callId = String(payload.model_tool_call_id || payload.tool_call_id || payload.id || event.id || "");
       upsert(callId, {
         tool_call_id: callId,
         tool_name: String(payload.tool_name || payload.name || "tool"),
@@ -2327,7 +2555,7 @@ export function traceToolEvents(events) {
     }
 
     if (type === "tool.result") {
-      const callId = String(payload.tool_call_id || "");
+      const callId = String(payload.model_tool_call_id || payload.tool_call_id || "");
       const status = String(payload.status || "success") === "error" || payload.error ? "error" : "success";
       const patch = {
         tool_call_id: callId,
@@ -2819,17 +3047,7 @@ export function eventSummary(event) {
   }
   if (payload.trace_tool) {
     const status = String(payload.status || "running");
-    const parts = [status];
-    if (payload.has_call) {
-      parts.push("Call");
-    }
-    if (payload.has_result) {
-      parts.push("Result");
-    }
-    const callId = shortId(payload.tool_call_id || "");
-    if (callId) {
-      parts.push(callId);
-    }
+    const parts = [status === "error" ? "失败" : status === "success" ? "已完成" : "运行中"];
     const target = shortToolTarget(payload.tool_name, payload.arguments);
     if (target) {
       parts.push(target);

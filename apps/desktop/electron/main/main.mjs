@@ -93,6 +93,7 @@ async function createWindow() {
       sandbox: false,
     },
   });
+  mainWindow.removeMenu();
 
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
