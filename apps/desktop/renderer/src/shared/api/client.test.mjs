@@ -162,6 +162,23 @@ test("api client removes a project from the sidebar by scope", async () => {
   assert.equal(calls[0].init.method, "DELETE");
 });
 
+test("api client lists and opens project files by scope", async () => {
+  const calls = [];
+  const client = createApiClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  await client.listWorkspaceEntries("project:C:/Projects/lora", "src/lora");
+  await client.readWorkspaceFile("project:C:/Projects/lora", "README.md");
+
+  assert.equal(calls[0], "http://127.0.0.1:8765/workspace/entries?scope_id=project%3AC%3A%2FProjects%2Flora&path=src%2Flora");
+  assert.equal(calls[1], "http://127.0.0.1:8765/workspace/file?scope_id=project%3AC%3A%2FProjects%2Flora&path=README.md");
+});
+
 test("api client fetches tool results by tool call id", async () => {
   const calls = [];
   const client = createApiClient({

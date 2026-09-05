@@ -43,6 +43,10 @@ export function createApiClient(options = {}) {
         ...options,
         method: "DELETE",
       }),
+    listWorkspaceEntries: (scopeId, path = "", options = {}) =>
+      jsonRequest(`/workspace/entries?scope_id=${encodeURIComponent(scopeId)}&path=${encodeURIComponent(path)}`, options),
+    readWorkspaceFile: (scopeId, path, options = {}) =>
+      jsonRequest(`/workspace/file?scope_id=${encodeURIComponent(scopeId)}&path=${encodeURIComponent(path)}`, options),
     listSessions: (options = {}) => jsonRequest("/sessions", options),
     listSessionGroups: (options = {}) => jsonRequest("/sessions/groups", options),
     createSession: (request = {}, options = {}) =>

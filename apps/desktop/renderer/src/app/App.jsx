@@ -18,6 +18,7 @@ import {
 import { createApiClient } from "../shared/api/client.js";
 import { ProjectPicker } from "../features/projects/ProjectPicker.jsx";
 import { projectPathKey } from "../features/projects/projectPaths.js";
+import { FileExplorer } from "../features/workspace/FileExplorer.jsx";
 import { activityHeaderText, runTimingFields } from "./runTiming.js";
 import {
   adaptLayoutToCompactViewport,
@@ -47,7 +48,7 @@ const EMPTY_SETTINGS = {
   context_compression_trigger_ratio: 0.9,
 };
 
-const TRACE_TABS = ["Events", "Context", "Tools", "Files", "Config"];
+const TRACE_TABS = ["Events", "Context", "Tools", "Changes", "Config"];
 const TOOL_ARGUMENT_PREVIEW_LIMIT = 4_000;
 const TOOL_RESULT_PREVIEW_LIMIT = 6_000;
 const TRACE_RENDER_LIMIT = 300;
@@ -607,6 +608,7 @@ export function App() {
         onApproval={handleApproval}
       />
       <TracePanel
+        api={api}
         activeSession={activeSession}
         collapsed={layout.traceCollapsed}
         contextSnapshots={contextSnapshots}
@@ -1218,7 +1220,8 @@ function ToolCallRow({ call, api }) {
   );
 }
 
-export function TracePanel({ collapsed, contextSnapshots, events, settings, activeSession, onToggle }) {
+export function TracePanel({ api, collapsed, contextSnapshots, events, settings, activeSession, onToggle }) {
+  const [panelMode, setPanelMode] = useState("Trace");
   const [tab, setTab] = useState("Events");
   const [eventPrefix, setEventPrefix] = useState("all");
   const [expandedEventKeys, setExpandedEventKeys] = useState(() => new Set());
@@ -1242,6 +1245,9 @@ export function TracePanel({ collapsed, contextSnapshots, events, settings, acti
     [renderedEvents, tab],
   );
   const expandedCount = renderedEventKeys.filter((key) => expandedEventKeys.has(key)).length;
+  const projectScopeId = activeSession?.scope_id === "conversation"
+    ? ""
+    : activeSession?.scope_id || scopeIdFromWorkspace(settings.workspace_root);
 
   useEffect(() => {
     setEventPrefix("all");
@@ -1258,11 +1264,10 @@ export function TracePanel({ collapsed, contextSnapshots, events, settings, acti
     <aside className="trace" aria-label="Trace inspector">
       <header className="trace-header">
         <div className="trace-title">
-          <h3>Trace</h3>
-          <p>
-            Session: {shortId(activeSession?.session_id) || "none"} / Run:{" "}
-            {shortId(activeSession?.last_case_run_id) || "ready"}
-          </p>
+          <h3>{panelMode}</h3>
+          <p>{panelMode === "Trace"
+            ? <>Session: {shortId(activeSession?.session_id) || "none"} / Run: {shortId(activeSession?.last_case_run_id) || "ready"}</>
+            : projectScopeId ? settings.workspace_root : "No project selected"}</p>
         </div>
         <button
           className="icon-button trace-toggle"
@@ -1272,18 +1277,30 @@ export function TracePanel({ collapsed, contextSnapshots, events, settings, acti
         >
           {collapsed ? <PanelRightOpen aria-hidden="true" /> : <PanelRightClose aria-hidden="true" />}
         </button>
-        <div className="vertical-label">TRACE</div>
+        <div className="vertical-label">{panelMode.toUpperCase()}</div>
       </header>
 
-      <nav className="trace-tabs" aria-label="Trace tabs">
-        {TRACE_TABS.map((item) => (
-          <button className={item === tab ? "tab active" : "tab"} key={item} type="button" onClick={() => setTab(item)}>
+      <nav className="inspector-modes" aria-label="Inspector modes">
+        {["Trace", "Files"].map((item) => (
+          <button className={item === panelMode ? "active" : ""} key={item} type="button" onClick={() => setPanelMode(item)}>
             {item}
           </button>
         ))}
       </nav>
 
-      {tab === "Config" ? (
+      {panelMode === "Files" ? (
+        <FileExplorer api={api} scopeId={projectScopeId} workspaceRoot={projectScopeId ? settings.workspace_root : ""} />
+      ) : (
+      <div className="trace-mode-content">
+        <nav className="trace-tabs" aria-label="Trace tabs">
+          {TRACE_TABS.map((item) => (
+            <button className={item === tab ? "tab active" : "tab"} key={item} type="button" onClick={() => setTab(item)}>
+              {item}
+            </button>
+          ))}
+        </nav>
+
+        {tab === "Config" ? (
         <div className="config-list">
           {configRows(settings).map(([key, value]) => (
             <div className="config-row" key={key}>
@@ -1359,6 +1376,8 @@ export function TracePanel({ collapsed, contextSnapshots, events, settings, acti
             })}
           </div>
         </div>
+        )}
+      </div>
       )}
     </aside>
   );
@@ -2249,7 +2268,7 @@ function traceTabEvents(tab, events) {
   if (tab === "Tools") {
     return traceToolEvents(events);
   }
-  if (tab === "Files") {
+  if (tab === "Changes") {
     return events.filter((event) => {
       const type = String(event.type || "");
       return type.startsWith("file.") || type === "diff.created";
@@ -2852,7 +2871,7 @@ export function traceEventDetails(event, tab) {
     }
     return sections.join("\n\n");
   }
-  if (tab === "Files" && isFileTraceEvent(event)) {
+  if (tab === "Changes" && isFileTraceEvent(event)) {
     return safeJsonStringify(payload);
   }
   if (tab === "Events") {

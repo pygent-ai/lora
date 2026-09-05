@@ -85,6 +85,26 @@ class DeleteResponse(BaseModel):
     deleted: bool
 
 
+class WorkspaceEntryResponse(BaseModel):
+    name: str
+    path: str
+    kind: str
+    size: int | None = None
+
+
+class WorkspaceEntriesResponse(BaseModel):
+    root: str
+    path: str
+    entries: list[WorkspaceEntryResponse]
+
+
+class WorkspaceFileResponse(BaseModel):
+    path: str
+    content: str
+    encoding: str
+    size: int
+
+
 class TraceEventsResponse(BaseModel):
     session_id: str
     case_run_id: str
