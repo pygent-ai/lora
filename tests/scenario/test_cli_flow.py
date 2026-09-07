@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lora.core.paths import project_lora_root
+
 
 def _isolated_cli_env(root: Path) -> dict[str, str]:
     home = root / "home"
@@ -170,7 +172,7 @@ class CliScenarioTests(unittest.TestCase):
             root = Path(tmp)
             cases_dir = root / "cases"
             cases_dir.mkdir()
-            (root / ".lora").mkdir()
+            (project_lora_root(root, root / "home" / ".lora")).mkdir(parents=True)
             pass_case = cases_dir / "pass.yaml"
             pass_case.write_text(
                 "\n".join(
@@ -203,7 +205,7 @@ class CliScenarioTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            (root / ".lora" / "regression.json").write_text(
+            (project_lora_root(root, root / "home" / ".lora") / "regression.json").write_text(
                 json.dumps(
                     {
                         "version": "1.0",
@@ -439,7 +441,7 @@ class CliScenarioTests(unittest.TestCase):
             self.assertEqual(run.returncode, 2)
             self.assertIn("workspace.setup[].path", run.stderr)
             self.assertEqual(outside.read_text(encoding="utf-8"), "safe")
-            run_dirs = list((root / ".lora" / "sessions").glob("*/cases/unsafe-case/runs/*"))
+            run_dirs = list((project_lora_root(root, root / "home" / ".lora") / "sessions").glob("*/cases/unsafe-case/runs/*"))
             self.assertEqual(len(run_dirs), 1)
             self.assertFalse((run_dirs[0] / "result.json").exists())
             self.assertFalse((run_dirs[0] / "model_requests.jsonl").exists())
@@ -478,7 +480,7 @@ class CliScenarioTests(unittest.TestCase):
             prompt_event = next(item for item in events if item["type"] == "prompt.rendered")
             rendered_prompt = Path(prompt_event["payload"]["prompt_text_path"]).read_text(encoding="utf-8")
             static_prompt = (
-                root / ".lora" / "sessions" / payload["session_id"] / "context" / "prompts" / "static_prompt.txt"
+                project_lora_root(root, root / "home" / ".lora") / "sessions" / payload["session_id"] / "context" / "prompts" / "static_prompt.txt"
             ).read_text(encoding="utf-8")
 
             self.assertIn("# Identity", static_prompt)

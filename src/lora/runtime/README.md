@@ -4,6 +4,8 @@ Owns model execution, tool execution, context management, and the high-level run
 
 - `agent/`: agent orchestration split by concern.
   - `core.py`: `LoraAgent` construction and run lifecycle.
+  - `model_invoker.py`: native model execution with per-call reasoning display
+    metadata; output resets discard failed-attempt reasoning before persistence.
   - `pipeline.py`: model/tool middleware and authorization.
   - `prompt_models.py`: prompt contracts and render context.
   - `prompts.py`: prompt registry, composition, injection policy, and cache.
@@ -14,6 +16,10 @@ Owns model execution, tool execution, context management, and the high-level run
   source of execution-scoped facts. It carries session/case/run/turn identity,
   model projection, complete persisted history, and deferred file-effect jobs.
 - `context_compression.py`: model-context compaction.
+- `reminders/`: session bootstrap and Git/CLI/Skill observations. Pygent 0.3.6
+  `Reminder` / `format_context` render native runtime context. Tool updates use
+  v2 `AppendToolResultContent` operations with stable input IDs; raw ToolResults
+  remain unchanged. There is no legacy system-reminder renderer or v1 adapter.
 - `tools.py`: tool observation and file-effect discovery.
 - `file_effect_models.py`: dependency-light file-effect contracts.
 - `file_effects.py`: deferred file-effect persistence and execution.
@@ -42,3 +48,11 @@ managed Pygent tool task. There is no hidden observer-owned queue.
 `LoraContext` schema version 2 is the first schema with these run facts. Completed
 records remain readable as history, but an in-flight execution journaled with the
 older context codec must be restarted rather than resumed across this upgrade.
+
+## Eternal conversation projection
+
+Before the asynchronous extractor publishes its first snapshot, each turn restores
+SessionManager history. Once a snapshot is available, native replacement delivers
+that snapshot plus every uncovered message. The suffix starts at a user-turn
+boundary to retain matching tool calls and results; a fully covered history keeps
+its latest exchange for follow-up references. Stored history is not removed.

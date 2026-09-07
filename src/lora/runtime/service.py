@@ -20,7 +20,6 @@ from pygent import (
     IdempotencyPolicy,
     ModelGroupConfig,
     ModelCallLayer,
-    ModelRoute,
     Module,
     PygentAgent,
     ToolAuthorizationDecision,
@@ -35,6 +34,7 @@ from pygent import (
 from pygent.agent import (
     REACT_PROJECTION_OPERATION_KIND,
     ReplaceMessageProjection,
+    format_context,
     encode_react_projection_operation,
 )
 from pygent.llm import ModelResourceRef
@@ -247,21 +247,26 @@ class _MemoryToolFeedbackLayer(Module[AIMessage, ToolMessage]):
         return result, next_context
 
 
-def _recent_conversation_messages(history: list[dict[str, Any]]) -> tuple[Any, ...]:
-    selected = []
-    for item in reversed(history):
-        role = item.get("role")
-        if (
-            role == "assistant"
-            and not selected
-            and item.get("content")
-            and not item.get("tool_calls")
-        ):
-            selected.append(_to_pygent_message(item))
-        elif role == "user":
-            selected.append(_to_pygent_message(item))
-            break
-    return tuple(item for item in reversed(selected) if item is not None)
+def _uncovered_conversation_messages(
+    history: list[dict[str, Any]], covered_through: int
+) -> tuple[Any, ...]:
+    """Keep the uncovered suffix, including its complete opening user turn.
+
+    When the snapshot covers everything, retain the latest exchange so short
+    follow-ups still have their immediate conversational referent.
+    """
+    if not 0 <= covered_through <= len(history):
+        raise ValueError("memory coverage is outside the persisted conversation")
+    start = covered_through
+    if start == len(history) and start:
+        start -= 1
+    while start > 0 and history[start].get("role") != "user":
+        start -= 1
+    return tuple(
+        message
+        for item in history[start:]
+        if (message := _to_pygent_message(item)) is not None
+    )
 
 
 class _DiffExecutor:
@@ -333,6 +338,7 @@ class LoraRuntimeService:
             deployment_namespace=str(Path(config.workspace_root).resolve()),
             context_codecs=(LORA_CONTEXT_CODEC,),
         )
+        self.reminders.runtime = self.runtime
         self.runtime.attach_executor_registry(self.executor_registry)
         self._diff_executor = _DiffExecutor(self)
         standard = StandardTools(workspace_root=config.workspace_root, restrict_to_workspace=False)
@@ -670,6 +676,7 @@ class LoraRuntimeService:
                 repr(
                     (
                         agent.resolved_agent.profile,
+                        agent._model_routes(),
                         tuple(
                             (
                                 route.id,
@@ -686,12 +693,7 @@ class LoraRuntimeService:
             self.model_resolver.register(revision, agent.llm)
             await handle.ensure_profile(
                 profile=agent.resolved_agent.profile,
-                routes=tuple(
-                    ModelRoute(
-                        route.id, provider=route.provider, model=route.model_name
-                    )
-                    for route in routes
-                ),
+                routes=agent._model_routes(),
                 fallback=FallbackPolicy(
                     agent.resolved_agent.fallback or tuple(route.id for route in routes)
                 ),
@@ -740,7 +742,11 @@ class LoraRuntimeService:
         execution: Any,
     ) -> Any:
         handle = await bound.start(message, context, execution=execution)
-        await self._deliver_projection_replacement(handle, context)
+        try:
+            await self._deliver_projection_replacement(handle, context)
+        except BaseException:
+            await handle.cancel()
+            raise
         return handle
 
     async def start_turn(
@@ -992,7 +998,7 @@ class LoraRuntimeService:
                 f"{reminder}\n\n{dynamic_reminder}" if reminder else dynamic_reminder
             )
         if reminder:
-            wrapped = f"{wrapped}\n\n{reminder}"
+            wrapped = f"{wrapped}\n\n{format_context(reminder)}"
         history, _ = _initial_lora_context(
             context=lora_context,
             history=session.history,
@@ -1021,7 +1027,7 @@ class LoraRuntimeService:
             replacement = ReplaceMessageProjection(
                 messages=(
                     snapshot,
-                    *_recent_conversation_messages(session.history),
+                    *_uncovered_conversation_messages(session.history, covered_through),
                     current,
                 ),
                 expected_revision=history.projection_revision + 1,

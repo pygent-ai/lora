@@ -368,7 +368,10 @@ def test_extractor_payload_is_not_silently_truncated_before_validation() -> None
 
 
 def test_memory_context_requires_clarification_for_unacknowledged_conflicts(tmp_path: Path) -> None:
-    prompt = render_memory_context(tmp_path, {"snapshot": {}, "covered_through": 4})
+    prompt = render_memory_context(tmp_path, {
+        "snapshot": {}, "covered_through": 4,
+        "memory_cli_command": '"python" "/memory/dynamic_memory_cli.py" --root "/session/memory"',
+    })
     assert "an override is acknowledged only when" in prompt
     assert "states only the new, contradictory behavior is always unacknowledged" in prompt
     assert "search both dynamic memory and Raw History" in prompt
@@ -380,6 +383,25 @@ def test_memory_context_requires_clarification_for_unacknowledged_conflicts(tmp_
     assert "Stop further exploration immediately" in prompt
     assert "at most 120 words" in prompt
     assert "end the response with exactly one direct clarification question" in prompt
+
+
+@pytest.mark.parametrize("projection", [{}, {"memory_cli_command": ""}, {"memory_cli_command": "  "}, {"snapshot": {"constraints": ["Keep prior work"]}}])
+def test_unpublished_memory_does_not_advertise_an_uninstalled_command(tmp_path: Path, projection: dict) -> None:
+    prompt = render_memory_context(tmp_path, projection)
+    assert "Memory search is not available" in prompt
+    assert "Do not invoke or invent a memory CLI command" in prompt
+    assert "Search command:" not in prompt
+    assert "dynamic-memory-cli" not in prompt
+    assert "search both dynamic memory" not in prompt
+    assert "Raw History" in prompt
+    assert str(tmp_path / "raw-history" / "events.jsonl") in prompt
+
+
+def test_published_memory_uses_the_explicit_command(tmp_path: Path) -> None:
+    command = '"C:/Python/python.exe" "C:/Memory Tools/dynamic_memory_cli.py" --root "C:/Session/memory"'
+    prompt = render_memory_context(tmp_path, {"memory_cli_command": command})
+    assert f"Search command: {command} search <keyword-or-key-phrase>" in prompt
+    assert "Memory search is not available" not in prompt
 
 
 def test_extractor_retains_private_compatibility_boundaries() -> None:

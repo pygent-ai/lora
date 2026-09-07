@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Sequence
 from html import escape
 from typing import Any
 
@@ -68,7 +69,7 @@ def _record(preset: BashCliPreset) -> dict[str, Any]:
 
 
 def _render_entries(
-    values: list[BashCliPreset | dict[str, Any]], *, tag: str
+    values: Sequence[BashCliPreset | dict[str, Any]], *, tag: str
 ) -> list[str]:
     if not values:
         return []

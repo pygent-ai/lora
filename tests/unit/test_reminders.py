@@ -8,7 +8,7 @@ import pytest
 
 from lora.runtime.reminders import BootstrapStatus, ReminderSection, ReminderService
 from lora.runtime.reminders.git_context import adaptive_check_interval
-from lora.runtime.reminders.rendering import render_reminder
+from lora.runtime.reminders.rendering import render_context_body
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
 
@@ -22,7 +22,7 @@ def _create(tmp_path):
 
 
 def test_renderer_orders_sources_in_one_envelope() -> None:
-    reminder = render_reminder(
+    reminder = render_context_body(
         [
             ReminderSection("git.context", 30, ("<git-context />",)),
             ReminderSection("cli.context", 10, ("<cli-context />",), True),
@@ -30,7 +30,7 @@ def test_renderer_orders_sources_in_one_envelope() -> None:
         ]
     )
     assert reminder is not None
-    assert reminder.count("<system-reminder>") == 1
+    assert "<system-reminder>" not in reminder
     assert (
         reminder.index("<cli-context")
         < reminder.index("<skills-context")
@@ -42,6 +42,8 @@ def test_renderer_orders_sources_in_one_envelope() -> None:
 async def test_first_turn_waits_for_complete_snapshot_and_consumes_once(
     tmp_path, monkeypatch
 ) -> None:
+    # Exercise delivery, not the production best-effort Git timeout.
+    monkeypatch.setattr("lora.runtime.reminders.git_context.GIT_STATUS_TIMEOUT_SECONDS", 5.0)
     config, session = _create(tmp_path)
     service = ReminderService(config)
     gate = asyncio.Event()
@@ -61,7 +63,7 @@ async def test_first_turn_waits_for_complete_snapshot_and_consumes_once(
     assert content is not None
     assert "<runtime-context>" in content
     assert 'reason="session-baseline"' in content
-    assert "<system-reminder>" in content
+    assert "<system-reminder>" not in content
     await service.acknowledge_initial(session.session_id, "turn-1", "execution-1")
     assert await service.claim_initial(session.session_id, "turn-2") is None
     assert (

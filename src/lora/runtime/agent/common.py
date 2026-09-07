@@ -51,10 +51,19 @@ def _initial_lora_context(
     checkpoint: object | None = None,
 ) -> tuple[LoraContext, bool]:
     if context.eternal_memory_enabled:
-        # Eternal sessions rebuild the active projection through Pygent's
-        # native ReplaceMessageProjection input. The durable SessionManager
-        # history is deliberately not part of the invocation Context.
-        return context, False
+        if context.memory_covered_through > 0:
+            # A published snapshot and its uncovered tail are delivered together
+            # through ReplaceMessageProjection before inference starts.
+            return context, False
+        # The extractor runs asynchronously. Until it publishes a snapshot,
+        # authoritative history must remain visible, even if a prior checkpoint
+        # came from an empty eternal projection.
+        messages = tuple(
+            converted
+            for item in history
+            if (converted := _to_pygent_message(item)) is not None
+        )
+        return replace(context, messages=messages), False
     if (
         checkpoint is not None
         and (

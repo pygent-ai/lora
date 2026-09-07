@@ -80,7 +80,8 @@ async def test_prepare_turn_waits_for_initial_reminder_before_model_start(tmp_pa
     )
 
     assert FileEffectBaselineStore(session.session_dir).load() is None
-    assert "<system-reminder>" in message.content
+    assert "<runtime-context>" in message.content
+    assert "<system-reminder>" not in message.content
     await service.reminders.release_initial(session.session_id, "turn-1")
     await service.reminders.close()
 
@@ -637,3 +638,21 @@ async def test_eternal_turn_keeps_unbounded_session_history_out_of_pygent_invoca
     assert output.content == message.content
     assert isinstance(returned, LoraContext)
     assert returned.committed_messages == ()
+
+@pytest.mark.asyncio
+async def test_projection_delivery_failure_cancels_started_execution():
+    calls = []
+    class Handle:
+        async def cancel(self):
+            calls.append('cancelled')
+    class Bound:
+        async def start(self, *args, **kwargs):
+            return Handle()
+    async def fail_delivery(*args):
+        raise ValueError('delivery failed')
+    service = SimpleNamespace(_deliver_projection_replacement=fail_delivery)
+    with pytest.raises(ValueError, match='delivery failed'):
+        await LoraRuntimeService._start_agent_execution(
+            service, Bound(), UserMessage(content='hello'), LoraContext(), execution=None,
+        )
+    assert calls == ['cancelled']

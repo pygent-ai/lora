@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from lora.core.paths import project_lora_root
+
 from .prompt_models import PromptRenderContext
 
 
@@ -97,7 +99,9 @@ def _render_system_coding_rules_prompt(ctx: PromptRenderContext) -> str | None:
             "- Add comments only when they explain a non-obvious constraint or decision. Prefer clear code over explanatory noise.",
             "- Preserve existing comments unless removing the code they describe or evidence shows that the comment is wrong.",
             "- Preserve user work. If existing changes are present, work with them and do not revert unrelated files.",
-            "- Run the narrowest relevant verification first, then broader checks when the change's risk or surface area justifies them. If evidence contradicts an assumption, revise the implementation or assumption. If a check cannot be run, report that plainly.",
+            "- Run the narrowest relevant verification first, but define its expected outcome from the request and existing contract, not from your implementation. Check the actual value, state, or effect, not just successful execution. Include a nearby case that must remain unchanged and, where the contract distinguishes accepted from rejected inputs, one on each side of that boundary. Then broaden verification along the affected behavior, not unrelated parts of the project. If a check cannot be run, report that plainly.",
+            "- Verify the requested behavior: confirm that the underlying cause is addressed along the affected execution path. Trace the changed information from its entry to its observable result; check whether a later stage, another supported entry point, or a shared operation still makes the old assumption. Check actual outcomes and existing constraints affected by the change. When the operation promises to preserve information, verify that preservation through the complete operation. A reproducer no longer raising an error or existing tests passing establishes only the behavior those checks actually cover; close any uncovered requirement before declaring completion.",
+            "- Preserve existing behavior unless the user's requirements explicitly change it. Do not modify, weaken, or remove existing test expectations merely to make a regression pass; fix the implementation first. Treat a relevant failing check as evidence to reconcile: inspect its expected and actual outcomes, identify the assumption they contradict, and revise the implementation or assumption before rerunning it. If you believe an existing test is wrong, establish independent evidence from the requirements or documented contract before changing its expectation, and explain that evidence. Do not relax a constraint merely because doing so makes the reported example succeed.",
             "- For UI changes, use the running feature in a browser when the available tools and environment permit it; check the main path and relevant edge cases, and disclose when interactive verification was not possible.",
             "- Security-sensitive code should be handled conservatively; validate and sanitize external input, avoid injection, path traversal, unsafe deserialization, and credential exposure, and never hard-code secrets in source, logs, or version control.",
             "- If the request rests on a misconception or you notice an adjacent problem, explain it, but do not expand the implementation scope without user authorization.",
@@ -186,8 +190,8 @@ def _prompt_render_context_payload(ctx: PromptRenderContext) -> dict[str, Any]:
 
 def _ctx_project_lora_root(ctx: PromptRenderContext) -> Path:
     return (
-        (ctx.project_lora_root or ctx.workspace_root / ".lora").expanduser().resolve()
-    )
+        ctx.project_lora_root or project_lora_root(ctx.workspace_root, _ctx_user_lora_root(ctx))
+    ).expanduser().resolve()
 
 
 def _ctx_user_lora_root(ctx: PromptRenderContext) -> Path:

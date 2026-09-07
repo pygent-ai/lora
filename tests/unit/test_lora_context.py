@@ -123,3 +123,39 @@ def test_pre_0_3_3_checkpoint_rebuilds_from_authoritative_session_history() -> N
     assert compacted is False
     assert [message.content for message in restored.messages] == ["durable user"]
     assert restored.committed_messages == ()
+
+
+def test_eternal_bootstrap_restores_history_instead_of_empty_checkpoint() -> None:
+    context = LoraContext(eternal_memory_enabled=True)
+    checkpoint = context_to_dict(context, registry=LORA_CONTEXT_CODECS)
+    history = [message_to_dict(UserMessage(content="keep this requirement")),
+               message_to_dict(AIMessage(content="agreed plan"))]
+    restored, compacted = _initial_lora_context(
+        context=context, history=history, checkpoint=checkpoint
+    )
+    assert [item.content for item in restored.messages] == [
+        "keep this requirement", "agreed plan"
+    ]
+    assert not compacted
+    assert restored.committed_messages == ()
+
+
+def test_uncovered_memory_suffix_keeps_tool_pairs_and_all_later_turns() -> None:
+    from pygent import ToolCall, ToolMessage, ToolResult
+    from lora.runtime.service import _uncovered_conversation_messages
+
+    messages = [
+        UserMessage(content="covered turn"), AIMessage(content="covered answer"),
+        UserMessage(content="inspect"),
+        AIMessage(tool_calls=(ToolCall(call_id="read-1", name="read", arguments={}),)),
+        ToolMessage(results=(ToolResult(call_id="read-1", name="read", output="data", status="succeeded"),)),
+        AIMessage(content="inspection finished"),
+        UserMessage(content="another requirement"), AIMessage(content="noted"),
+    ]
+    history = [message_to_dict(item) for item in messages]
+    # Snapshot stops after the tool call; keeping only the suffix would orphan its result.
+    result = _uncovered_conversation_messages(history, 4)
+    assert result == tuple(messages[2:])
+    assert _uncovered_conversation_messages(history, 2) == tuple(messages[2:])
+    assert _uncovered_conversation_messages(history, len(history)) == tuple(messages[-2:])
+    assert _uncovered_conversation_messages([], 0) == ()

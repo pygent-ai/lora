@@ -22,3 +22,8 @@ including on reconnect. Active streams wait for final run persistence before
 publishing a terminal event. The desktop uses this contract for both live and
 restored messages, freezes completed durations, and omits elapsed time when it
 is unknown. Durations are displayed in whole seconds, rounded down.
+
+Session detail exposes `runtime_execution_id` and `run_history_start_index` for
+the running case. Reopening a session resumes the execution from its native
+journal. Closing an SSE subscription does not cancel the task. Application
+lifespan cleanup closes the runtime on both normal and exceptional exits.

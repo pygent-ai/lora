@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from lora.core.paths import project_lora_root
+
 
 def default_state_path() -> Path:
     return Path.home() / ".lora" / "gui" / "state.json"
@@ -99,7 +101,7 @@ class SessionScope:
 
 
 def build_session_scopes(state: GuiProjectState, *, active_workspace_root: str | None = None) -> list[SessionScope]:
-    conversation_root = state.state_dir / "conversations"
+    conversation_root = Path.home() / ".lora" / "conversations"
     project_paths = list(state.recent_project_paths or [])
     if active_workspace_root:
         active_project = _resolve_project(active_workspace_root)
@@ -122,7 +124,7 @@ def build_session_scopes(state: GuiProjectState, *, active_workspace_root: str |
                 tooltip=str(project),
                 workspace_root=str(project),
                 runtime_workspace_root=str(project),
-                lora_root=str((project / ".lora").resolve()),
+                lora_root=str(project_lora_root(project)),
             )
         )
 
@@ -133,7 +135,7 @@ def build_session_scopes(state: GuiProjectState, *, active_workspace_root: str |
             tooltip="Conversations without a project path",
             workspace_root=None,
             runtime_workspace_root=str((conversation_root / "workspace").resolve()),
-            lora_root=str((conversation_root / ".lora").resolve()),
+            lora_root=str(conversation_root.resolve()),
         )
     )
     return scopes

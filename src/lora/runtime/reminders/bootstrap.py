@@ -9,7 +9,7 @@ from lora.runtime.agent.common import _now
 from .cli_context import collect_initial_cli
 from .git_context import capture_git_snapshot, render_git_section, snapshot_state
 from .models import InitialSnapshot, ReminderScope, ReminderSection
-from .rendering import render_reminder
+from .rendering import render_context_body
 from .skills_context import collect_initial_skills
 
 
@@ -42,7 +42,7 @@ def build_initial_snapshot(
         if section is not None
     ]
     content = (
-        render_reminder(sections, rendered_at=datetime.fromisoformat(prepared_at)) or ""
+        render_context_body(sections, rendered_at=datetime.fromisoformat(prepared_at)) or ""
     )
     snapshot_id = (
         "initial-"

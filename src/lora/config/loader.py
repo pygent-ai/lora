@@ -47,11 +47,6 @@ def load_run_config(
     config_data = _merge_config(_default_config(), file_config)
     _validate_config_shape(config_data)
 
-    configured_lora_root = _dig(config_data, "lora_root") or os.environ.get("LORA_ROOT") or ".lora"
-    lora_root = Path(configured_lora_root)
-    if not lora_root.is_absolute():
-        lora_root = root / lora_root
-
     configured_max_steps = _int_config(
         max_steps,
         os.environ.get("LORA_MAX_STEPS"),
@@ -70,7 +65,6 @@ def load_run_config(
     assert isinstance(model_request, dict)
     return RunConfig(
         workspace_root=str(root),
-        lora_root=str(lora_root),
         session_id=session_id or os.environ.get("LORA_SESSION_ID") or _dig(config_data, "session_id"),
         case_file=resolved_case_file,
         max_steps=int(configured_max_steps),
@@ -111,8 +105,8 @@ def load_run_config(
             _dig(config_data, "context_compression.file_read_max_chars"),
             default=5000,
         ),
-        runtime_durability=_resolve_runtime_durability(config_data, root),
-        runtime_capacity=_resolve_runtime_capacity(config_data, root),
+        runtime_durability=RuntimeDurabilityConfig(**(_dig(config_data, "runtime.durability") or {})),
+        runtime_capacity=RuntimeCapacityConfig(**(_dig(config_data, "runtime.capacity") or {})),
         runtime_approvals=_resolve_runtime_approvals(config_data),
         mcp_servers=_resolve_mcp_servers(config_data, root),
         delegation=_resolve_delegation(config_data),
@@ -134,7 +128,6 @@ def _read_config(path: Path | None) -> dict[str, Any]:
 
 def _default_config() -> dict[str, Any]:
     return {
-        "lora_root": ".lora",
         "max_steps": -1,
         "session_id": None,
         "allow_read_outside_workspace": True,
@@ -163,11 +156,9 @@ def _default_config() -> dict[str, Any]:
         "runtime": {
             "durability": {
                 "mode": "preferred",
-                "history_path": ".lora/runtime/executions-v1.sqlite3",
             },
             "capacity": {
                 "scope": "runtime_instance",
-                "coordinator_path": ".lora/runtime/capacity-v1.sqlite3",
             },
             "approvals": {
                 "enabled": True,
@@ -214,7 +205,7 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
     _require_known_keys(
         data,
         {
-            "lora_root", "max_steps", "session_id", "allow_read_outside_workspace",
+            "max_steps", "session_id", "allow_read_outside_workspace",
             "context_window", "agent", "agents", "user", "cli", "context_compression",
             "runtime", "mcp", "delegation", "eternal_conversation",
         },
@@ -386,30 +377,6 @@ def _required_config(value: object, name: str) -> str:
 def _runtime_path(root: Path, value: object, default: str) -> str:
     path = Path(_non_empty(value) or default).expanduser()
     return str(path if path.is_absolute() else root / path)
-
-
-def _resolve_runtime_durability(data: dict[str, Any], root: Path) -> RuntimeDurabilityConfig:
-    mode = _non_empty(_dig(data, "runtime.durability.mode")) or "preferred"
-    return RuntimeDurabilityConfig(
-        mode=mode,  # type: ignore[arg-type]
-        history_path=_runtime_path(
-            root,
-            _dig(data, "runtime.durability.history_path"),
-            ".lora/runtime/executions-v1.sqlite3",
-        ),
-    )
-
-
-def _resolve_runtime_capacity(data: dict[str, Any], root: Path) -> RuntimeCapacityConfig:
-    scope = _non_empty(_dig(data, "runtime.capacity.scope")) or "runtime_instance"
-    return RuntimeCapacityConfig(
-        scope=scope,  # type: ignore[arg-type]
-        coordinator_path=_runtime_path(
-            root,
-            _dig(data, "runtime.capacity.coordinator_path"),
-            ".lora/runtime/capacity-v1.sqlite3",
-        ),
-    )
 
 
 def _resolve_runtime_approvals(data: dict[str, Any]) -> RuntimeApprovalConfig:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+
+from lora.core.paths import project_lora_root
 from unittest.mock import patch
 
 from lora_api.dependencies import ApiContext
@@ -175,11 +177,11 @@ def test_update_settings_switches_workspace_and_rebuilds_session_manager(tmp_pat
         ))
 
     assert response.workspace_root == str(workspace_b.resolve())
-    assert response.lora_root == str((workspace_b / ".lora").resolve())
+    assert response.lora_root == str(project_lora_root(workspace_b, home / ".lora"))
     assert response.agent == "other"
     assert response.routes[0]["model_name"] == "user-model"
     assert response.routes[0]["api_key_env"] == "OTHER_GUI_KEY"
-    assert Path(context.manager.sessions_root) == (workspace_b / ".lora" / "sessions").resolve()
+    assert Path(context.manager.sessions_root) == project_lora_root(workspace_b, home / ".lora") / "sessions"
 
 
 def test_update_settings_preserves_application_chat_registry(tmp_path: Path) -> None:

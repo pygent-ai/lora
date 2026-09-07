@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lora.core.paths import project_lora_root
+
 
 class GeneratedTestFlowScenarioTests(unittest.TestCase):
     def test_failed_run_generates_case_and_registers_regression_manifest(self) -> None:
@@ -53,7 +55,7 @@ class GeneratedTestFlowScenarioTests(unittest.TestCase):
 
             first_register = _lora(root, env, "test", "register", str(generated_path))
             second_register = _lora(root, env, "test", "register", str(generated_path))
-            manifest_path = root / ".lora" / "regression.json"
+            manifest_path = project_lora_root(root, root / "home" / ".lora") / "regression.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
             self.assertEqual(first_register["status"], "registered")

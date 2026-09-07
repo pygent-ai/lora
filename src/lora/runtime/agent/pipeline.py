@@ -13,6 +13,8 @@ from pygent import (
     Message as PygentMessage,
     ModelCallLayer,
     Module,
+    Reminder,
+    InjectionKind,
     ToolAuthorizationDecision,
     ToolAuthorizationRequest,
     ToolCall,
@@ -649,20 +651,21 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
         return projected_message, next_context
 
 
-class SystemReminderModule(Module[ToolMessage, ToolMessage]):
+class RuntimeReminderModule(Module[ToolMessage, ToolMessage]):
     execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("reminders",)
 
     def __init__(self, reminders: ReminderService) -> None:
         super().__init__()
         self.reminders = reminders
+        self.reminder = Reminder()
 
     async def forward(
         self, message: ToolMessage, context: LoraContext
     ) -> tuple[ToolMessage, LoraContext]:
         infrastructure = active_infrastructure()
         if infrastructure is None:  # pragma: no cover - managed graph invariant
-            raise RuntimeError("system reminder requires managed execution")
+            raise RuntimeError("runtime context requires managed execution")
         assistant = context.messages[-1] if context.messages else None
         calls = {
             call.call_id: call
@@ -670,7 +673,6 @@ class SystemReminderModule(Module[ToolMessage, ToolMessage]):
         } if isinstance(assistant, AIMessage) else {}
 
         async def operation():
-            updated: list[PygentToolResult] = []
             mutation_indexes = [
                 index
                 for index, result in enumerate(message.results)
@@ -693,22 +695,7 @@ class SystemReminderModule(Module[ToolMessage, ToolMessage]):
                 file_mutation=bool(mutation_indexes),
                 has_results=bool(message.results),
             )
-            reminder_index = len(message.results) - 1 if reminder else None
-            for result_index, result in enumerate(message.results):
-                output = str(plain_data(result.output) or "")
-                updated.append(
-                    replace(
-                        result,
-                        output=(
-                            f"{output}\n\n{reminder}"
-                            if reminder_index == result_index
-                            else output
-                        ),
-                    )
-                )
-            return freeze_json(
-                {"message": message_to_dict(ToolMessage(results=tuple(updated)))}
-            )
+            return freeze_json({"content": reminder})
 
         effect = await infrastructure.execute_effect(
             spec=EffectSpec(
@@ -730,11 +717,23 @@ class SystemReminderModule(Module[ToolMessage, ToolMessage]):
         )
         replayed = thaw_json(effect.value)
         if not isinstance(replayed, dict):
-            raise TypeError("replayed system reminder is invalid")
-        updated_message = message_from_dict(replayed.get("message"))
-        if not isinstance(updated_message, ToolMessage):
-            raise TypeError("replayed system reminder did not return a ToolMessage")
-        return updated_message, context
+            raise TypeError("replayed runtime context is invalid")
+        content = replayed.get("content")
+        if content:
+            piece, _ = await self.reminder(
+                PygentMessage(content=content, kind=InjectionKind.RUNTIME_CONTEXT.value), context
+            )
+            execution_id = infrastructure.managed_execution_id
+            if execution_id is None:
+                raise RuntimeError("runtime context requires an execution id")
+            identity = hashlib.sha256(
+                json.dumps([context.turn_id, [result.call_id for result in message.results]]).encode()
+            ).hexdigest()
+            await self.reminders.deliver_tool_context(
+                execution_id, input_id=f"runtime-context:{identity}", content=piece.content
+            )
+        return message, context
+
 
 class PersistedDiffModule(Module[ToolMessage, ToolMessage]):
     execution_requirements = EFFECT_FREE_RECOVERY
@@ -821,7 +820,7 @@ class PreparedToolModule(Module[AIMessage, ToolMessage]):
         *,
         tools: ToolCallLayer,
         audit: ToolAuditModule,
-        reminders: SystemReminderModule,
+        reminders: RuntimeReminderModule,
         persisted_diff: PersistedDiffModule,
     ) -> None:
         super().__init__()

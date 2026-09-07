@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
+from lora.core.paths import project_lora_root as resolve_project_lora_root
+
 from lora.schema import BashCliPreset
 from lora.tracing import EventStore
 from lora.runtime.context import LoraContext
@@ -362,8 +364,10 @@ class AgentContextManager:
     ) -> None:
         self.session_dir = session_dir
         self.workspace_root = workspace_root
-        self.project_lora_root = (project_lora_root or workspace_root / ".lora").expanduser().resolve()
         self.user_lora_root = (user_lora_root or Path.home() / ".lora").expanduser().resolve()
+        self.project_lora_root = (
+            project_lora_root or resolve_project_lora_root(workspace_root, self.user_lora_root)
+        ).expanduser().resolve()
         self.project_skills_dir = (self.project_lora_root / "skills").expanduser().resolve()
         self.user_skills_dir = (self.user_lora_root / "skills").expanduser().resolve()
         self.store = store

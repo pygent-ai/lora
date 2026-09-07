@@ -97,6 +97,7 @@ export function createApiClient(options = {}) {
         fetchImpl,
         request,
         onEvent: handlers.onEvent,
+        onConnectionState: handlers.onConnectionState,
         signal: handlers.signal,
       }),
   };
@@ -151,10 +152,11 @@ export function parseSseEvents(text) {
   return events;
 }
 
-async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, signal }) {
+async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, onConnectionState, signal }) {
   let executionId = request.executionId || null;
   let afterSequence = Number.isFinite(request.afterSequence) ? request.afterSequence : null;
-  const startedAt = Date.now();
+  let disconnectedAt = null;
+  let terminal = false;
   let attempt = 0;
 
   while (true) {
@@ -165,24 +167,32 @@ async function streamChatTurn({ baseUrl, fetchImpl, request, onEvent, signal }) 
         request: { ...request, executionId, afterSequence },
         onEvent: (event) => {
           const data = event?.data || {};
+          disconnectedAt = null;
+          attempt = 0;
+          onConnectionState?.("connected");
           if (data.execution_id) {
             executionId = data.execution_id;
           }
           if (Number.isFinite(data.sequence)) {
-            afterSequence = data.sequence;
+            afterSequence = Math.max(afterSequence ?? -1, data.sequence);
           }
+          terminal ||= ["execution.completed", "execution.failed", "execution.cancelled", "execution.deadline_exceeded", "lora.transport.error"].includes(data.kind);
           emitStreamEvent(event, onEvent);
         },
         signal,
       });
-      return;
+      if (terminal) return;
+      throw new Error("Execution stream ended before the task finished");
     } catch (err) {
+      if (terminal) return;
       if (signal?.aborted || isAbortError(err) || !executionId) {
         throw err;
       }
-      if (Date.now() - startedAt >= STREAM_RESUME_TIMEOUT_MS) {
+      disconnectedAt ??= Date.now();
+      if (Date.now() - disconnectedAt >= STREAM_RESUME_TIMEOUT_MS) {
         throw err;
       }
+      onConnectionState?.("reconnecting");
       attempt += 1;
       await delay(Math.min(STREAM_RESUME_RETRY_DELAY_MS * attempt, 5_000), signal);
     }

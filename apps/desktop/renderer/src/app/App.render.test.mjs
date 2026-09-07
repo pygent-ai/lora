@@ -712,6 +712,134 @@ test("persisted tool errors do not mark a recovered historical turn as failed", 
   assert.equal(history.sections[0].calls[0].status, "error");
 });
 
+test("completed turn durations survive history refreshes and subsequent turns", () => {
+  const firstTiming = { case_run_id: "first", started_at: "2026-09-07T00:00:01Z", finished_at: "2026-09-07T00:00:16Z", status: "passed" };
+  const secondTiming = { case_run_id: "second", started_at: "2026-09-07T00:00:20Z", finished_at: "2026-09-07T00:00:27Z", status: "passed" };
+  const firstHistory = [
+    { role: "user", content: "<user-message>First question</user-message>", run_timing: firstTiming },
+    { role: "assistant", content: "First answer" },
+  ];
+  const refreshed = appModule.historyToMessages(firstHistory);
+  assert.equal(activityHeaderText(refreshed[1], 90000), "Processed for 15s");
+
+  const secondHistory = [
+    ...firstHistory,
+    { role: "user", content: "Second question", run_timing: secondTiming },
+    { role: "assistant", content: "Second answer" },
+  ];
+  const reloaded = appModule.historyToMessages(secondHistory);
+  assert.equal(activityHeaderText(reloaded[1], 90000), "Processed for 15s");
+  assert.equal(activityHeaderText(reloaded[3], 90000), "Processed for 7s");
+});
+
+test("missing or mismatched historical timing does not become a fabricated zero duration", () => {
+  const history = [
+    { role: "user", content: "Question" },
+    { role: "assistant", tool_calls: [{ id: "call", function: { name: "read", arguments: {} } }] },
+    { role: "assistant", content: "Answer" },
+  ];
+  const unrelated = [
+    { role: "user", content: "Different question" },
+    { role: "assistant", startedAt: 1000, endedAt: 16000 },
+  ];
+  for (const timings of [undefined, unrelated]) {
+    const [, message] = appModule.historyToMessages(history, timings);
+    assert.equal(message.startedAt, undefined);
+    assert.equal(message.endedAt, undefined);
+    assert.equal(activityHeaderText(message, 90000), "Processed");
+  }
+  assert.equal(activityHeaderText({ status: "running", startedAt: 1000 }, 6000), "Processing for 5s");
+  assert.equal(activityHeaderText({ status: "error" }, 6000), "Failed");
+});
+
+test("thinking streams in one preview and completes when the answer or tools begin", () => {
+  const sections = [{ type: "text", title: "Thinking", content: "First line\nSecond line" }];
+  const message = { status: "running", sections, content: "" };
+  const state = appModule.thinkingActivityState(message);
+  assert.equal(state.running, true);
+  const html = renderToStaticMarkup(React.createElement(appModule.ThinkingActivity, state));
+  assert.match(html, /thinking-preview[^>]*>First line Second line</);
+  assert.match(html, /Thinking/);
+  assert.doesNotMatch(html, /<details[^>]* open/);
+  assert.equal(appModule.thinkingActivityState({ ...message, content: "Answer" }).running, false);
+  assert.equal(appModule.thinkingActivityState({ ...message, sections: [...sections, { type: "tools" }] }).running, false);
+  const completed = appModule.thinkingActivityState({ ...message, status: "success" });
+  const finished = renderToStaticMarkup(React.createElement(appModule.ThinkingActivity, completed));
+  assert.match(finished, /Thinking complete/);
+  assert.doesNotMatch(finished, /thinking-preview/);
+  assert.match(finished, /First line/);
+  assert.match(finished, /Second line/);
+});
+
+test("reasoning stays below processing activity and tool output", () => {
+  const html = renderToStaticMarkup(React.createElement(appModule.AssistantActivity, {
+    message: {
+      status: "running", content: "", startedAt: Date.now(),
+      sections: [
+        { type: "text", title: "Assistant content", content: "Earlier activity" },
+        { type: "tools", status: "done", calls: [] },
+        { type: "text", title: "Thinking", content: "Latest reasoning" },
+      ],
+    },
+  }));
+  assert.ok(html.indexOf("Processing for") < html.indexOf("Earlier activity"));
+  assert.ok(html.indexOf("Earlier activity") < html.indexOf('class="thinking-activity"'));
+  assert.ok(html.indexOf('class="tool-group"') < html.indexOf('class="thinking-activity"'));
+  assert.match(html, /Thinking/);
+  assert.doesNotMatch(html, /Waiting for model output/);
+});
+
+test("finished reasoning stays at the bottom while processing continues", () => {
+  const html = renderToStaticMarkup(React.createElement(appModule.AssistantActivity, {
+    message: {
+      status: "running", content: "Answer", startedAt: Date.now(),
+      sections: [{ type: "text", title: "Thinking", content: "Preserved reasoning" }],
+    },
+  }));
+  assert.match(html, /Thinking complete/);
+  assert.ok(html.indexOf('class="activity-head"') < html.indexOf('class="thinking-activity"'));
+  assert.ok(html.indexOf('class="activity-detail"') < html.indexOf('class="thinking-activity"'));
+});
+
+test("collapsed processing keeps only the processed header at the top", () => {
+  const html = renderToStaticMarkup(React.createElement(appModule.AssistantActivity, {
+    message: {
+      status: "success", content: "Answer", startedAt: 1000, endedAt: 16000,
+      sections: [{ type: "text", title: "Thinking", content: "Preserved reasoning" }],
+    },
+  }));
+  assert.match(html, /Processed for 15s/);
+  assert.doesNotMatch(html, /Thinking complete/);
+  assert.doesNotMatch(html, /Preserved reasoning/);
+  assert.doesNotMatch(html, /class="activity-detail"/);
+});
+
+test("history preserves reasoning from the final assistant message", () => {
+  const [, message] = appModule.historyToMessages([
+    { role: "user", content: "Question" },
+    { role: "assistant", content: "Answer", metadata: { reasoning_content: "Full final reasoning" } },
+  ]);
+  assert.equal(message.content, "Answer");
+  assert.equal(appModule.thinkingActivityState(message).content, "Full final reasoning");
+  assert.equal(appModule.thinkingActivityState(message).running, false);
+});
+
+test("reopening an active session replays only its current turn without duplicating partial output", () => {
+  const restored = appModule.messagesForRecovery({
+    run_history_start_index: 2,
+    history: [
+      { role: "user", content: "Previous" }, { role: "assistant", content: "Completed" },
+      { role: "user", content: "Current" }, { role: "assistant", content: "Partial output" },
+    ],
+  }, "resumed");
+  assert.deepEqual(restored.map((message) => message.content), ["Previous", "Completed", "Current", ""]);
+  const replayed = appModule.projectLiveAssistantEvent(restored[3], {
+    kind: "model.text.delta", data: { text: "Partial output" },
+  });
+  assert.equal(replayed.content, "Partial output");
+  assert.throws(() => appModule.messagesForRecovery({ history: [], run_history_start_index: 1 }, "bad"));
+});
+
 function turnView(message) {
   return {
     role: message.role,

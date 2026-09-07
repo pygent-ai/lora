@@ -115,3 +115,25 @@ class SessionManagerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_running_session_exposes_current_run_and_recovery_checkpoint(tmp_path):
+    from lora.core.io import read_json, write_json
+    from lora_api.services.session_service import SessionService
+
+    manager = SessionManager(RunConfig(workspace_root=str(tmp_path), lora_root=str(tmp_path / 'data')))
+    session = manager.create('chat', mode='chat')
+    loaded = manager.load(session.session_id)
+    loaded.history = [{'role': 'user', 'content': 'previous'}, {'role': 'assistant', 'content': 'done'}]
+    manager.save(loaded)
+    run = manager.start_case_run(session.session_id, 'chat')
+    path = Path(run.run_dir) / 'run_metadata.json'
+    metadata = read_json(path)
+    metadata['runtime_execution_id'] = 'execution-to-resume'
+    write_json(path, metadata)
+    detail = SessionService(manager).load_detail(session.session_id)
+    assert detail.session.last_case_run_id == run.case_run_id
+    assert detail.session.last_case_run_status == 'running'
+    assert detail.runtime_execution_id == 'execution-to-resume'
+    assert detail.run_history_start_index == 2
+    manager.finish_case_run(run, 'passed')
+    assert SessionService(manager).load_detail(session.session_id).runtime_execution_id is None

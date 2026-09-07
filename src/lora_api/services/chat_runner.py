@@ -18,7 +18,6 @@ from lora_api.models.events import ExecutionEvent
 from lora_api.models.requests import ChatTurnRequest
 from lora_api.services.session_service import session_service_for_scope
 
-CHAT_DISCONNECT_GRACE_SECONDS = 60.0
 CHAT_KEEPALIVE_SECONDS = 10.0
 _TERMINAL_EVENTS = {
     "execution.completed", "execution.failed", "execution.cancelled",
@@ -67,7 +66,6 @@ class ActiveChatRun:
     status: str = "running"
     task: asyncio.Task[None] | None = None
     execution_handle: Any | None = None
-    disconnect_timer: asyncio.Task[None] | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     subscribers: int = 0
     startup_error: BaseException | None = None
@@ -112,7 +110,6 @@ class ActiveChatRun:
             return
         async with self.lock:
             self.subscribers += 1
-            self._cancel_disconnect_timer_locked()
         try:
             async with handle.subscribe(after=after) as execution_events:
                 pending_event: asyncio.Task[Any] | None = None
@@ -148,11 +145,12 @@ class ActiveChatRun:
                     if pending_event is not None and not pending_event.done():
                         pending_event.cancel()
                         await asyncio.gather(pending_event, return_exceptions=True)
+            # Publish final session metadata before the client refreshes its view.
+            if self.task is not None:
+                await asyncio.shield(self.task)
         finally:
             async with self.lock:
                 self.subscribers -= 1
-                if not self.done and self.subscribers == 0:
-                    self._schedule_disconnect_cancel_locked()
 
     async def _run_turn(self) -> None:
         status = "error"
@@ -197,25 +195,6 @@ class ActiveChatRun:
             self.manager.finish_case_run(self.run_ref, self.status)
             await self.registry.remove(self)
 
-    def _schedule_disconnect_cancel_locked(self) -> None:
-        if self.disconnect_timer is None or self.disconnect_timer.done():
-            self.disconnect_timer = asyncio.create_task(self._cancel_after_disconnect_grace())
-
-    def _cancel_disconnect_timer_locked(self) -> None:
-        if self.disconnect_timer is not None and not self.disconnect_timer.done():
-            self.disconnect_timer.cancel()
-        self.disconnect_timer = None
-
-    async def _cancel_after_disconnect_grace(self) -> None:
-        with contextlib.suppress(asyncio.CancelledError):
-            approval_timeout = self.runtime_service.config.runtime_approvals.timeout_seconds
-            await asyncio.sleep(max(self.registry.disconnect_grace_seconds, approval_timeout))
-            async with self.lock:
-                should_cancel = not self.done and self.subscribers == 0
-            if should_cancel and self.execution_handle is not None:
-                await self.execution_handle.cancel()
-
-
 @dataclass(slots=True)
 class AttachedExecutionRun:
     execution_handle: Any
@@ -242,8 +221,7 @@ class AttachedExecutionRun:
 
 
 class ChatRunRegistry:
-    def __init__(self, *, disconnect_grace_seconds: float = CHAT_DISCONNECT_GRACE_SECONDS) -> None:
-        self.disconnect_grace_seconds = disconnect_grace_seconds
+    def __init__(self) -> None:
         self._runs: dict[str, ActiveChatRun] = {}
         self._case_runs: dict[str, ActiveChatRun] = {}
         self._retired_runtimes: set[Any] = set()

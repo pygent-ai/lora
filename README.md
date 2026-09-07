@@ -1,6 +1,6 @@
 # Lora
 
-Lora 是基于 Pygent 0.3.5 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
+Lora 是基于 Pygent 0.3.6 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
 
 本版本直接采用 Pygent 0.3.3 的 Execution schema v1，不读取或迁移旧 Runtime journal；默认数据库使用 `*-v1.sqlite3` 路径。若 `preferred`/`disabled` 持久化发现该路径中的 Pygent 内部 SQLite schema 不兼容，Lora 会保留旧库并切换到带 `-schema-v7` 后缀的新 journal；`required` 模式仍会明确失败。
 
@@ -48,6 +48,10 @@ uv run lora credentials validate
 
 ## 用户配置
 
+运行数据统一保存在用户目录：项目使用 `~/.lora/projects/<项目路径哈希>/`，无项目聊天使用 `~/.lora/conversations/`。项目目录内不自动创建 `.lora`。每个数据目录包含 `sessions/`、`runtime/` 和回归结果；会话元数据记录原始工作区路径。项目专属 skills、`repair.json` 和 `regression.json` 也放在对应数据目录，用户通用 skills 放在 `~/.lora/skills/`。
+
+项目路径哈希取规范化绝对路径的 SHA-256 前 24 位，因此同名项目互相隔离，移动项目会得到新的数据目录。`lora_root` 不再是用户配置项。运行时数据库的相对路径基于该项目或聊天的数据目录解析，绝对路径按配置使用。
+
 `~/.lora/config.yaml` 同时承载模型、运行时和工具审批策略（`runtime.approvals`）配置，对所有项目共用。`preauthorized_tools` 中列出的工具会自动放行；`runtime.approvals.enabled: false` 会放行所有高风险工具，请谨慎使用。
 
 在前端 Settings 中，将「Tool permissions / 工具权限」选择为「Full access / 完全访问」，点击「Save and Reload」即可保存，对所有工作区的后续运行生效；正在运行的任务保留原权限。选择「Require approval / 逐次审批」可恢复审批。
@@ -66,10 +70,10 @@ runtime:
 runtime:
   durability:
     mode: preferred
-    history_path: .lora/runtime/executions-v1.sqlite3
+    history_path: runtime/executions-v1.sqlite3
   capacity:
     scope: runtime_instance
-    coordinator_path: .lora/runtime/capacity-v1.sqlite3
+    coordinator_path: runtime/capacity-v1.sqlite3
   approvals:
     enabled: true
     timeout_seconds: 300
@@ -88,7 +92,7 @@ eternal_conversation:
   enabled: false
   extractor_agent_alias: dev
   builder_agent_alias: fast-check
-  dynamic_memory_cli_path: .lora/skills/dynamic-memory-cli/scripts/dynamic_memory_cli.py
+  dynamic_memory_cli_path: ~/.lora/skills/dynamic-memory-cli/scripts/dynamic_memory_cli.py
 ```
 
 ## 使用
@@ -134,3 +138,5 @@ npm --prefix apps/desktop run build
 ```
 
 更多说明见 [CLI](docs/cli/lora-chat.md)、[本地 API](docs/api/local-service.md) 和[开发指南](docs/guides/development-guide.md)。
+
+本地开发依赖通过 `tool.uv.sources` 使用相邻目录 `../pygent` 的源码；`uv sync` 会安装该版本，包含执行输入取消固定字节大小上限的修复。

@@ -120,17 +120,25 @@ def render_memory_access_instruction(
     session_dir: str | Path, projection: dict[str, Any]
 ) -> str:
     raw = Path(session_dir) / "raw-history" / "events.jsonl"
-    command = str(projection.get("memory_cli_command") or "dynamic-memory-cli")
+    command = str(projection.get("memory_cli_command") or "").strip()
+    if command:
+        access = "Use the mounted dynamic-memory-cli search interface when the Snapshot is insufficient or the task depends on prior decisions, constraints, commitments, preferences, or detailed history."
+        search = f"Search command: {command} search <keyword-or-key-phrase>"
+        evidence_sources = "both dynamic memory and Raw History"
+    else:
+        access = "Memory search is not available for this session yet. Do not invoke or invent a memory CLI command. Use the current conversation and any available Snapshot; consult Raw History if the file exists when earlier context is needed."
+        search = "The memory search command will be provided after the first memory publication. An unavailable search interface does not imply that prior history is empty."
+        evidence_sources = "available Raw History"
     return "\n".join(
         (
             "<memory-access-instruction>",
-            "Use the mounted dynamic-memory-cli search interface when the Snapshot is insufficient or the task depends on prior decisions, constraints, commitments, preferences, or detailed history.",
+            access,
             "Published memory records prior decisions, not immutable authority.",
             "Conflict protocol (apply before acting or changing files): an override is acknowledged only when the current user message refers to the earlier constraint or decision and communicates an intent to replace it. A message that states only the new, contradictory behavior is always unacknowledged; never infer acknowledgment merely because the requested behavior is clearly opposite.",
             "For an unacknowledged conflict, pause before acting. Stop further exploration immediately. Do not accept the new request, reject it, or choose a workaround on the user's behalf. In at most 120 words, state the conflict briefly, then end the response with exactly one direct clarification question that names the prior option and the new option; wait for the user's answer.",
-            f"Search command: {command} search <keyword-or-key-phrase>",
+            search,
             f"Complete observable Raw History: {raw}",
-            "Use read/grep tools directly on Raw History for evidence. Before changing existing behavior, search both dynamic memory and Raw History for prior user constraints, commitments, preferences, and environment assumptions. For compatibility removal, alias removal, deprecation, or version migration, explicitly search Raw History for the affected feature name together with support-window, version, release, compatibility, and deprecation terms before editing. Preserve the earliest relevant direct-user matches (for example, use a bounded first-match search); a tail-only view can hide the original constraint and is not sufficient evidence. If memory search returns only implementation facts rather than direct user intent, Raw History is the required fallback, not an optional extra. Never invent missing history.",
+            f"Use read/grep tools directly on Raw History for evidence. Before changing existing behavior, search {evidence_sources} for prior user constraints, commitments, preferences, and environment assumptions. For compatibility removal, alias removal, deprecation, or version migration, explicitly search Raw History for the affected feature name together with support-window, version, release, compatibility, and deprecation terms before editing. Preserve the earliest relevant direct-user matches (for example, use a bounded first-match search); a tail-only view can hide the original constraint and is not sufficient evidence. If memory search returns only implementation facts rather than direct user intent, Raw History is the required fallback, not an optional extra. Never invent missing history.",
             "</memory-access-instruction>",
         )
     )

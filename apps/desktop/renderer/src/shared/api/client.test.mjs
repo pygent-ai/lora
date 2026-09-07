@@ -329,6 +329,7 @@ test("streamChat keeps reading when an event handler throws", async () => {
             'data: {"execution_id":"exec1","sequence":1,"kind":"lora.chat.started","data":{}}\n\n',
             "event: execution.event\n",
             'data: {"execution_id":"exec1","sequence":2,"kind":"model.text.delta","data":{"text":"hello"}}\n\n',
+            'event: execution.event\ndata: {"execution_id":"exec1","sequence":3,"kind":"execution.completed","data":{}}\n\n',
           ].join(""),
           {
             status: 200,
@@ -352,7 +353,7 @@ test("streamChat keeps reading when an event handler throws", async () => {
     console.error = previousConsoleError;
   }
 
-  assert.deepEqual(seen, ["lora.chat.started", "model.text.delta"]);
+  assert.deepEqual(seen, ["lora.chat.started", "model.text.delta", "execution.completed"]);
 });
 
 test("streamChat resumes the same run after a stream read failure", async () => {
@@ -418,4 +419,33 @@ test("streamChat resumes the same run after a stream read failure", async () => 
   assert.equal(calls.length, 2);
   assert.equal(calls[1].execution_id, "exec1");
   assert.equal(calls[1].after_sequence, 1);
+});
+
+test("streamChat reconnects after premature EOF even after a long running task", async () => {
+  const originalNow = Date.now;
+  let now = 0;
+  Date.now = () => now;
+  const calls = [];
+  const states = [];
+  try {
+    const client = createApiClient({ fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      if (calls.length === 1) {
+        now = 120_000;
+        return new Response('event: execution.event\ndata: {"execution_id":"exec-long","sequence":10,"kind":"lora.chat.started","data":{}}\n\n');
+      }
+      return new Response('event: execution.event\ndata: {"execution_id":"exec-long","sequence":11,"kind":"execution.completed","data":{}}\n\n');
+    }});
+    await client.streamChat({message: "work"}, {onConnectionState: state => states.push(state)});
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].execution_id, "exec-long");
+    assert.equal(calls[1].after_sequence, 10);
+    assert.equal(calls[1].message, null);
+    assert.ok(states.includes("reconnecting"));
+  } finally { Date.now = originalNow; }
+});
+
+test("streamChat rejects EOF without an execution id or terminal event", async () => {
+  const client = createApiClient({fetchImpl: async () => new Response("")});
+  await assert.rejects(client.streamChat({message: "work"}), /before the task finished/);
 });

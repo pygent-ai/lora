@@ -45,7 +45,7 @@ def test_conversation_scope_can_create_and_load_a_chat(tmp_path: Path) -> None:
 
     project = tmp_path / "project"
     project.mkdir()
-    config = RunConfig(workspace_root=str(project), lora_root=str(project / ".lora"))
+    config = RunConfig(workspace_root=str(project))
     context = ApiContext(workspace_root=str(project), state_path=str(tmp_path / "state.json"), _config=config)
 
     created = asyncio.run(create_session(CreateSessionRequest(scope_id="conversation"), context=context))
@@ -253,7 +253,6 @@ def _create_titled_chat(workspace_root: Path, title: str) -> str:
     manager = SessionManager(
         RunConfig(
             workspace_root=str(workspace_root),
-            lora_root=str((workspace_root / ".lora").resolve()),
         )
     )
     ref = manager.create("chat", mode="chat")

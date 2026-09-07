@@ -7,6 +7,7 @@ from typing import Any
 import json
 
 import pytest
+from xml.etree import ElementTree
 from pygent import AIMessage, ToolCall, ToolMessage, UserMessage
 from pygent.llm import ModelExecution, ModelProviderResponse
 
@@ -19,7 +20,8 @@ from lora.tracing import EventStore
 
 
 class _CapabilityInvoker:
-    def __init__(self) -> None:
+    def __init__(self, skill_path: Path) -> None:
+        self.skill_path = skill_path
         self.requests: list[tuple[Any, Any]] = []
 
     def validate_route(self, _route: Any) -> None:
@@ -37,7 +39,7 @@ class _CapabilityInvoker:
                             call_id="write-skill",
                             name="write",
                             arguments={
-                                "file_path": ".lora/skills/native-created/SKILL.md",
+                                "file_path": str(self.skill_path),
                                 "content": (
                                     "---\nname: native-created\n"
                                     "description: Created during the ReAct turn.\n---\n"
@@ -175,13 +177,13 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "seed.txt").write_text("seed content", encoding="utf-8")
-    existing_skill = tmp_path / ".lora" / "skills" / "existing-skill" / "SKILL.md"
+    config = load_run_config(workspace_root=tmp_path)
+    existing_skill = Path(config.lora_root) / "skills" / "existing-skill" / "SKILL.md"
     existing_skill.parent.mkdir(parents=True)
     existing_skill.write_text(
         "---\nname: existing-skill\ndescription: Available before the turn.\n---\n",
         encoding="utf-8",
     )
-    config = load_run_config(workspace_root=tmp_path)
     config.eternal_conversation.enabled = False
     config.runtime_approvals.enabled = False
     config.cli_bash_presets = [
@@ -216,7 +218,7 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
         "native-capabilities",
         run_config=config,
     )
-    invoker = _CapabilityInvoker()
+    invoker = _CapabilityInvoker(Path(config.lora_root) / "skills" / "native-created" / "SKILL.md")
     service = LoraRuntimeService(config)
     service._model_invokers[config.resolved_agent.alias] = invoker
     for agent in service._agent_definitions.values():
@@ -239,7 +241,8 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
     assert output.content == "capabilities observed"
     assert len(invoker.requests) == 2
     first_message, first_context = invoker.requests[0]
-    initial_projection = f"{first_context.system_prompt}\n{first_message.content}"
+    initial_projection = first_message.content
+    initial_projection = ElementTree.fromstring("<root>" + initial_projection + "</root>").find("runtime-context").text
     assert "<skills-context>" in initial_projection
     assert "existing-skill" in initial_projection
     assert "<available-bash-cli>" in initial_projection
@@ -247,7 +250,8 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
 
     followup, _ = invoker.requests[1]
     assert isinstance(followup, ToolMessage)
-    tool_projection = "\n".join(str(result.output) for result in followup.results)
+    tool_projection = ElementTree.fromstring(followup.content).text
+    assert all("<runtime-context>" not in str(result.output) for result in followup.results)
     assert "<new-skills>" in tool_projection
     assert "native-created" in tool_projection
     assert "<new-bash-cli>" in tool_projection
@@ -300,8 +304,9 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot_ready", [False, True])
 async def test_eternal_memory_replaces_projection_before_first_model_call(
-    tmp_path: Path,
+    tmp_path: Path, snapshot_ready: bool,
 ) -> None:
     config = load_run_config(workspace_root=tmp_path)
     config.eternal_conversation.enabled = True
@@ -321,16 +326,17 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
     manager.save(session)
     state_dir = Path(session.session_dir) / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "eternal-conversation.json").write_text(
-        json.dumps(
-            {
-                "covered_through": 2,
-                "snapshot_revision": 1,
-                "snapshot": {"recent_context": ["previous request completed"]},
-            }
-        ),
-        encoding="utf-8",
-    )
+    if snapshot_ready:
+        (state_dir / "eternal-conversation.json").write_text(
+            json.dumps(
+                {
+                    "covered_through": 2,
+                    "snapshot_revision": 1,
+                    "snapshot": {"recent_context": ["previous request completed"]},
+                }
+            ),
+            encoding="utf-8",
+        )
     run_ref = manager.start_case_run(
         session_ref.session_id,
         "native-projection",
@@ -345,6 +351,7 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
 
     first_finished = False
     second_run = None
+    third_run = None
     try:
         handle = await service.start_turn(
             manager=manager,
@@ -357,6 +364,16 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
         output, context = await handle.result()
         manager.finish_case_run(run_ref, "passed")
         first_finished = True
+        (state_dir / "eternal-conversation.json").write_text(
+            json.dumps(
+                {
+                    "covered_through": 2,
+                    "snapshot_revision": 1,
+                    "snapshot": {"recent_context": ["previous request completed"]},
+                }
+            ),
+            encoding="utf-8",
+        )
         second_run = manager.start_case_run(
             session_ref.session_id,
             "native-projection-2",
@@ -371,25 +388,36 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
             deadline=time.monotonic() + 60,
         )
         second_output, second_context = await second_handle.result()
+        manager.finish_case_run(second_run, "passed")
+        second_run = None
+        third_run = manager.start_case_run(
+            session_ref.session_id, "native-projection-3", run_config=config
+        )
+        third_handle = await service.start_turn(
+            manager=manager, message="third request", run_ref=third_run,
+            turn_id="turn-projection-3", interactive_approvals=False,
+            deadline=time.monotonic() + 60,
+        )
+        await third_handle.result()
     finally:
         if not first_finished:
             manager.finish_case_run(run_ref, "passed")
         if second_run is not None:
             manager.finish_case_run(second_run, "passed")
+        if third_run is not None:
+            manager.finish_case_run(third_run, "passed")
         await service.close()
 
     assert output.content == "projection applied"
-    assert len(invoker.requests) == 2
+    assert len(invoker.requests) == 3
     current, model_context = invoker.requests[0]
     assert current.data["raw_content"] == "current request"
-    assert [item.kind for item in model_context.messages] == [
-        "lora.memory.snapshot",
-        None,
-        None,
-    ]
-    assert [item.content for item in model_context.messages[1:]] == [
-        "previous request",
-        "previous final answer",
+    offset = 1 if snapshot_ready else 0
+    assert [item.kind for item in model_context.messages] == (
+        ["lora.memory.snapshot", None, None] if snapshot_ready else [None, None]
+    )
+    assert [item.content for item in model_context.messages[offset:]] == [
+        "previous request", "previous final answer",
     ]
     assert "<memory-access-instruction>" in model_context.system_prompt
     assert "<memory-snapshot" not in model_context.system_prompt
@@ -403,7 +431,17 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
         "user",
         "assistant",
     ]
+    third_current, third_context = invoker.requests[2]
+    assert third_current.data["raw_content"] == "third request"
+    assert [item.data.get("raw_content") for item in third_context.messages[1::2]] == [
+        "current request", "second request",
+    ]
+    assert [item.content for item in third_context.messages[2::2]] == [
+        "projection applied", "projection applied",
+    ]
     assert [item["role"] for item in manager.load(session_ref.session_id).history] == [
+        "user",
+        "assistant",
         "user",
         "assistant",
         "user",

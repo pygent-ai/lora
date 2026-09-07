@@ -5,7 +5,7 @@ from datetime import datetime
 from .models import ReminderSection
 
 
-def render_reminder(
+def render_context_body(
     sections: list[ReminderSection],
     *,
     rendered_at: datetime | None = None,
@@ -17,7 +17,7 @@ def render_reminder(
     if not active:
         return None
     timestamp = rendered_at or datetime.now().astimezone()
-    lines = ["<system-reminder>"]
+    lines: list[str] = []
     if any(section.include_time for section in active):
         lines.extend(
             [
@@ -31,5 +31,4 @@ def render_reminder(
         if index:
             lines.append("")
         lines.extend(section.lines)
-    lines.append("</system-reminder>")
     return "\n".join(lines)

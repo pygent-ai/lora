@@ -125,7 +125,7 @@ class SessionManager:
 
     def start_case_run(self, session_id: str, case_id: str, run_config: RunConfig | None = None) -> CaseRunRef:
         validate_path_id(case_id, "case_id")
-        self.load(session_id)
+        session = self.load(session_id)
         case_run_id = self._new_case_run_id(session_id, case_id)
         run_dir = self._session_dir(session_id) / "cases" / case_id / "runs" / case_run_id
         run_dir.mkdir(parents=True, exist_ok=False)
@@ -134,8 +134,12 @@ class SessionManager:
         write_json(run_dir / "run_config.json", config.to_dict())
         write_json_atomic(
             run_dir / "run_metadata.json",
-            {"status": "running", "started_at": utc_now(), **ref.to_dict()},
+            {"status": "running", "started_at": utc_now(), "history_start_index": len(session.history), **ref.to_dict()},
         )
+        metadata_path = self._session_dir(session_id) / "metadata.json"
+        metadata = read_json(metadata_path)
+        metadata.update(last_case_run_id=case_run_id, last_case_run_status="running", updated_at=utc_now())
+        write_json_atomic(metadata_path, metadata)
         self._append_session_event(session_id, "case.started", {"case_id": case_id, "case_run_id": case_run_id})
         return ref
 

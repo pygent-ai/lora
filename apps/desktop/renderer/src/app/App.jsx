@@ -105,6 +105,7 @@ export function App() {
   const pendingSessionMessagesRef = useRef(new Map());
   const sessionLiveEventsRef = useRef(new Map());
   const sessionLoadTokenRef = useRef(0);
+  const resumeSessionRef = useRef(null);
   const traceLoadTokenRef = useRef(0);
 
   const activeSessionId = activeSession?.session_id || "";
@@ -228,6 +229,9 @@ export function App() {
       setMessages(resolvedMessages);
       setActivityCollapseToken((value) => value + 1);
       setStatus("Ready");
+      if (detail.runtime_execution_id && !runningSessionIdsRef.current[sessionId]) {
+        resumeSessionRef.current?.(detail);
+      }
       window.setTimeout(() => {
         loadTrace(detail.session, traceToken).catch((err) => {
           if (traceToken === traceLoadTokenRef.current) {
@@ -380,9 +384,9 @@ export function App() {
   );
 
   const handleSendMessage = useCallback(
-    async (message) => {
-      const initialSessionId = activeSessionIdRef.current;
-      if (!message.trim() || (initialSessionId && runningSessionIdsRef.current[initialSessionId])) {
+    async (message, recovery = null) => {
+      const initialSessionId = recovery?.session.session_id || activeSessionIdRef.current;
+      if ((!recovery && !message.trim()) || (initialSessionId && runningSessionIdsRef.current[initialSessionId])) {
         return;
       }
       if (initialSessionId) {
@@ -425,7 +429,7 @@ export function App() {
         }
       };
 
-      const nextMessages = [
+      const nextMessages = recovery ? messagesForRecovery(recovery, assistantId) : [
         ...messagesRef.current,
         { id: `user-${Date.now()}`, role: "user", content: message },
         {
@@ -450,11 +454,15 @@ export function App() {
         await api.streamChat(
           {
             message,
+            executionId: recovery?.runtime_execution_id,
             sessionId: streamSessionId,
             caseId: "chat",
-            scopeId: activeSession?.scope_id,
+            scopeId: recovery?.session.scope_id || activeSession?.scope_id,
           },
           {
+            onConnectionState: (state) => {
+              if (isStreamSessionVisible()) setStatus(state === "reconnecting" ? "Reconnecting" : "Running");
+            },
             onEvent: ({ data }) => {
               const eventKind = data.kind || "";
               const eventData = data.data || {};
@@ -539,6 +547,7 @@ export function App() {
     },
     [activeSession?.scope_id, api, refreshWorkbench, setSessionRunning],
   );
+  resumeSessionRef.current = (detail) => handleSendMessage("", detail);
 
   const handleSaveSettings = useCallback(
     async (draft) => {
@@ -1252,15 +1261,16 @@ function ActivityMessage({ message, collapseToken, api }) {
   );
 }
 
-function AssistantActivity({ message, collapseToken, api }) {
+export function AssistantActivity({ message, collapseToken, api }) {
   const isRunning = message.status === "running";
   const [expanded, setExpanded] = useState(isRunning);
   const [now, setNow] = useState(Date.now());
   const sections = visibleActivitySections(message);
   const liveStatus = activityLiveStatus(message);
+  const thinking = thinkingActivityState(message);
   const header = activityHeaderText(message, now);
   const showDetail =
-    expanded && (sections.length > 0 || liveStatus || (isRunning && !hasVisibleAssistantContent(message)));
+    expanded && (sections.length > 0 || thinking.content || liveStatus || (isRunning && !hasVisibleAssistantContent(message)));
 
   useEffect(() => {
     setExpanded(message.status === "running");
@@ -1297,12 +1307,38 @@ function AssistantActivity({ message, collapseToken, api }) {
             ),
           )}
           {liveStatus && <div className="activity-live-status">{liveStatus}</div>}
-          {!sections.length && !liveStatus && isRunning && !hasVisibleAssistantContent(message) && (
+          {!sections.length && !thinking.content && !liveStatus && isRunning && !hasVisibleAssistantContent(message) && (
             <div className="activity-muted">Waiting for model output...</div>
           )}
+          {thinking.content && <ThinkingActivity {...thinking} />}
         </div>
       )}
     </div>
+  );
+}
+
+export function thinkingActivityState(message) {
+  const sections = Array.isArray(message.sections) ? message.sections : [];
+  const isThinking = (section) => section.type === "text" && section.title === "Thinking";
+  const lastThinkingIndex = sections.findLastIndex(isThinking);
+  return {
+    content: sections.filter(isThinking).map((section) => String(section.content || "")).filter(Boolean).join("\n\n"),
+    running: message.status === "running" && !message.content && lastThinkingIndex >= 0
+      && lastThinkingIndex === sections.length - 1,
+  };
+}
+
+export function ThinkingActivity({ content, running }) {
+  return (
+    <details className="thinking-activity">
+      <summary className="thinking-summary">
+        <span className="thinking-label">{running ? "Thinking" : "Thinking complete"}</span>
+        {running && <span className="thinking-indicator running" aria-hidden="true" />}
+        {running && <span className="thinking-preview">{content.replace(/\s+/g, " ").trim()}</span>}
+        <ChevronRight className="thinking-chevron" size={14} aria-hidden="true" />
+      </summary>
+      <div className="thinking-content"><MarkdownContent content={content} /></div>
+    </details>
   );
 }
 
@@ -2106,6 +2142,20 @@ export function appendSessionLiveTraceEvent(cache, sessionId, currentEvents, eve
   return limited;
 }
 
+export function messagesForRecovery(detail, assistantId) {
+  const history = detail.history || [];
+  const start = detail.run_history_start_index;
+  if (!Number.isInteger(start) || start < 0 || start > history.length) {
+    throw new Error("Invalid session recovery history boundary");
+  }
+  const user = history.slice(start).find((message) => message.role === "user");
+  return [
+    ...historyToMessages(history.slice(0, start)),
+    ...(user ? [{ id: `${assistantId}-user`, role: "user", content: cleanContent(String(user.content || "")) }] : []),
+    { id: assistantId, role: "assistant", content: "", sections: [], ...runTimingFields(user?.run_timing), status: "running" },
+  ];
+}
+
 export function historyToMessages(history) {
   const rendered = [];
   let index = 0;
@@ -2156,15 +2206,15 @@ function renderTurnSegment(segment, idPrefix, timing = segment.find((message) =>
   segment.forEach((message, index) => {
     const role = String(message?.role || "");
     const content = cleanContent(String(message?.content || ""));
-    const reasoning = cleanContent(String(message?.reasoning_content || ""));
+    const reasoning = cleanContent(String(message?.metadata?.reasoning_content || message?.reasoning_content || ""));
     const toolCalls = toolCallsFromMessage(message);
     if (role === "assistant") {
+      if (reasoning) {
+        sections = appendTextSection(sections, "Thinking", reasoning);
+      }
       if (index === finalAssistantIndex) {
         finalContent = content;
         return;
-      }
-      if (reasoning) {
-        sections = appendTextSection(sections, "Thinking", reasoning);
       }
       if (content) {
         sections = appendTextSection(sections, "Assistant content", content);
@@ -2335,7 +2385,7 @@ function activityLiveStatus(message) {
     return latestToolDescriptionFromSection(liveSection);
   }
   if (liveSection.type === "text" && liveSection.title === "Thinking") {
-    return cleanContent(String(liveSection.content || "")) || "Thinking";
+    return "";
   }
   return "";
 }

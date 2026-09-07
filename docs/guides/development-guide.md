@@ -41,7 +41,7 @@ agents:
 
 - `DynamicPromptModule`
 - `ContextCompressionModule`
-- `SystemReminderModule`
+- `RuntimeReminderModule`
 - `ToolAuditModule`
 - `PersistedDiffModule`
 - Pygent `ReActLayer`、`ModelCallLayer`、`ToolCallLayer`

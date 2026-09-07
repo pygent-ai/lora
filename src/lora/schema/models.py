@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from lora.core.paths import project_lora_root
+
 
 def _abs_path(value: str | Path) -> str:
     return str(Path(value).expanduser().resolve())
@@ -106,7 +108,7 @@ class ResolvedAgentConfig:
 @dataclass(slots=True)
 class RuntimeDurabilityConfig:
     mode: Literal["disabled", "preferred", "required"] = "preferred"
-    history_path: str = ".lora/runtime/executions-v1.sqlite3"
+    history_path: str = "runtime/executions-v1.sqlite3"
 
     def __post_init__(self) -> None:
         if self.mode not in {"disabled", "preferred", "required"}:
@@ -117,7 +119,7 @@ class RuntimeDurabilityConfig:
 @dataclass(slots=True)
 class RuntimeCapacityConfig:
     scope: Literal["runtime_instance", "deployment"] = "runtime_instance"
-    coordinator_path: str = ".lora/runtime/capacity-v1.sqlite3"
+    coordinator_path: str = "runtime/capacity-v1.sqlite3"
 
     def __post_init__(self) -> None:
         if self.scope not in {"runtime_instance", "deployment"}:
@@ -238,7 +240,7 @@ def default_cli_bash_presets() -> list[BashCliPreset]:
 @dataclass(slots=True)
 class RunConfig:
     workspace_root: str
-    lora_root: str
+    lora_root: str = ""
     session_id: str | None = None
     case_file: str | None = None
     max_steps: int = -1
@@ -263,8 +265,10 @@ class RunConfig:
 
     def __post_init__(self) -> None:
         self.workspace_root = _abs_path(self.workspace_root)
-        self.lora_root = _abs_path(self.lora_root)
         self.user_lora_root = _abs_path(self.user_lora_root or (Path.home() / ".lora"))
+        self.lora_root = _abs_path(
+            self.lora_root or project_lora_root(self.workspace_root, self.user_lora_root)
+        )
         if self.case_file is not None:
             self.case_file = _abs_path(self.case_file)
         if self.max_steps != -1 and self.max_steps <= 0:
@@ -311,7 +315,7 @@ class RunConfig:
         ):
             path = Path(getattr(settings, field_name)).expanduser()
             if not path.is_absolute():
-                path = Path(self.workspace_root) / path
+                path = Path(self.lora_root) / path
             setattr(settings, field_name, str(path.resolve()))
         self.mcp_servers = [
             item if isinstance(item, MCPServerConfig) else MCPServerConfig(**item)

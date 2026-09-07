@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -16,6 +17,19 @@ from lora_api.routers.health import health
 from lora_api.routers.tool_results import get_tool_result
 from lora_api.routers.traces import get_trace_events
 from lora_api.services.session_service import SessionService
+
+
+@pytest.mark.asyncio
+async def test_lifespan_closes_runtime_when_application_body_fails(monkeypatch):
+    app = create_app(workspace_root=".")
+    runtime = AsyncMock()
+    app.state.api_context._runtime_service = runtime
+    close = AsyncMock()
+    monkeypatch.setattr(ApiContext, "aclose", close)
+    with pytest.raises(RuntimeError, match="application failed"):
+        async with app.router.lifespan_context(app):
+            raise RuntimeError("application failed")
+    close.assert_awaited_once()
 
 
 def test_create_app_allows_desktop_renderer_cors_requests() -> None:

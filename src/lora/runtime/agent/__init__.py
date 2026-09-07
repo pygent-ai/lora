@@ -14,7 +14,7 @@ from .pipeline import (
     PersistedDiffModule,
     PreparedToolModule,
     RepeatedToolCallGuardModule,
-    SystemReminderModule,
+    RuntimeReminderModule,
     ToolAuditModule,
 )
 from .prompt_models import (
@@ -55,7 +55,7 @@ __all__ = [
     "PromptRenderContext",
     "PromptRequestContext",
     "RenderedPromptModule",
-    "SystemReminderModule",
+    "RuntimeReminderModule",
     "StaticPromptResult",
     "StaticPromptSessionCache",
     "ToolAuditModule",

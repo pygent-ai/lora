@@ -115,7 +115,7 @@ def test_runtime_and_context_settings_are_loaded(tmp_path: Path) -> None:
     assert config.context_window == 64000
     assert config.context_compression_enabled is False
     assert config.runtime_capacity.scope == "deployment"
-    assert config.runtime_capacity.coordinator_path == str((tmp_path / ".state/capacity.sqlite3").resolve())
+    assert config.runtime_capacity.coordinator_path == str((Path(config.lora_root) / ".state/capacity.sqlite3").resolve())
 
 
 def test_missing_agent_alias_is_rejected(tmp_path: Path) -> None:

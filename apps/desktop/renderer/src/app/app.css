@@ -1139,6 +1139,51 @@ input:focus,
   box-shadow: 0 0 0 3px rgba(127, 144, 157, 0.12);
 }
 
+.thinking-activity {
+  min-width: 0;
+  margin: 0 0 6px;
+  color: var(--soft);
+}
+
+.thinking-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+  font: inherit;
+}
+
+.thinking-summary::-webkit-details-marker { display: none; }
+.thinking-label { flex: 0 0 auto; }
+.thinking-indicator { flex: 0 0 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.5; }
+.thinking-indicator.running { animation: thinking-pulse 1.5s ease-in-out infinite; }
+.thinking-preview {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--muted);
+  font-weight: 400;
+  mask-image: linear-gradient(to right, transparent, black 18px);
+}
+.thinking-chevron { flex: 0 0 auto; transition: transform 150ms ease; }
+.thinking-activity[open] .thinking-chevron { transform: rotate(90deg); }
+.thinking-activity[open] .thinking-preview { visibility: hidden; }
+.thinking-content {
+  margin: 6px 0 12px 2px;
+  padding: 2px 0 2px 14px;
+  border-left: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.thinking-content .markdown-content { color: var(--muted); }
+@keyframes thinking-pulse { 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .thinking-indicator.running { animation: none; }
+  .thinking-chevron { transition: none; }
+}
+
 .composer-box textarea:focus,
 .composer-box textarea:focus-visible {
   border-color: transparent;
@@ -2556,10 +2601,10 @@ input:focus,
 .activity-detail { padding-top:14px; animation:conversation-reveal 180ms ease-out; }
 .activity-section { padding:6px 0; }
 .tool-group { padding:5px 0; gap:8px; }
-.tool-group-head { align-items:center; gap:8px; padding:3px 0; border:0; border-radius:0; background:transparent; font-size:13px; font-weight:500; line-height:1.5; color:#738094; transition:color 160ms ease; }
-.tool-group-head:hover { color:#405779; background:transparent; }
+.tool-group-head, .thinking-summary { align-items:center; gap:8px; padding:3px 0; border:0; border-radius:0; background:transparent; font-size:13px; font-weight:500; line-height:1.5; color:#738094; transition:color 160ms ease; }
+.tool-group-head:hover, .thinking-summary:hover { color:#405779; background:transparent; }
 .tool-group-body { padding:4px 0; border:0; border-radius:0; background:transparent; animation:conversation-reveal 180ms ease-out; }
-.activity-head:focus-visible, .tool-group-head:focus-visible { outline:2px solid #7d9fcc; outline-offset:3px; }
+.activity-head:focus-visible, .tool-group-head:focus-visible, .thinking-summary:focus-visible { outline:2px solid #7d9fcc; outline-offset:3px; }
 .markdown-content { gap:12px; }
 .markdown-content h1, .markdown-content h2, .markdown-content h3 { font-weight:650; line-height:1.5; letter-spacing:-.2px; }
 .markdown-content > h1:not(:first-child), .markdown-content > h2:not(:first-child), .markdown-content > h3:not(:first-child) { margin-top:12px; }

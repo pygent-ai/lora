@@ -1,5 +1,9 @@
 from lora.runtime.agent.prompt_models import PromptRenderContext
-from lora.runtime.agent.prompts import PromptRegistry
+from lora.runtime.agent.prompts import (
+    PromptComposer,
+    PromptRegistry,
+    StaticPromptSessionCache,
+)
 from lora.runtime.agent.prompt_sources import (
     _render_available_tools_prompt,
     _render_system_action_safety_prompt,
@@ -44,6 +48,53 @@ def test_coding_rules_converge_and_verify_by_risk(tmp_path) -> None:
     )
     assert "do not substitute a design essay for execution" in prompt
     assert "Preserve existing comments" in prompt
+
+
+def test_coding_rules_preserve_existing_behavior_and_test_expectations(tmp_path) -> None:
+    prompt = _render_system_coding_rules_prompt(_context(tmp_path))
+    assert "Preserve existing behavior unless the user's requirements explicitly change it" in prompt
+    assert "Do not modify, weaken, or remove existing test expectations merely to make a regression pass" in prompt
+    assert "fix the implementation first" in prompt
+    assert "independent evidence" in prompt
+
+
+def test_coding_rules_verify_behavior_and_evidence_coverage(tmp_path) -> None:
+    prompt = _render_system_coding_rules_prompt(_context(tmp_path))
+    assert "underlying cause is addressed along the affected execution path" in prompt
+    assert "Check actual outcomes and existing constraints" in prompt
+    assert "establishes only the behavior those checks actually cover" in prompt
+    assert prompt.index("Run the narrowest relevant verification") < prompt.index(
+        "Verify the requested behavior"
+    ) < prompt.index("Preserve existing behavior")
+
+
+def test_new_sessions_receive_regression_policy(tmp_path) -> None:
+    for name in ("session-one", "session-two"):
+        context = _context(tmp_path / name)
+        result = StaticPromptSessionCache(
+            context.session_dir, PromptComposer()
+        ).get_or_create(context)
+        assert result.created
+        assert "Do not modify, weaken, or remove existing test expectations" in result.text
+        assert "Verify the requested behavior" in result.text
+        assert "system.coding_rules" in [module["id"] for module in result.modules]
+
+
+def test_existing_session_keeps_original_static_prompt(tmp_path, monkeypatch) -> None:
+    context = _context(tmp_path)
+    original_composer = PromptComposer()
+    monkeypatch.setattr(
+        original_composer, "compose_static", lambda _ctx: ("Original session rules", [])
+    )
+    original = StaticPromptSessionCache(
+        context.session_dir, original_composer
+    ).get_or_create(context)
+    resumed = StaticPromptSessionCache(
+        context.session_dir, PromptComposer()
+    ).get_or_create(context)
+    assert not resumed.created
+    assert resumed.text == original.text == "Original session rules"
+    assert resumed.prompt_hash == original.prompt_hash
 
 
 def test_tool_and_action_policies_cover_denials_parallelism_and_irreversible_actions(

@@ -107,7 +107,7 @@ def test_model_invoker_enables_streaming_for_all_routes(monkeypatch, base_url: s
     route = SimpleNamespace(id="primary", provider="openai", base_url=base_url, api_key="test")
     agent = SimpleNamespace(_resolved_routes=lambda: (route,))
     monkeypatch.setattr(core, "OpenAICompatibleClient", lambda **kwargs: object())
-    monkeypatch.setattr(core, "DefaultModelInvoker", lambda **kwargs: kwargs)
+    monkeypatch.setattr(core, "LoraModelInvoker", lambda **kwargs: kwargs)
 
     invoker = LoraAgent._build_model_invoker(agent)
     assert invoker["capabilities"]["primary"].streaming is True

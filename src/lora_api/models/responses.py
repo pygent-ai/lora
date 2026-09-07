@@ -79,6 +79,8 @@ class SessionDetailResponse(BaseModel):
     session: SessionRecordResponse
     history: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    runtime_execution_id: str | None = None
+    run_history_start_index: int = 0
 
 
 class DeleteResponse(BaseModel):

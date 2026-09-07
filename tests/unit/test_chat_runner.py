@@ -221,3 +221,39 @@ async def test_nonterminal_durable_execution_is_recovered_instead_of_only_attach
     assert service.recovered == ["execution-1"]
     assert run.startup_error is None
     assert manager.finished == [(run_ref, "passed")]
+
+@pytest.mark.asyncio
+async def test_closing_frontend_subscription_does_not_cancel_execution():
+    cancelled = []
+
+    class Handle:
+        execution_id = 'still-running'
+
+        async def cancel(self):
+            cancelled.append(True)
+
+        @contextlib.asynccontextmanager
+        async def subscribe(self, *, after):
+            async def events():
+                yield {'schema_version': '1', 'event_id': 'e1', 'execution_id': self.execution_id,
+                       'attempt_id': 'a1', 'trace_id': 't1', 'span_id': 's1', 'parent_span_id': None,
+                       'timestamp_unix_ns': 1, 'module_path': 'root',
+                       'kind': 'model.text.delta', 'data': {'text': 'working'}, 'sequence': 1}
+                await asyncio.Event().wait()
+            yield events()
+
+    run = ActiveChatRun(
+        runtime_service=SimpleNamespace(config=SimpleNamespace(runtime_approvals=SimpleNamespace(timeout_seconds=0))),
+        manager=SimpleNamespace(),
+        request=ChatTurnRequest(message='work'),
+        run_ref=CaseRunRef(session_id='s1', case_id='chat', case_run_id='r1', run_dir=str(Path.cwd())),
+        registry=SimpleNamespace(disconnect_grace_seconds=0),
+        execution_handle=Handle(),
+    )
+    stream = run.events(after=None)
+    await anext(stream)
+    await stream.aclose()
+    await asyncio.sleep(0.01)
+    assert run.subscribers == 0
+    assert cancelled == []
+    assert not run.done

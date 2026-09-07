@@ -60,10 +60,16 @@ class SessionService:
     def load_detail(self, session_id: str) -> SessionDetailResponse:
         session = self.manager.load(session_id)
         metadata = read_json(Path(session.session_dir) / "metadata.json")
+        run_metadata = {}
+        if metadata.get("last_case_run_id") and metadata.get("last_case_run_status") == "running":
+            ref = self.manager.find_case_run(session_id, metadata["last_case_run_id"])
+            run_metadata = read_json(Path(ref.run_dir) / "run_metadata.json")
         return SessionDetailResponse(
             session=_record_from_metadata(Path(session.session_dir), metadata, scope_id=self.scope_id),
             history=self.manager.history_with_run_timing(session),
             metadata=session.metadata,
+            runtime_execution_id=run_metadata.get("runtime_execution_id"),
+            run_history_start_index=run_metadata.get("history_start_index", 0),
         )
 
     def delete_session(self, session_id: str) -> bool:

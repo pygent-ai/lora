@@ -26,9 +26,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        await context.runtime_service.initialize()
-        yield
-        await context.aclose()
+        try:
+            await context.runtime_service.initialize()
+            yield
+        finally:
+            await context.aclose()
 
     app = FastAPI(title="Lora Local API", version=package_version("lora"), lifespan=lifespan)
     app.add_middleware(

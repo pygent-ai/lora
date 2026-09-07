@@ -46,6 +46,7 @@ from lora.runtime.reminders import ReminderService
 from .common import DEFAULT_REACT_MAX_STEPS
 
 from .compressor import LoraCompressorModule
+from .model_invoker import LoraModelInvoker
 from .pipeline import (
     ConversationCheckpointModelModule,
     ContextSnapshotModelModule,
@@ -56,7 +57,7 @@ from .pipeline import (
     ForegroundModelModule,
     PreparedToolModule,
     RepeatedToolCallGuardModule,
-    SystemReminderModule,
+    RuntimeReminderModule,
     ToolAuditModule,
     checkpoint_conversation_message,
     _model_tool_definition,
@@ -219,7 +220,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 and all("api.deepseek.com" in route.base_url.lower() for route in provider_routes)
                 else OpenAICompatibleAdapter()
             )
-        return DefaultModelInvoker(
+        return LoraModelInvoker(
             adapters=adapters,
             clients={
                 route.id: OpenAICompatibleClient(
@@ -237,6 +238,17 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
     def _resolved_routes(self) -> tuple[Any, ...]:
         return self.resolved_agent.routes
 
+    def _model_routes(self) -> tuple[ModelRoute, ...]:
+        return tuple(
+            ModelRoute(
+                route.id,
+                provider=route.provider,
+                model=route.model_name,
+                provider_options=freeze_json_object({"stream_options": {"include_usage": True}}),
+            )
+            for route in self._resolved_routes()
+        )
+
     def new_model_layer(self) -> ModelCallLayer:
         if self.llm is None:
             raise RuntimeError("model invoker is not configured")
@@ -249,10 +261,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             if self.managed_model
             else ModelGroupConfig(
                 name=f"lora:{self.resolved_agent.alias}",
-                routes=tuple(
-                    ModelRoute(route.id, provider=route.provider, model=route.model_name)
-                    for route in routes
-                ),
+                routes=self._model_routes(),
                 fallback=FallbackPolicy(
                     self.resolved_agent.fallback or tuple(route.id for route in routes)
                 ),
@@ -321,7 +330,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                     PreparedToolModule(
                         tools=self.new_tool_layer(),
                         audit=ToolAuditModule(self.config),
-                        reminders=SystemReminderModule(self.reminders),
+                        reminders=RuntimeReminderModule(self.reminders),
                         persisted_diff=PersistedDiffModule(self.workspace_root, diff_tasks),
                     ),
                 ),

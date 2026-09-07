@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lora.core.paths import project_lora_root
+
 
 class RepairFlowScenarioTests(unittest.TestCase):
     def test_repair_plan_apply_and_gate_cli_flow(self) -> None:
@@ -20,8 +22,8 @@ class RepairFlowScenarioTests(unittest.TestCase):
                 "USERPROFILE": str(root / "home"),
             }
             _write_no_api_config(root)
-            (root / ".lora").mkdir()
-            (root / ".lora" / "repair.json").write_text(
+            (project_lora_root(root, root / "home" / ".lora")).mkdir(parents=True)
+            (project_lora_root(root, root / "home" / ".lora") / "repair.json").write_text(
                 json.dumps({"commands": [[sys.executable, "-c", "print('gate passed')"]]}),
                 encoding="utf-8",
             )
