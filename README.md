@@ -104,6 +104,14 @@ uv run lora-api --workspace-root E:\Projects\lora
 npm run dev
 ```
 
+## Windows 便携版
+
+```powershell
+npm run desktop:portable
+```
+
+产物位于 `apps/desktop/release/Lora-Desktop-<版本>-portable.exe`，目标 Windows x64 机器无需预装 Python、Node.js 或项目依赖，复制后双击即可使用。便携版不会修改系统 `PATH`；需要终端中的 `lora` 命令时请使用安装版。
+
 `npm run dev` 会启动 Vite 和 Electron；Electron 会自动启动并在退出时关闭本地 `lora-api`。只调试浏览器 renderer 时可运行 `npm --prefix apps/desktop run dev:renderer`。
 
 直接运行 Pygent ReAct 示例：

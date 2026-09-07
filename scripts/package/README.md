@@ -14,8 +14,11 @@ lora chat --new -m "hello"
 Useful commands from the repository root:
 
 ```powershell
+npm run desktop:portable
 npm --prefix apps/desktop run package:dir
 npm --prefix apps/desktop run package:win
 ```
+
+`npm run desktop:portable` creates a standalone `Lora-Desktop-<version>-portable.exe` in `apps/desktop/release`. It can be copied to another Windows x64 machine and opened directly without an installer. The portable build does not modify `PATH`; use the NSIS installer when the `lora` terminal command is also required.
 
 `build-desktop.ps1` sets default Electron download mirrors for China-friendly packaging. Override `ELECTRON_MIRROR` or `ELECTRON_BUILDER_BINARIES_MIRROR` before running the script if you use a different mirror.

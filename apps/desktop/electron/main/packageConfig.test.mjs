@@ -14,7 +14,9 @@ test("desktop package exposes Windows exe packaging scripts", () => {
   assert.equal(packageJson.main, "electron/main/main.mjs");
   assert.match(packageJson.scripts["package:python"], /build-python-api\.ps1/);
   assert.match(packageJson.scripts["package:win"], /build-desktop\.ps1 -Target nsis/);
+  assert.match(packageJson.scripts["package:portable"], /build-desktop\.ps1 -Target portable/);
   assert.match(packageJson.scripts["package:dir"], /build-desktop\.ps1 -Target dir/);
+  assert.equal(packageJson.build.portable.artifactName, "Lora-Desktop-${version}-portable.${ext}");
 });
 
 test("workspace development command launches the full Electron stack", () => {
@@ -51,6 +53,11 @@ test("Python packaging builds both local API and lora chat CLI executables", () 
   assert.match(pythonBuildScript, /lora_entry\.py/);
   assert.match(pythonBuildScript, /-Name "lora-api"/);
   assert.match(pythonBuildScript, /-Name "lora"/);
+  assert.match(pythonBuildScript, /uv build --wheel/);
+  assert.match(pythonBuildScript, /"--no-project"/);
+  assert.match(pythonBuildScript, /"--with",\s*\$loraWheel/);
+  assert.match(pythonBuildScript, /"--copy-metadata",\s*"lora"/);
+  assert.doesNotMatch(pythonBuildScript, /lora\\_internal/);
 });
 
 test("installer adds the bundled lora CLI directory to user PATH", () => {

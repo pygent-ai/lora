@@ -11,6 +11,7 @@
     "start": "electron .",
     "package:python": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-python-api.ps1",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-desktop.ps1 -Target nsis",
+    "package:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-desktop.ps1 -Target portable",
     "package:dir": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\package\\build-desktop.ps1 -Target dir",
     "dist": "npm run package:win",
     "lint": "node --test renderer/src/**/*.test.mjs electron/main/*.test.mjs scripts/*.test.mjs",
@@ -50,6 +51,9 @@
         "nsis"
       ],
       "artifactName": "${productName}-${version}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "Lora-Desktop-${version}-portable.${ext}"
     },
     "nsis": {
       "oneClick": false,

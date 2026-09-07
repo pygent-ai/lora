@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("nsis", "dir")]
+    [ValidateSet("nsis", "portable", "dir")]
     [string] $Target = "nsis"
 )
 

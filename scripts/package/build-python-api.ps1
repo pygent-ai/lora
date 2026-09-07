@@ -6,6 +6,8 @@ $workPath = Join-Path $repoRoot "build\pyinstaller"
 $specPath = Join-Path $repoRoot "build\pyinstaller"
 $apiEntryPoint = Join-Path $PSScriptRoot "lora_api_entry.py"
 $cliEntryPoint = Join-Path $PSScriptRoot "lora_entry.py"
+$wheelPath = Join-Path $workPath "wheel"
+$loraWheel = $null
 
 function Invoke-PyInstaller {
     param(
@@ -18,8 +20,11 @@ function Invoke-PyInstaller {
 
     $arguments = @(
         "run",
+        "--no-project",
         "--with",
         "pyinstaller",
+        "--with",
+        $loraWheel,
         "pyinstaller",
         "--noconfirm",
         "--clean",
@@ -38,6 +43,8 @@ function Invoke-PyInstaller {
         "pygent_ai",
         "--collect-submodules",
         "uvicorn",
+        "--copy-metadata",
+        "lora",
         "--distpath",
         $distPath,
         "--workpath",
@@ -59,7 +66,21 @@ function Invoke-PyInstaller {
 
 Push-Location $repoRoot
 try {
-    New-Item -ItemType Directory -Force -Path $distPath, $workPath, $specPath | Out-Null
+    if (Test-Path $wheelPath) {
+        Remove-Item -LiteralPath $wheelPath -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $distPath, $workPath, $specPath, $wheelPath | Out-Null
+
+    & uv build --wheel --out-dir $wheelPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to build the isolated Lora package wheel"
+    }
+
+    $builtWheels = @(Get-ChildItem -LiteralPath $wheelPath -Filter "lora-*.whl" -File)
+    if ($builtWheels.Count -ne 1) {
+        throw "Expected exactly one Lora wheel, found $($builtWheels.Count)"
+    }
+    $loraWheel = $builtWheels[0].FullName
 
     Invoke-PyInstaller `
         -Name "lora-api" `
@@ -76,14 +97,6 @@ try {
         -Destination (Join-Path $distPath "lora-api\lora.exe") `
         -Force
 
-    $cliInternal = Join-Path $distPath "lora\_internal"
-    if (Test-Path $cliInternal) {
-        Copy-Item `
-            -LiteralPath $cliInternal `
-            -Destination (Join-Path $distPath "lora-api\_internal") `
-            -Recurse `
-            -Force
-    }
 }
 finally {
     Pop-Location
