@@ -13,6 +13,7 @@ import {
   stopBackendProcess,
   waitForBackend,
 } from "./backendProcess.mjs";
+import { registerSingleInstance } from "./singleInstance.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,11 +24,18 @@ let backendProcess;
 let backendStatus = { state: "starting", error: null };
 let quitting = false;
 
-process.on("message", (message) => {
-  if (message?.type === "lora:dev-shutdown") {
-    app.quit();
-  }
+const ownsSingleInstance = registerSingleInstance({
+  app,
+  getWindow: () => mainWindow,
 });
+
+if (ownsSingleInstance) {
+  process.on("message", (message) => {
+    if (message?.type === "lora:dev-shutdown") {
+      app.quit();
+    }
+  });
+}
 
 async function startBackend() {
   const preferredPort = Number(process.env.LORA_API_PORT || DEFAULT_API_PORT);
@@ -112,38 +120,43 @@ async function createWindow() {
   await mainWindow.loadFile(path.join(app.getAppPath(), "dist", "index.html"));
 }
 
-ipcMain.handle("backend:status", () => backendStatus);
-ipcMain.handle("project:choose-directory", async (_event, defaultPath) => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ["openDirectory", "createDirectory"],
-    title: "Choose Project",
-    defaultPath: typeof defaultPath === "string" && path.isAbsolute(defaultPath) ? defaultPath : undefined,
+if (ownsSingleInstance) {
+  ipcMain.handle("backend:status", () => backendStatus);
+  ipcMain.handle("project:choose-directory", async (_event, defaultPath) => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ["openDirectory", "createDirectory"],
+      title: "Choose Project",
+      defaultPath:
+        typeof defaultPath === "string" && path.isAbsolute(defaultPath)
+          ? defaultPath
+          : undefined,
+    });
+    return result.canceled ? null : result.filePaths[0] || null;
   });
-  return result.canceled ? null : result.filePaths[0] || null;
-});
 
-app.whenReady().then(async () => {
-  await startBackend();
-  if (quitting) {
-    return;
-  }
-  await createWindow();
+  app.whenReady().then(async () => {
+    await startBackend();
+    if (quitting) {
+      return;
+    }
+    await createWindow();
 
-  app.on("activate", async () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      await createWindow();
+    app.on("activate", async () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        await createWindow();
+      }
+    });
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+      app.quit();
     }
   });
-});
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
-
-app.on("before-quit", () => {
-  quitting = true;
-  backendStatus = { state: "stopping", error: null };
-  stopBackendProcess(backendProcess);
-});
+  app.on("before-quit", () => {
+    quitting = true;
+    backendStatus = { state: "stopping", error: null };
+    stopBackendProcess(backendProcess);
+  });
+}
