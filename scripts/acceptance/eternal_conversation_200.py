@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -22,10 +21,16 @@ from typing import Any
 from pygent import thaw_json
 
 from lora.config import load_run_config
-from lora.core.io import append_jsonl, read_json, read_jsonl_snapshot, write_json, write_json_atomic
-from lora.runtime import LoraRuntimeService
+from lora.core.io import (
+    append_jsonl,
+    read_json,
+    read_jsonl_snapshot,
+    write_json,
+    write_json_atomic,
+)
 from lora.runtime.agent.common import DEFAULT_REACT_MAX_STEPS
 from lora.runtime.eternal_conversation import load_projection
+from lora.runtime.service import LoraRuntimeService
 from lora.schema import SessionRef
 from lora.sessions import SessionManager
 
@@ -38,31 +43,115 @@ class Component:
 
 
 COMPONENTS = (
-    Component("canonical envelope", "canonical_envelope.py", "typed event envelopes with deterministic field order"),
-    Component("append-only journal", "journal.py", "durable append-before-ack storage; never process-local-only"),
-    Component("cursor checkpoint", "checkpoint.py", "monotonic durable cursors with compare-and-swap"),
-    Component("idempotency registry", "idempotency.py", "stable request keys and replay-safe outcomes"),
-    Component("retry budget", "retry_budget.py", "bounded attempts with explicit terminal errors"),
-    Component("conflict detector", "conflicts.py", "surface incompatible requirements before mutation"),
-    Component("schema migrator", "migrations.py", "forward migrations that retain readable old data"),
+    Component(
+        "canonical envelope",
+        "canonical_envelope.py",
+        "typed event envelopes with deterministic field order",
+    ),
+    Component(
+        "append-only journal",
+        "journal.py",
+        "durable append-before-ack storage; never process-local-only",
+    ),
+    Component(
+        "cursor checkpoint",
+        "checkpoint.py",
+        "monotonic durable cursors with compare-and-swap",
+    ),
+    Component(
+        "idempotency registry",
+        "idempotency.py",
+        "stable request keys and replay-safe outcomes",
+    ),
+    Component(
+        "retry budget",
+        "retry_budget.py",
+        "bounded attempts with explicit terminal errors",
+    ),
+    Component(
+        "conflict detector",
+        "conflicts.py",
+        "surface incompatible requirements before mutation",
+    ),
+    Component(
+        "schema migrator",
+        "migrations.py",
+        "forward migrations that retain readable old data",
+    ),
     Component("lease manager", "leases.py", "UTC expiries and fencing tokens"),
-    Component("snapshot projector", "snapshots.py", "finite projections without deleting source events"),
-    Component("query index", "query_index.py", "deterministic indexed lookup plus verifiable fallback"),
-    Component("audit exporter", "audit.py", "complete observable evidence with stable ordering"),
-    Component("policy evaluator", "policy.py", "fail-closed decisions with actionable reasons"),
-    Component("command router", "commands.py", "strict commands and backwards-compatible aliases"),
-    Component("config loader", "config.py", "validated configuration with no silent fallback"),
-    Component("checksum manifest", "manifest.py", "canonical UTF-8 JSON, sorted keys, and one LF"),
-    Component("offline packager", "offline.py", "release inputs resolve without network access"),
-    Component("UTC clock", "clock.py", "all persisted timestamps are timezone-aware UTC"),
-    Component("stable serializer", "serializer.py", "byte-stable output across machines and timezones"),
-    Component("error taxonomy", "errors.py", "typed errors; never silently swallow invalid state"),
-    Component("metrics reducer", "metrics.py", "replayable counters derived from durable events"),
-    Component("backup verifier", "backup.py", "content-hash verification before declaring success"),
+    Component(
+        "snapshot projector",
+        "snapshots.py",
+        "finite projections without deleting source events",
+    ),
+    Component(
+        "query index",
+        "query_index.py",
+        "deterministic indexed lookup plus verifiable fallback",
+    ),
+    Component(
+        "audit exporter",
+        "audit.py",
+        "complete observable evidence with stable ordering",
+    ),
+    Component(
+        "policy evaluator", "policy.py", "fail-closed decisions with actionable reasons"
+    ),
+    Component(
+        "command router",
+        "commands.py",
+        "strict commands and backwards-compatible aliases",
+    ),
+    Component(
+        "config loader", "config.py", "validated configuration with no silent fallback"
+    ),
+    Component(
+        "checksum manifest",
+        "manifest.py",
+        "canonical UTF-8 JSON, sorted keys, and one LF",
+    ),
+    Component(
+        "offline packager",
+        "offline.py",
+        "release inputs resolve without network access",
+    ),
+    Component(
+        "UTC clock", "clock.py", "all persisted timestamps are timezone-aware UTC"
+    ),
+    Component(
+        "stable serializer",
+        "serializer.py",
+        "byte-stable output across machines and timezones",
+    ),
+    Component(
+        "error taxonomy",
+        "errors.py",
+        "typed errors; never silently swallow invalid state",
+    ),
+    Component(
+        "metrics reducer",
+        "metrics.py",
+        "replayable counters derived from durable events",
+    ),
+    Component(
+        "backup verifier",
+        "backup.py",
+        "content-hash verification before declaring success",
+    ),
     Component("restore planner", "restore.py", "dry-run plans and atomic activation"),
-    Component("capability registry", "capabilities.py", "explicit versioned capabilities"),
-    Component("compatibility facade", "compat.py", "preserve public v1 callers while adding v2"),
-    Component("release gate", "release_gate.py", "offline reproducibility and complete targeted tests"),
+    Component(
+        "capability registry", "capabilities.py", "explicit versioned capabilities"
+    ),
+    Component(
+        "compatibility facade",
+        "compat.py",
+        "preserve public v1 callers while adding v2",
+    ),
+    Component(
+        "release gate",
+        "release_gate.py",
+        "offline reproducibility and complete targeted tests",
+    ),
 )
 
 PHASES = (
@@ -220,7 +309,9 @@ CHANGE_REQUEST_REPORTS = {
 
 IGNORED_PROJECT_PARTS = {".git", ".lora", ".pytest_cache", ".venv", "__pycache__"}
 TRACKED_PROJECT_SUFFIXES = {".json", ".md", ".py", ".toml", ".yaml", ".yml"}
-VERIFICATION_COMMAND = re.compile(r"(?:^|\s)(?:python(?:\.exe)?\s+-m\s+)?pytest(?:\s|$)", re.IGNORECASE)
+VERIFICATION_COMMAND = re.compile(
+    r"(?:^|\s)(?:python(?:\.exe)?\s+-m\s+)?pytest(?:\s|$)", re.IGNORECASE
+)
 MEMORY_SEARCH_COMMAND = re.compile(
     r"(?:dynamic_memory_cli\.py|memory-cli)\b[^\r\n]*\bsearch\b",
     re.IGNORECASE,
@@ -281,7 +372,9 @@ def build_tasks(project_root: Path) -> list[dict[str, Any]]:
                         "恢复要能重复执行，而且已经确认的数据不能丢也不能多一份。"
                     ),
                 )
-            elif phase == "change request" and component.name in BLIND_CONFLICT_REQUESTS:
+            elif (
+                phase == "change request" and component.name in BLIND_CONFLICT_REQUESTS
+            ):
                 instruction = BLIND_CONFLICT_REQUESTS[component.name]
             elif phase == "change request":
                 instruction = CHANGE_REQUEST_REPORTS.get(
@@ -332,8 +425,11 @@ def build_tasks(project_root: Path) -> list[dict[str, Any]]:
                     "number": number,
                     "phase": phase,
                     "component": component.name,
-                    "conflict_probe": component.name in BLIND_CONFLICT_REQUESTS and phase == "change request",
-                    "probe_marker": PROBE_MARKERS.get(component.name) if phase == "change request" else None,
+                    "conflict_probe": component.name in BLIND_CONFLICT_REQUESTS
+                    and phase == "change request",
+                    "probe_marker": PROBE_MARKERS.get(component.name)
+                    if phase == "change request"
+                    else None,
                     "allow_verified_noop": phase in {"edge cases", "performance"},
                     "prompt": instruction,
                 }
@@ -368,16 +464,23 @@ def initialize_project(project_root: Path) -> None:
 def project_manifest(project_root: Path) -> dict[str, str]:
     manifest: dict[str, str] = {}
     for path in sorted(project_root.rglob("*")):
-        if not path.is_file() or any(part in IGNORED_PROJECT_PARTS for part in path.relative_to(project_root).parts):
+        if not path.is_file() or any(
+            part in IGNORED_PROJECT_PARTS
+            for part in path.relative_to(project_root).parts
+        ):
             continue
         if path.suffix.casefold() not in TRACKED_PROJECT_SUFFIXES:
             continue
-        manifest[path.relative_to(project_root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        manifest[path.relative_to(project_root).as_posix()] = hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
     return manifest
 
 
 def changed_project_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
-    return sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
+    return sorted(
+        path for path in set(before) | set(after) if before.get(path) != after.get(path)
+    )
 
 
 def capture_project_baseline(project_root: Path) -> dict[str, bytes]:
@@ -421,7 +524,10 @@ def consecutive_passed_prefix(rows: list[dict[str, Any]]) -> list[dict[str, Any]
     prefix: list[dict[str, Any]] = []
     for row in rows:
         expected_number = len(prefix) + 1
-        if row.get("status") != "passed" or int(row.get("number") or 0) != expected_number:
+        if (
+            row.get("status") != "passed"
+            or int(row.get("number") or 0) != expected_number
+        ):
             break
         prefix.append(row)
     return prefix
@@ -449,7 +555,9 @@ def exclusive_run_lock(run_root: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         handle.close()
-        raise RuntimeError(f"acceptance run already has an active writer: {run_root}") from exc
+        raise RuntimeError(
+            f"acceptance run already has an active writer: {run_root}"
+        ) from exc
     try:
         yield
     finally:
@@ -474,7 +582,9 @@ def task_tool_evidence(run_dir: Path) -> dict[str, Any]:
         if row.get("status") == "success" and row.get("tool_call_id")
     }
     successful_ids = set(successful_results)
-    successful_calls = [row for row in calls if str(row.get("event_id")) in successful_ids]
+    successful_calls = [
+        row for row in calls if str(row.get("event_id")) in successful_ids
+    ]
     verification_calls = []
     memory_search_calls = []
     for row in successful_calls:
@@ -487,7 +597,10 @@ def task_tool_evidence(run_dir: Path) -> dict[str, Any]:
             and VERIFICATION_COMMAND.search(command)
             and "--version" not in command.casefold()
             and result.lstrip().startswith("exit_code: 0")
-            and (re.search(r"\b\d+ passed\b", result, re.IGNORECASE) or "[100%]" in result)
+            and (
+                re.search(r"\b\d+ passed\b", result, re.IGNORECASE)
+                or "[100%]" in result
+            )
             and not re.search(r"\b[1-9]\d* (?:failed|errors?)\b", result, re.IGNORECASE)
         ):
             verification_calls.append(row)
@@ -495,10 +608,14 @@ def task_tool_evidence(run_dir: Path) -> dict[str, Any]:
         "tool_call_count": len(calls),
         "successful_tool_call_count": len(successful_calls),
         "tool_names": sorted({str(row.get("tool_name")) for row in successful_calls}),
-        "verification_commands": [str((row.get("args") or {}).get("command") or "") for row in verification_calls],
+        "verification_commands": [
+            str((row.get("args") or {}).get("command") or "")
+            for row in verification_calls
+        ],
         "has_successful_verification": bool(verification_calls),
         "memory_search_commands": [
-            str((row.get("args") or {}).get("command") or "") for row in memory_search_calls
+            str((row.get("args") or {}).get("command") or "")
+            for row in memory_search_calls
         ],
         "memory_search_count": len(memory_search_calls),
     }
@@ -595,7 +712,9 @@ def capture_session_baseline(session_dir: Path) -> dict[str, bytes | None]:
     }
 
 
-def restore_session_baseline(session_dir: Path, baseline: dict[str, bytes | None]) -> None:
+def restore_session_baseline(
+    session_dir: Path, baseline: dict[str, bytes | None]
+) -> None:
     for relative, content in baseline.items():
         path = session_dir / relative
         if content is None:
@@ -624,12 +743,18 @@ def persist_task_baseline(
         "task_number": task_number,
         "project_paths": sorted(project_baseline),
         "session_paths": {
-            relative: content is not None for relative, content in session_baseline.items()
+            relative: content is not None
+            for relative, content in session_baseline.items()
         },
     }
     try:
-        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("metadata.json", json.dumps(metadata, ensure_ascii=False, sort_keys=True))
+        with zipfile.ZipFile(
+            temporary, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            archive.writestr(
+                "metadata.json",
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+            )
             for relative, content in project_baseline.items():
                 archive.writestr(f"project/{relative}", content)
             for relative, content in session_baseline.items():
@@ -714,7 +839,9 @@ def probe_memory_evidence(answer: str, marker: str | None) -> bool:
     return bool(marker and marker.casefold() in answer.casefold())
 
 
-def fresh_session_evidence(manager: SessionManager, session_ref: SessionRef) -> dict[str, Any]:
+def fresh_session_evidence(
+    manager: SessionManager, session_ref: SessionRef
+) -> dict[str, Any]:
     session_dir = Path(session_ref.session_dir)
     session = manager.load(session_ref.session_id)
     projection = load_projection(session_dir)
@@ -767,7 +894,9 @@ async def run(args: argparse.Namespace) -> int:
         project_root = Path(run_meta["project_root"]).resolve()
     else:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        run_root = Path(config.lora_root) / "acceptance-runs" / f"eternal-blind-200-{stamp}"
+        run_root = (
+            Path(config.lora_root) / "acceptance-runs" / f"eternal-blind-200-{stamp}"
+        )
         project_root = workspace / "workspace" / f"eternal-blind-acceptance-200-{stamp}"
         project_root.mkdir(parents=True, exist_ok=False)
         (project_root / ".acceptance-root").write_text(
@@ -809,7 +938,10 @@ async def run(args: argparse.Namespace) -> int:
         for row in interrupted_rows:
             append_jsonl(run_root / "interrupted-tasks.jsonl", row)
         (run_root / "progress.jsonl").write_text(
-            "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in resume_rows),
+            "".join(
+                json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+                for row in resume_rows
+            ),
             encoding="utf-8",
         )
         # Keep the evidence manifest aligned with the prompts actually used
@@ -820,7 +952,9 @@ async def run(args: argparse.Namespace) -> int:
         session_ref = manager.create("eternal-blind-200", mode="chat")
         fresh_history = fresh_session_evidence(manager, session_ref)
         if not fresh_history["clean"]:
-            raise RuntimeError(f"blind acceptance session was not empty: {fresh_history}")
+            raise RuntimeError(
+                f"blind acceptance session was not empty: {fresh_history}"
+            )
     runtime = LoraRuntimeService(config)
     await runtime.initialize()
     if args.resume_run:
@@ -842,24 +976,26 @@ async def run(args: argparse.Namespace) -> int:
         write_json(
             run_root / "run.json",
             {
-            "started_at": utc_now(),
-            "status": "running",
-            "session_id": session_ref.session_id,
-            "session_dir": session_ref.session_dir,
-            "project_root": str(project_root),
-            "foreground_alias": config.resolved_agent.alias if config.resolved_agent else None,
-            "foreground_model": (
-                config.resolved_agent.routes[0].model_name
-                if config.resolved_agent and config.resolved_agent.routes
-                else None
-            ),
-            "extractor_alias": config.eternal_conversation.extractor_agent_alias,
-            "builder_alias": config.eternal_conversation.builder_agent_alias,
-            "max_steps": config.max_steps,
-            "task_attempts": args.task_attempts,
-            "memory_recovery_attempts": args.memory_recovery_attempts,
-            "fresh_history": fresh_history,
-            "scenario": "conversational-blind-memory",
+                "started_at": utc_now(),
+                "status": "running",
+                "session_id": session_ref.session_id,
+                "session_dir": session_ref.session_dir,
+                "project_root": str(project_root),
+                "foreground_alias": config.resolved_agent.alias
+                if config.resolved_agent
+                else None,
+                "foreground_model": (
+                    config.resolved_agent.routes[0].model_name
+                    if config.resolved_agent and config.resolved_agent.routes
+                    else None
+                ),
+                "extractor_alias": config.eternal_conversation.extractor_agent_alias,
+                "builder_alias": config.eternal_conversation.builder_agent_alias,
+                "max_steps": config.max_steps,
+                "task_attempts": args.task_attempts,
+                "memory_recovery_attempts": args.memory_recovery_attempts,
+                "fresh_history": fresh_history,
+                "scenario": "conversational-blind-memory",
             },
         )
 
@@ -948,17 +1084,28 @@ async def run(args: argparse.Namespace) -> int:
 
                 attempt_tools = task_tool_evidence(Path(run_ref.run_dir))
                 tool_evidence["tool_call_count"] += attempt_tools["tool_call_count"]
-                tool_evidence["successful_tool_call_count"] += attempt_tools["successful_tool_call_count"]
+                tool_evidence["successful_tool_call_count"] += attempt_tools[
+                    "successful_tool_call_count"
+                ]
                 tool_evidence["tool_names"] = sorted(
                     set(tool_evidence["tool_names"]) | set(attempt_tools["tool_names"])
                 )
-                tool_evidence["verification_commands"].extend(attempt_tools["verification_commands"])
-                tool_evidence["memory_search_commands"].extend(attempt_tools["memory_search_commands"])
-                tool_evidence["memory_search_count"] += attempt_tools["memory_search_count"]
-                tool_evidence["has_successful_verification"] = bool(
-                    tool_evidence["has_successful_verification"] or attempt_tools["has_successful_verification"]
+                tool_evidence["verification_commands"].extend(
+                    attempt_tools["verification_commands"]
                 )
-                changed_paths = changed_project_paths(manifest_before, project_manifest(project_root))
+                tool_evidence["memory_search_commands"].extend(
+                    attempt_tools["memory_search_commands"]
+                )
+                tool_evidence["memory_search_count"] += attempt_tools[
+                    "memory_search_count"
+                ]
+                tool_evidence["has_successful_verification"] = bool(
+                    tool_evidence["has_successful_verification"]
+                    or attempt_tools["has_successful_verification"]
+                )
+                changed_paths = changed_project_paths(
+                    manifest_before, project_manifest(project_root)
+                )
                 verified_noop = verified_noop_allowed(
                     task,
                     changed_paths=changed_paths,
@@ -967,17 +1114,30 @@ async def run(args: argparse.Namespace) -> int:
                 gate_failures = []
                 if tool_evidence["successful_tool_call_count"] < 2:
                     gate_failures.append("fewer than two successful real tool calls")
-                if not task["conflict_probe"] and not tool_evidence["has_successful_verification"]:
-                    gate_failures.append("no successful pytest command executed through the bash tool")
+                if (
+                    not task["conflict_probe"]
+                    and not tool_evidence["has_successful_verification"]
+                ):
+                    gate_failures.append(
+                        "no successful pytest command executed through the bash tool"
+                    )
                 if task["conflict_probe"]:
                     if changed_paths:
-                        gate_failures.append("conflict probe modified persistent project files")
+                        gate_failures.append(
+                            "conflict probe modified persistent project files"
+                        )
                     if not question_evidence(answer):
-                        gate_failures.append("conflict probe did not ask a natural clarification question")
+                        gate_failures.append(
+                            "conflict probe did not ask a natural clarification question"
+                        )
                     if not probe_memory_evidence(answer, task.get("probe_marker")):
-                        gate_failures.append("conflict probe did not recover the hidden conversational marker")
+                        gate_failures.append(
+                            "conflict probe did not recover the hidden conversational marker"
+                        )
                 elif not changed_paths and not verified_noop:
-                    gate_failures.append("no persistent project source, test, or evidence file changed")
+                    gate_failures.append(
+                        "no persistent project source, test, or evidence file changed"
+                    )
                 status = attempt_status
                 error = attempt_error
                 if status == "passed" and gate_failures:
@@ -994,7 +1154,9 @@ async def run(args: argparse.Namespace) -> int:
                         )
                 manager.finish_case_run(
                     run_ref,
-                    status if status in {"passed", "failed", "error", "skipped"} else "error",
+                    status
+                    if status in {"passed", "failed", "error", "skipped"}
+                    else "error",
                 )
                 attempts.append(
                     {
@@ -1038,7 +1200,9 @@ async def run(args: argparse.Namespace) -> int:
             session_after = manager.load(session_ref.session_id)
             after = load_projection(session_dir)
             barrier_waited = False
-            uncovered = len(session_after.history) - int(after.get("covered_through") or 0)
+            uncovered = len(session_after.history) - int(
+                after.get("covered_through") or 0
+            )
             if status == "passed" and uncovered > args.max_uncovered_messages:
                 barrier_waited = True
                 try:
@@ -1061,7 +1225,9 @@ async def run(args: argparse.Namespace) -> int:
                 "error": error,
                 "answer": answer,
                 "question_evidence": question_evidence(answer),
-                "probe_memory_evidence": probe_memory_evidence(answer, task.get("probe_marker")),
+                "probe_memory_evidence": probe_memory_evidence(
+                    answer, task.get("probe_marker")
+                ),
                 "tool_evidence": tool_evidence,
                 "changed_project_paths": changed_paths,
                 "verified_noop": verified_noop,
@@ -1069,10 +1235,20 @@ async def run(args: argparse.Namespace) -> int:
                 "attempts": attempts,
                 "memory_barrier_waited": barrier_waited,
                 "projection_before": {
-                    key: before.get(key) for key in ("memory_revision", "snapshot_revision", "covered_through")
+                    key: before.get(key)
+                    for key in (
+                        "memory_revision",
+                        "snapshot_revision",
+                        "covered_through",
+                    )
                 },
                 "projection_after": {
-                    key: after.get(key) for key in ("memory_revision", "snapshot_revision", "covered_through")
+                    key: after.get(key)
+                    for key in (
+                        "memory_revision",
+                        "snapshot_revision",
+                        "covered_through",
+                    )
                 },
                 "history_messages": len(session_after.history),
             }
@@ -1118,13 +1294,22 @@ async def run(args: argparse.Namespace) -> int:
 
     session_dir = Path(session_ref.session_dir)
     projection = load_projection(session_dir)
-    rows = [json.loads(line) for line in (run_root / "progress.jsonl").read_text(encoding="utf-8").splitlines()]
+    rows = [
+        json.loads(line)
+        for line in (run_root / "progress.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
     conflict_rows = [row for row in rows if row.get("conflict_probe")]
     memory_db = session_dir / "memory" / "memory.sqlite3"
     states: dict[str, int] = {}
     if memory_db.exists():
         with sqlite3.connect(memory_db) as connection:
-            states = dict(connection.execute("SELECT build_state,COUNT(*) FROM uts GROUP BY build_state").fetchall())
+            states = dict(
+                connection.execute(
+                    "SELECT build_state,COUNT(*) FROM uts GROUP BY build_state"
+                ).fetchall()
+            )
     successful_by_component = {
         str(row["component"]): row
         for row in conflict_rows
@@ -1141,18 +1326,34 @@ async def run(args: argparse.Namespace) -> int:
     ):
         successful_by_component["compatibility facade"] = supplemental
     successful_conflicts = list(successful_by_component.values())
-    real_tool_rows = [row for row in rows if int((row.get("tool_evidence") or {}).get("successful_tool_call_count") or 0) >= 2]
-    verified_rows = [row for row in rows if (row.get("tool_evidence") or {}).get("has_successful_verification")]
+    real_tool_rows = [
+        row
+        for row in rows
+        if int((row.get("tool_evidence") or {}).get("successful_tool_call_count") or 0)
+        >= 2
+    ]
+    verified_rows = [
+        row
+        for row in rows
+        if (row.get("tool_evidence") or {}).get("has_successful_verification")
+    ]
     changed_rows = [row for row in rows if row.get("changed_project_paths")]
     verified_noop_rows = [row for row in rows if row.get("verified_noop")]
-    clean_conflicts = [row for row in conflict_rows if not row.get("changed_project_paths")]
+    clean_conflicts = [
+        row for row in conflict_rows if not row.get("changed_project_paths")
+    ]
     memory_search_rows = [
-        row for row in rows if int((row.get("tool_evidence") or {}).get("memory_search_count") or 0) > 0
+        row
+        for row in rows
+        if int((row.get("tool_evidence") or {}).get("memory_search_count") or 0) > 0
     ]
     memory_search_count = sum(
-        int((row.get("tool_evidence") or {}).get("memory_search_count") or 0) for row in rows
+        int((row.get("tool_evidence") or {}).get("memory_search_count") or 0)
+        for row in rows
     )
-    conflict_memory_search_rows = [row for row in conflict_rows if row in memory_search_rows]
+    conflict_memory_search_rows = [
+        row for row in conflict_rows if row in memory_search_rows
+    ]
     full_suite_path = run_root / "final-project-pytest.txt"
     full_suite = subprocess.run(
         [sys.executable, "-m", "pytest", "-q"],
@@ -1171,7 +1372,8 @@ async def run(args: argparse.Namespace) -> int:
         "passed_tasks": passed,
         "required_tasks": 200,
         "final_projection": {
-            key: projection.get(key) for key in ("memory_revision", "snapshot_revision", "covered_through")
+            key: projection.get(key)
+            for key in ("memory_revision", "snapshot_revision", "covered_through")
         },
         "ut_states": states,
         "conflict_probes": len(conflict_rows),
@@ -1191,9 +1393,15 @@ async def run(args: argparse.Namespace) -> int:
         "final_project_pytest_output": str(full_suite_path),
         "project_root": str(project_root),
         "raw_history": str(session_dir / "raw-history" / "events.jsonl"),
-        "foreground_history": str(session_dir / "agent-history" / "foreground" / "conversation.jsonl"),
-        "extractor_history": str(session_dir / "agent-history" / "extractor" / "conversation.jsonl"),
-        "builder_history": str(session_dir / "agent-history" / "builder" / "conversation.jsonl"),
+        "foreground_history": str(
+            session_dir / "agent-history" / "foreground" / "conversation.jsonl"
+        ),
+        "extractor_history": str(
+            session_dir / "agent-history" / "extractor" / "conversation.jsonl"
+        ),
+        "builder_history": str(
+            session_dir / "agent-history" / "builder" / "conversation.jsonl"
+        ),
         "session_history": str(session_dir / "session.json"),
     }
     accepted = (
@@ -1201,12 +1409,14 @@ async def run(args: argparse.Namespace) -> int:
         and passed == 200
         and int(projection.get("snapshot_revision") or 0) >= 2
         and int(projection.get("covered_through") or 0) > 0
-        and int(projection.get("covered_through") or 0) == len(manager.load(session_ref.session_id).history)
+        and int(projection.get("covered_through") or 0)
+        == len(manager.load(session_ref.session_id).history)
         and states.get("pending", 0) == 0
         and len(successful_conflicts) == len(BLIND_CONFLICT_REQUESTS)
         and len(real_tool_rows) == 200
         and len(verified_rows) == 200 - len(BLIND_CONFLICT_REQUESTS)
-        and len(changed_rows) + len(verified_noop_rows) == 200 - len(BLIND_CONFLICT_REQUESTS)
+        and len(changed_rows) + len(verified_noop_rows)
+        == 200 - len(BLIND_CONFLICT_REQUESTS)
         and len(clean_conflicts) == len(BLIND_CONFLICT_REQUESTS)
         and full_suite.returncode == 0
     )
@@ -1236,16 +1446,36 @@ async def run(args: argparse.Namespace) -> int:
         f"- Final full-project pytest: {'PASS' if full_suite.returncode == 0 else 'FAIL'}\n"
         f"- Failure: {failure or 'none'}\n\n"
         "## Preserved histories\n\n"
-        + "\n".join(f"- {key}: `{value}`" for key, value in proof.items() if key.endswith("history"))
+        + "\n".join(
+            f"- {key}: `{value}`"
+            for key, value in proof.items()
+            if key.endswith("history")
+        )
         + "\n\n## Hidden-memory probe excerpts\n\n"
         + (excerpts or "No successful conflict evidence.")
         + "\n",
         encoding="utf-8",
     )
     run_meta = read_json(run_root / "run.json")
-    run_meta.update({"finished_at": utc_now(), "status": "passed" if accepted else "failed", "failure": failure})
+    run_meta.update(
+        {
+            "finished_at": utc_now(),
+            "status": "passed" if accepted else "failed",
+            "failure": failure,
+        }
+    )
     write_json(run_root / "run.json", run_meta)
-    print(json.dumps({"run_root": str(run_root), "session_id": session_ref.session_id, **proof, "accepted": accepted}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "run_root": str(run_root),
+                "session_id": session_ref.session_id,
+                **proof,
+                "accepted": accepted,
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0 if accepted else 1
 
 

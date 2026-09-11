@@ -15,7 +15,7 @@ from lora.sessions import SessionManager
 
 
 class ScriptedRecoveryInvoker:
-    def validate_route(self, _route: Any) -> None:
+    def validate_model(self, _model: Any) -> None:
         return None
 
     def execute(self, *, message: Any, **_kwargs: Any) -> ModelExecution:
@@ -114,8 +114,8 @@ async def crash_at_boundary(
         "recovery",
         run_config=config,
     )
-    from lora.runtime.agent import core as core_module
-    from lora.runtime.agent import pipeline as pipeline_module
+    import lora.runtime.agent.core as core_module
+    import lora.runtime.agent.pipeline as pipeline_module
 
     original = pipeline_module.checkpoint_conversation_message
 

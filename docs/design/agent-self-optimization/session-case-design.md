@@ -559,7 +559,7 @@ Regression Gate 顺序：
 lora session create --case read-file-basic
 lora session list
 lora session show <session_id>
-lora session resume <session_id>
+lora session show <session_id>
 
 lora case run cases/read-file-basic.yaml
 lora case run cases/read-file-basic.yaml --session <session_id>
@@ -627,4 +627,3 @@ run case -> evaluate -> analyze if failed -> generate tests -> repair -> regress
 6. Repair 必须受测试和 gate 约束。
 7. Case 要尽量确定性，长期多轮任务才共享 session。
 8. Agent 自优化的最小闭环是：失败可复现、原因可定位、测试可回归、修复可验证。
-

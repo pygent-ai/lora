@@ -1,22 +1,24 @@
 from __future__ import annotations
 
+import inspect
 import tempfile
 import unittest
-import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
 from pygent import ToolResult as PygentToolResult
 
+from lora.runtime.tools import ToolObserver
 from lora.schema import CaseRunRef
-from lora.runtime import ToolObserver
 from lora.tracing import EventStore
 
 
 class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
     """Scenario specs for net file-effect tracking around arbitrary tools."""
 
-    async def test_tracked_tool_call_records_bash_net_workspace_effects_once(self) -> None:
+    async def test_tracked_tool_call_records_bash_net_workspace_effects_once(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"
             workspace.mkdir()
@@ -24,11 +26,17 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
             deleted = workspace / "deleted.txt"
             edited.write_text("old\n", encoding="utf-8")
             deleted.write_text("remove\n", encoding="utf-8")
-            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            run = CaseRunRef(
+                session_id="s1",
+                case_id="c1",
+                case_run_id="r1",
+                run_dir=Path(tmp) / "run",
+            )
             interceptor = _tracked_interceptor(run, workspace)
             ctx = "turn-0001"
 
-            result = await _call_and_record(interceptor,
+            result = await _call_and_record(
+                interceptor,
                 "bash",
                 {"command": "echo changed > workspace-files"},
                 ctx,
@@ -36,9 +44,17 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(result.status, "success")
-            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
-            self.assertEqual([event["type"] for event in file_events], ["file.write", "file.edit", "file.delete"])
-            self.assertEqual([Path(event["path"]).name for event in file_events], ["created.txt", "edited.txt", "deleted.txt"])
+            file_events = list(
+                EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl")
+            )
+            self.assertEqual(
+                [event["type"] for event in file_events],
+                ["file.write", "file.edit", "file.delete"],
+            )
+            self.assertEqual(
+                [Path(event["path"]).name for event in file_events],
+                ["created.txt", "edited.txt", "deleted.txt"],
+            )
             for event in file_events:
                 self.assertEqual(event["payload"]["tool_call_id"], result.tool_call_id)
                 self.assertEqual(event["payload"]["tool_name"], "bash")
@@ -49,11 +65,17 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"
             workspace.mkdir()
-            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            run = CaseRunRef(
+                session_id="s1",
+                case_id="c1",
+                case_run_id="r1",
+                run_dir=Path(tmp) / "run",
+            )
             interceptor = _tracked_interceptor(run, workspace)
             ctx = "turn-0001"
 
-            result = await _call_and_record(interceptor,
+            result = await _call_and_record(
+                interceptor,
                 "bash",
                 {"command": "echo partial > partial.txt"},
                 ctx,
@@ -61,47 +83,73 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(result.status, "error")
-            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
-            tool_results = list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))
+            file_events = list(
+                EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl")
+            )
+            tool_results = list(
+                EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl")
+            )
             self.assertEqual(len(file_events), 1)
             self.assertEqual(file_events[0]["type"], "file.write")
             self.assertEqual(Path(file_events[0]["path"]).name, "partial.txt")
             self.assertEqual(tool_results[0]["status"], "error")
 
-    async def test_tracked_tool_call_merges_write_tool_args_with_observed_effect(self) -> None:
+    async def test_tracked_tool_call_merges_write_tool_args_with_observed_effect(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"
             workspace.mkdir()
             path = workspace / "declared.txt"
             path.write_text("old\n", encoding="utf-8")
-            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            run = CaseRunRef(
+                session_id="s1",
+                case_id="c1",
+                case_run_id="r1",
+                run_dir=Path(tmp) / "run",
+            )
             interceptor = _tracked_interceptor(run, workspace)
             ctx = "turn-0001"
 
-            result = await _call_and_record(interceptor,
+            result = await _call_and_record(
+                interceptor,
                 "write",
                 {"file_path": str(path), "content": "new\n"},
                 ctx,
-                lambda file_path, content: Path(file_path).write_text(content, encoding="utf-8"),
+                lambda file_path, content: Path(file_path).write_text(
+                    content, encoding="utf-8"
+                ),
             )
 
             self.assertEqual(result.status, "success")
-            file_events = list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
+            file_events = list(
+                EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl")
+            )
             self.assertEqual(len(file_events), 1)
             self.assertEqual(file_events[0]["type"], "file.edit")
-            self.assertEqual(file_events[0]["payload"]["detected_by"], ["tool_args", "snapshot_diff"])
+            self.assertEqual(
+                file_events[0]["payload"]["detected_by"], ["tool_args", "snapshot_diff"]
+            )
             self.assertEqual(file_events[0]["payload"]["confidence"], "observed")
 
-    async def test_tracked_tool_call_does_not_record_workspace_outside_effects(self) -> None:
+    async def test_tracked_tool_call_does_not_record_workspace_outside_effects(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "workspace"
             workspace.mkdir()
             outside = Path(tmp) / "outside.txt"
-            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run")
+            run = CaseRunRef(
+                session_id="s1",
+                case_id="c1",
+                case_run_id="r1",
+                run_dir=Path(tmp) / "run",
+            )
             interceptor = _tracked_interceptor(run, workspace)
             ctx = "turn-0001"
 
-            result = await _call_and_record(interceptor,
+            result = await _call_and_record(
+                interceptor,
                 "bash",
                 {"command": "write outside"},
                 ctx,
@@ -109,9 +157,13 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(result.status, "success")
-            self.assertEqual(list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl")), [])
+            self.assertEqual(
+                list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl")), []
+            )
 
-    async def test_durable_batch_executor_records_effects_after_tool_result(self) -> None:
+    async def test_durable_batch_executor_records_effects_after_tool_result(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             session_dir = Path(tmp) / ".lora" / "sessions" / "s1"
             run_dir = session_dir / "cases" / "c1" / "runs" / "r1"
@@ -121,9 +173,15 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
             workspace.mkdir()
             edited = workspace / "edited.txt"
             edited.write_text("old\n", encoding="utf-8")
-            run = CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=run_dir)
+            run = CaseRunRef(
+                session_id="s1", case_id="c1", case_run_id="r1", run_dir=run_dir
+            )
 
-            from lora.runtime.file_effects import DeferredFileEffectBatch, FileEffectBaselineStore, process_file_effect_batch
+            from lora.runtime.file_effects import (
+                DeferredFileEffectBatch,
+                FileEffectBaselineStore,
+                process_file_effect_batch,
+            )
             from lora.runtime.tools import FileEffectTracker
 
             store = EventStore(run)
@@ -137,14 +195,17 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
             )
             ctx = "turn-0001"
 
-            result = await _call_and_record(interceptor,
+            result = await _call_and_record(
+                interceptor,
                 "bash",
                 {"command": "echo new > edited.txt"},
                 ctx,
                 lambda command: edited.write_text("new\n", encoding="utf-8"),
                 process_jobs=False,
             )
-            tool_results_before_worker = list(EventStore.iter_jsonl(run_dir / "tool_results.jsonl"))
+            tool_results_before_worker = list(
+                EventStore.iter_jsonl(run_dir / "tool_results.jsonl")
+            )
             self.assertEqual(result.status, "success")
             self.assertEqual(tool_results_before_worker[0]["status"], "success")
             self.assertFalse((run_dir / "file_events.jsonl").exists())
@@ -153,13 +214,17 @@ class FileEffectTrackingScenarioTests(unittest.IsolatedAsyncioTestCase):
                 DeferredFileEffectBatch.create(
                     case_run_ref=run,
                     workspace_root=workspace,
-                    jobs=[result.deferred_job] if result.deferred_job is not None else [],
+                    jobs=[result.deferred_job]
+                    if result.deferred_job is not None
+                    else [],
                 )
             )
 
             file_events = list(EventStore.iter_jsonl(run_dir / "file_events.jsonl"))
             self.assertEqual([event["type"] for event in file_events], ["file.edit"])
-            self.assertEqual(file_events[0]["payload"]["tool_call_id"], result.tool_call_id)
+            self.assertEqual(
+                file_events[0]["payload"]["tool_call_id"], result.tool_call_id
+            )
 
 
 def _tracked_interceptor(run: CaseRunRef, workspace: Path) -> ToolObserver:
@@ -225,7 +290,9 @@ async def _call_and_record(
         process_file_effect_batch(
             DeferredFileEffectBatch.create(
                 case_run_ref=interceptor.store.case_run_ref,
-                workspace_root=tracker.workspace_root if tracker is not None else Path.cwd(),
+                workspace_root=tracker.workspace_root
+                if tracker is not None
+                else Path.cwd(),
                 jobs=jobs,
             )
         )

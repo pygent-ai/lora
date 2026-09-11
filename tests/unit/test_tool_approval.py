@@ -15,12 +15,14 @@ from pygent import (
 from pygent.tool import ToolSideEffect
 
 from lora.config import load_run_config
-from lora.runtime.agent import LoraToolAuthorization
+from lora.runtime.agent.pipeline import LoraToolAuthorization
 from lora.runtime.service import LoraRuntimeService
 
 
 @pytest.mark.asyncio
-async def test_approval_waiter_exists_when_request_event_is_published(tmp_path: Path) -> None:
+async def test_approval_waiter_exists_when_request_event_is_published(
+    tmp_path: Path,
+) -> None:
     with patch("lora.config.loader.Path.home", return_value=tmp_path / "home"):
         service = LoraRuntimeService(load_run_config(workspace_root=tmp_path))
     await service.initialize()

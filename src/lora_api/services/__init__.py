@@ -1,2 +1,1 @@
-"""Service placeholders that adapt core Lora behavior for API routes."""
-
+"""Application services that adapt core Lora behavior for API routes."""

@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from lora.evaluation import CaseManager
 from lora.config import load_mapping_file, load_run_config
 from lora.core.redaction import REDACTED, redact_secrets
+from lora.evaluation import CaseManager
 from lora.schema import CaseRunRef, ContextEvent, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import EventStore
@@ -20,7 +20,9 @@ class DocumentationRegressionFindingTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
         dependency_groups = pyproject.get("dependency-groups", {})
-        optional_dependencies = pyproject.get("project", {}).get("optional-dependencies", {})
+        optional_dependencies = pyproject.get("project", {}).get(
+            "optional-dependencies", {}
+        )
         declared = [
             *pyproject.get("project", {}).get("dependencies", []),
             *dependency_groups.get("dev", []),
@@ -29,7 +31,10 @@ class DocumentationRegressionFindingTests(unittest.TestCase):
         ]
 
         self.assertTrue(
-            any(str(item).split("==", 1)[0].split(">=", 1)[0] == "pytest" for item in declared),
+            any(
+                str(item).split("==", 1)[0].split(">=", 1)[0] == "pytest"
+                for item in declared
+            ),
             "README and local workflow use pytest, but pyproject.toml does not declare it",
         )
 
@@ -42,7 +47,10 @@ class ConfigParserRegressionFindingTests(unittest.TestCase):
             user_root = home / ".lora"
             root.mkdir()
             user_root.mkdir(parents=True)
-            (user_root / "config.yaml").write_text("agents:\n  - alias: default\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: user-model\n          base_url: https://example.test/v1\n          api_key_env: TEST_KEY\n", encoding="utf-8")
+            (user_root / "config.yaml").write_text(
+                "agents:\n  - alias: default\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: user-model\n          base_url: https://example.test/v1\n          api_key_env: TEST_KEY\n",
+                encoding="utf-8",
+            )
 
             with patch("lora.config.loader.Path.home", return_value=home):
                 config = load_run_config(workspace_root=root)
@@ -106,7 +114,9 @@ class WorkspacePathSafetyRegressionFindingTests(unittest.TestCase):
             )
             manager = CaseManager(root)
             case = manager.load(case_path)
-            run = CaseRunRef(session_id="s1", case_id=case.id, case_run_id="r1", run_dir=root / "run")
+            run = CaseRunRef(
+                session_id="s1", case_id=case.id, case_run_id="r1", run_dir=root / "run"
+            )
 
             with self.assertRaises(ValueError):
                 manager.prepare_workspace(case, run)
@@ -135,12 +145,16 @@ class WorkspacePathSafetyRegressionFindingTests(unittest.TestCase):
             )
             manager = CaseManager(root)
             case = manager.load(case_path)
-            run = CaseRunRef(session_id="s1", case_id=case.id, case_run_id="r1", run_dir=root / "run")
+            run = CaseRunRef(
+                session_id="s1", case_id=case.id, case_run_id="r1", run_dir=root / "run"
+            )
 
             with self.assertRaises(ValueError):
                 manager.prepare_workspace(case, run)
 
-    def test_prepare_workspace_rejects_unchanged_baseline_outside_workspace(self) -> None:
+    def test_prepare_workspace_rejects_unchanged_baseline_outside_workspace(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
@@ -163,7 +177,9 @@ class WorkspacePathSafetyRegressionFindingTests(unittest.TestCase):
             )
             manager = CaseManager(root)
             case = manager.load(case_path)
-            run = CaseRunRef(session_id="s1", case_id=case.id, case_run_id="r1", run_dir=root / "run")
+            run = CaseRunRef(
+                session_id="s1", case_id=case.id, case_run_id="r1", run_dir=root / "run"
+            )
 
             with self.assertRaises(ValueError):
                 manager.prepare_workspace(case, run)
@@ -186,7 +202,9 @@ class SessionPathSafetyRegressionFindingTests(unittest.TestCase):
 
     def test_start_case_run_rejects_case_id_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            manager = SessionManager(RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora"))
+            manager = SessionManager(
+                RunConfig(workspace_root=tmp, lora_root=Path(tmp) / ".lora")
+            )
             session = manager.create("safe")
 
             with self.assertRaises(ValueError):
@@ -196,15 +214,35 @@ class SessionPathSafetyRegressionFindingTests(unittest.TestCase):
 class TraceRegressionFindingTests(unittest.TestCase):
     def test_append_rejects_unknown_event_type(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            store = EventStore(CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run"))
+            store = EventStore(
+                CaseRunRef(
+                    session_id="s1",
+                    case_id="c1",
+                    case_run_id="r1",
+                    run_dir=Path(tmp) / "run",
+                )
+            )
 
             with self.assertRaises(ValueError):
-                store.append("totally.unknown", actor="system", payload={}, turn_id="turn-0001")
+                store.append(
+                    "totally.unknown", actor="system", payload={}, turn_id="turn-0001"
+                )
 
     def test_prompt_render_event_append_does_not_mutate_caller_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            store = EventStore(CaseRunRef(session_id="s1", case_id="c1", case_run_id="r1", run_dir=Path(tmp) / "run"))
-            payload = {"prompt": "hello", "prompt_hash": "h1", "module_ids": ["system.identity"]}
+            store = EventStore(
+                CaseRunRef(
+                    session_id="s1",
+                    case_id="c1",
+                    case_run_id="r1",
+                    run_dir=Path(tmp) / "run",
+                )
+            )
+            payload = {
+                "prompt": "hello",
+                "prompt_hash": "h1",
+                "module_ids": ["system.identity"],
+            }
             event = ContextEvent(
                 id="evt_prompt",
                 session_id="s1",

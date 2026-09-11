@@ -33,7 +33,9 @@ class ModelRouteConfig:
         self.model_name = _require(self.model_name, "model route model_name")
         self.base_url = _require(self.base_url, "model route base_url")
         self.api_key_env = _require(self.api_key_env, "model route api_key_env")
-        self.api_key_source = _require(self.api_key_source, "model route api_key_source")
+        self.api_key_source = _require(
+            self.api_key_source, "model route api_key_source"
+        )
 
 
 @dataclass(slots=True)
@@ -124,7 +126,9 @@ class RuntimeCapacityConfig:
     def __post_init__(self) -> None:
         if self.scope not in {"runtime_instance", "deployment"}:
             raise ValueError("runtime capacity scope is invalid")
-        self.coordinator_path = _require(self.coordinator_path, "capacity coordinator_path")
+        self.coordinator_path = _require(
+            self.coordinator_path, "capacity coordinator_path"
+        )
 
 
 @dataclass(slots=True)
@@ -158,7 +162,9 @@ class MCPServerConfig:
     def __post_init__(self) -> None:
         self.name = _require(self.name, "MCP server name")
         self.args = tuple(str(item) for item in self.args)
-        self.env_from = tuple(_require(item, "MCP env_from item") for item in self.env_from)
+        self.env_from = tuple(
+            _require(item, "MCP env_from item") for item in self.env_from
+        )
         self.timeout = float(self.timeout)
         if self.timeout <= 0:
             raise ValueError("MCP timeout must be greater than zero")
@@ -176,7 +182,9 @@ class DelegationConfig:
     background_enabled: bool = True
 
     def __post_init__(self) -> None:
-        self.allowed_agents = tuple(_require(item, "delegation agent") for item in self.allowed_agents)
+        self.allowed_agents = tuple(
+            _require(item, "delegation agent") for item in self.allowed_agents
+        )
         self.max_depth = int(self.max_depth)
         self.max_parallel = int(self.max_parallel)
         if self.max_depth < 1 or self.max_parallel < 1:
@@ -227,11 +235,13 @@ def default_cli_bash_presets() -> list[BashCliPreset]:
             description="Python type checker. Use it for static type validation when available.",
         ),
         BashCliPreset(
-            name="lora-chat",
-            command='uv run lora chat --help',
+            name="lora-session",
+            command="uv run lora session --help",
             description=(
-                'Project chat CLI. Use `uv run lora chat --new -m "<task>"` to start a new sub-agent session, '
-                'or `uv run lora chat --session <session_id> -m "<task>"` to continue one.'
+                "Session CLI. Use `uv run lora session start` for a new background Agent, "
+                "`uv run lora session send <target> --source-session <current>` for "
+                "tool-boundary Agent messages, and "
+                "`uv run lora session run` or `chat` for user turns."
             ),
         ),
         BashCliPreset(
@@ -255,9 +265,13 @@ class RunConfig:
     case_file: str | None = None
     max_steps: int = -1
     agent_alias: str = "default"
-    resolved_agent: ResolvedAgentConfig | None = field(default=None, repr=False, compare=False)
+    resolved_agent: ResolvedAgentConfig | None = field(
+        default=None, repr=False, compare=False
+    )
     user_identity: str = "default"
-    cli_bash_presets: list[BashCliPreset] = field(default_factory=default_cli_bash_presets)
+    cli_bash_presets: list[BashCliPreset] = field(
+        default_factory=default_cli_bash_presets
+    )
     bash_full_output_allowlist: list[str] = field(default_factory=list)
     allow_read_outside_workspace: bool = True
     user_lora_root: str = ""
@@ -266,18 +280,27 @@ class RunConfig:
     context_compression_trigger_ratio: float = 0.9
     context_compression_file_read_count: int = 5
     context_compression_file_read_max_chars: int = 5000
-    runtime_durability: RuntimeDurabilityConfig = field(default_factory=RuntimeDurabilityConfig)
-    runtime_capacity: RuntimeCapacityConfig = field(default_factory=RuntimeCapacityConfig)
-    runtime_approvals: RuntimeApprovalConfig = field(default_factory=RuntimeApprovalConfig)
+    runtime_durability: RuntimeDurabilityConfig = field(
+        default_factory=RuntimeDurabilityConfig
+    )
+    runtime_capacity: RuntimeCapacityConfig = field(
+        default_factory=RuntimeCapacityConfig
+    )
+    runtime_approvals: RuntimeApprovalConfig = field(
+        default_factory=RuntimeApprovalConfig
+    )
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     delegation: DelegationConfig = field(default_factory=DelegationConfig)
-    eternal_conversation: EternalConversationConfig = field(default_factory=EternalConversationConfig)
+    eternal_conversation: EternalConversationConfig = field(
+        default_factory=EternalConversationConfig
+    )
 
     def __post_init__(self) -> None:
         self.workspace_root = _abs_path(self.workspace_root)
         self.user_lora_root = _abs_path(self.user_lora_root or (Path.home() / ".lora"))
         self.lora_root = _abs_path(
-            self.lora_root or project_lora_root(self.workspace_root, self.user_lora_root)
+            self.lora_root
+            or project_lora_root(self.workspace_root, self.user_lora_root)
         )
         if self.case_file is not None:
             self.case_file = _abs_path(self.case_file)
@@ -300,15 +323,25 @@ class RunConfig:
             for item in self.bash_full_output_allowlist
         ]
         self.context_compression_enabled = bool(self.context_compression_enabled)
-        self.context_compression_trigger_ratio = float(self.context_compression_trigger_ratio)
+        self.context_compression_trigger_ratio = float(
+            self.context_compression_trigger_ratio
+        )
         if self.context_compression_trigger_ratio <= 0:
             raise ValueError("context_compression_trigger_ratio must be greater than 0")
-        self.context_compression_file_read_count = int(self.context_compression_file_read_count)
+        self.context_compression_file_read_count = int(
+            self.context_compression_file_read_count
+        )
         if self.context_compression_file_read_count < 0:
-            raise ValueError("context_compression_file_read_count must be greater than or equal to 0")
-        self.context_compression_file_read_max_chars = int(self.context_compression_file_read_max_chars)
+            raise ValueError(
+                "context_compression_file_read_count must be greater than or equal to 0"
+            )
+        self.context_compression_file_read_max_chars = int(
+            self.context_compression_file_read_max_chars
+        )
         if self.context_compression_file_read_max_chars < 0:
-            raise ValueError("context_compression_file_read_max_chars must be greater than or equal to 0")
+            raise ValueError(
+                "context_compression_file_read_max_chars must be greater than or equal to 0"
+            )
         for name, cls in (
             ("runtime_durability", RuntimeDurabilityConfig),
             ("runtime_capacity", RuntimeCapacityConfig),
@@ -334,7 +367,9 @@ class RunConfig:
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
-        data["resolved_agent"] = None if self.resolved_agent is None else self.resolved_agent.safe_dict()
+        data["resolved_agent"] = (
+            None if self.resolved_agent is None else self.resolved_agent.safe_dict()
+        )
         return data
 
     @classmethod

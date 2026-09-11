@@ -1,14 +1,13 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
 import time
-from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pygent import Message as PygentMessage
 from pygent.runtime.codec import context_from_dict, message_from_dict
@@ -21,14 +20,14 @@ DEFAULT_REACT_MAX_STEPS = 500
 def _to_pygent_message(message: dict[str, Any]) -> PygentMessage | None:
     if message.get("role") == "system":
         return None
-    wire_message = dict(message)
-    if wire_message.get("role") == "assistant":
-        # Pygent 0.3 makes usage part of the authoritative AIMessage wire
-        # contract. Lora sessions created by older releases legitimately lack
-        # it, so normalize them at the storage boundary instead of weakening
-        # Pygent's codec.
-        wire_message.setdefault("usage", {})
-    return message_from_dict(wire_message)
+    # Pygent's continuation field is now part of the assistant wire contract.
+    # Historical LoRA sessions predate that field, so normalize only the
+    # missing value while preserving any provider-scoped continuation that was
+    # captured by newer runs.
+    normalized = message
+    if message.get("role") == "assistant" and "continuation" not in message:
+        normalized = {**message, "continuation": None}
+    return message_from_dict(normalized)
 
 
 def _serialize_tool_payload_for_model(payload: dict[str, Any]) -> str:
@@ -64,22 +63,11 @@ def _initial_lora_context(
             if (converted := _to_pygent_message(item)) is not None
         )
         return replace(context, messages=messages), False
-    if (
-        checkpoint is not None
-        and (
-            not isinstance(checkpoint, Mapping)
-            or checkpoint.get("schema") != LoraContext.context_schema
-            or checkpoint.get("version") != LoraContext.context_schema_version
-        )
-    ):
-        # Pygent 0.3.3 replaced full_history with bounded native commits and
-        # changed the base Agent context schema. Rebuild older checkpoints
-        # from SessionManager's authoritative history.
-        checkpoint = None
     if checkpoint is not None:
-        restored = context_from_dict(checkpoint, registry=LORA_CONTEXT_CODECS)
-        if not isinstance(restored, LoraContext):
-            raise TypeError("session agent context is not a LoraContext")
+        restored = cast(
+            LoraContext,
+            context_from_dict(checkpoint, registry=LORA_CONTEXT_CODECS),
+        )
         return (
             replace(
                 context,
@@ -158,7 +146,9 @@ def _write_text_atomic(path: Path, text: str) -> None:
 
 
 def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
-    _write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    _write_text_atomic(
+        path, json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    )
 
 
 def _session_dir_for_run(run_dir: Path) -> Path:

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import os
@@ -9,61 +9,59 @@ from typing import Any
 from pygent import (
     Agent,
     AIMessage,
+    CapabilityPresetCatalog,
     ExponentialBackoff,
-    FallbackPolicy,
     GenerationConfig,
     ModelCallLayer,
+    ModelEntry,
     ModelErrorKind,
-    ModelGroupConfig,
-    ModelRoute,
+    ModelGroup,
+    ModelSpec,
     PygentAgent,
     RetryPolicy,
     ToolCallLayer,
     ToolDefinition,
     ToolKit,
     UserMessage,
-    freeze_json_object,
 )
+from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
 from pygent.llm import (
     DefaultModelInvoker,
-    ModelProviderCapabilities,
     OpenAICompatibleAdapter,
     OpenAICompatibleClient,
 )
-from pygent.tool import StandardTools, ToolSpec
-from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
 from pygent.runtime.codec import context_to_dict
+from pygent.tool import StandardTools, ToolSpec
 
 from lora.core.io import aclose_if_supported, plain_data
-from lora.schema import ModelRouteConfig, ResolvedAgentConfig, RunConfig
-from lora.sessions import SessionManager
-from lora.tracing import DIFF_TOOL_SPEC, EventStore
 from lora.runtime.context import LORA_CONTEXT_CODECS, LoraContext
 from lora.runtime.context_compression import COMPRESSION_REQUEST_PROMPT
 from lora.runtime.eternal_conversation import EternalConversationHarness
 from lora.runtime.file_effects import FILE_EFFECT_TOOL_SPEC
 from lora.runtime.reminders import ReminderService
-from .common import DEFAULT_REACT_MAX_STEPS
+from lora.schema import ModelRouteConfig, ResolvedAgentConfig, RunConfig
+from lora.sessions import SessionManager
+from lora.tracing import DIFF_TOOL_SPEC, EventStore
 
+from .common import DEFAULT_REACT_MAX_STEPS
 from .compressor import LoraCompressorModule
 from .model_invoker import LoraModelInvoker
 from .pipeline import (
-    ConversationCheckpointModelModule,
     ContextSnapshotModelModule,
+    ConversationCheckpointModelModule,
     ConversationCheckpointToolModule,
     DynamicPromptModule,
+    ForegroundModelModule,
     LoraToolAuthorization,
     PersistedDiffModule,
-    ForegroundModelModule,
     PreparedToolModule,
     RepeatedToolCallGuardModule,
     RuntimeReminderModule,
     ToolAuditModule,
-    checkpoint_conversation_message,
     _model_tool_definition,
+    checkpoint_conversation_message,
 )
 from .prompts import PromptRegistry
-
 
 DISABLED_COMPRESSION_WINDOW_TOKENS = 1 << 60
 MAX_CONTEXT_COMPRESSIONS = 128
@@ -89,15 +87,6 @@ def _verify_ssl_from_env() -> bool | None:
     raise ValueError(
         f"{PYGENT_VERIFY_SSL_ENV} must be one of: 1, 0, true, false, yes, no, on, off"
     )
-
-
-class _DeepSeekAdapter(OpenAICompatibleAdapter):
-    """Use DeepSeek's documented non-thinking mode for bounded agent operations."""
-
-    def build_request(self, request: Any) -> Any:
-        body = super().build_request(request).to_dict()
-        body["thinking"] = {"type": "disabled"}
-        return freeze_json_object(body)
 
 
 def _preferred_model_route(config: ResolvedAgentConfig) -> ModelRouteConfig:
@@ -129,7 +118,8 @@ def _actual_model_route(
 ) -> ModelRouteConfig | None:
     if answer is None:
         return None
-    route_id = dict(answer.metadata).get("route_id")
+    metadata = dict(answer.metadata)
+    route_id = metadata.get("model_key", metadata.get("route_id"))
     if not isinstance(route_id, str):
         return None
     return next((route for route in config.routes if route.id == route_id), None)
@@ -178,7 +168,9 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         self.config = config
         resolved = resolved_agent or config.resolved_agent
         if resolved is None:
-            raise ValueError("LoraAgent requires a resolved routes-based agent configuration")
+            raise ValueError(
+                "LoraAgent requires a resolved routes-based agent configuration"
+            )
         self.resolved_agent: ResolvedAgentConfig = resolved
         self.prompt_registry = prompt_registry
         self.managed_model = managed_model
@@ -210,18 +202,8 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
     def _build_model_invoker(self) -> DefaultModelInvoker:
         routes = self._resolved_routes()
         verify_ssl = _verify_ssl_from_env()
-        providers = {route.provider for route in routes}
-        adapters = {}
-        for provider in providers:
-            provider_routes = [route for route in routes if route.provider == provider]
-            adapters[provider] = (
-                _DeepSeekAdapter()
-                if provider_routes
-                and all("api.deepseek.com" in route.base_url.lower() for route in provider_routes)
-                else OpenAICompatibleAdapter()
-            )
         return LoraModelInvoker(
-            adapters=adapters,
+            adapters={"openai_chat_completions": OpenAICompatibleAdapter()},
             clients={
                 route.id: OpenAICompatibleClient(
                     base_url=route.base_url,
@@ -230,43 +212,44 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 )
                 for route in routes
             },
-            capabilities={
-                route.id: ModelProviderCapabilities(streaming=True) for route in routes
-            },
         )
 
     def _resolved_routes(self) -> tuple[Any, ...]:
         return self.resolved_agent.routes
 
-    def _model_routes(self) -> tuple[ModelRoute, ...]:
-        return tuple(
-            ModelRoute(
+    def _model_entries(self) -> tuple[ModelEntry, ...]:
+        capabilities = CapabilityPresetCatalog.builtin().presets[
+            "text_tools_structured_reasoning"
+        ].materialize(context_tokens=1_000_000, max_output_tokens=384_000)
+        entries = {
+            route.id: ModelEntry(
                 route.id,
-                provider=route.provider,
-                model=route.model_name,
-                provider_options=freeze_json_object({"stream_options": {"include_usage": True}}),
+                ModelSpec(
+                    provider=route.provider,
+                    model_id=route.model_name,
+                    protocol="openai_chat_completions",
+                    provider_options=(
+                        {"thinking": {"type": "disabled"}}
+                        if "api.deepseek.com" in route.base_url.lower()
+                        else {}
+                    ),
+                    capabilities=capabilities,
+                ),
             )
             for route in self._resolved_routes()
-        )
+        }
+        order = self.resolved_agent.fallback or tuple(entries)
+        return tuple(entries[route_id] for route_id in order)
 
     def new_model_layer(self) -> ModelCallLayer:
         if self.llm is None:
             raise RuntimeError("model invoker is not configured")
-        routes = self._resolved_routes()
         group = (
-            ModelGroupConfig.deferred(
-                name=f"lora:{self.resolved_agent.alias}",
-                capacity_key="lora-chat-model",
-            )
+            ModelGroup.deferred(name=f"lora:{self.resolved_agent.alias}")
             if self.managed_model
-            else ModelGroupConfig(
+            else ModelGroup(
                 name=f"lora:{self.resolved_agent.alias}",
-                routes=self._model_routes(),
-                fallback=FallbackPolicy(
-                    self.resolved_agent.fallback or tuple(route.id for route in routes)
-                ),
-                max_concurrency=None,
-                capacity_key="lora-chat-model",
+                models=self._model_entries(),
             )
         )
         retry = self.resolved_agent.retry
@@ -300,7 +283,6 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 preauthorized_tools=self.config.runtime_approvals.preauthorized_tools,
                 interactive=self.interactive_approvals,
                 scope_key="lora",
-                detached_tools=("delegate_background",),
             ),
             max_concurrency=max_concurrency,
         )
@@ -331,7 +313,9 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                         tools=self.new_tool_layer(),
                         audit=ToolAuditModule(self.config),
                         reminders=RuntimeReminderModule(self.reminders),
-                        persisted_diff=PersistedDiffModule(self.workspace_root, diff_tasks),
+                        persisted_diff=PersistedDiffModule(
+                            self.workspace_root, diff_tasks
+                        ),
                     ),
                 ),
             )
@@ -341,7 +325,11 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 and not self.config.eternal_conversation.enabled
                 and isinstance(context_window, int)
             )
-            context_window_tokens = context_window if isinstance(context_window, int) and compression_enabled else DISABLED_COMPRESSION_WINDOW_TOKENS
+            context_window_tokens = (
+                context_window
+                if isinstance(context_window, int) and compression_enabled
+                else DISABLED_COMPRESSION_WINDOW_TOKENS
+            )
             max_steps = (
                 self.config.max_steps
                 if self.config.max_steps > 0
@@ -354,14 +342,18 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 compressor=LoraCompressorModule(self.config, compression_model),
                 tools=prepared_tools,
                 context_window_tokens=context_window_tokens,
-                compression_trigger_ratio=min(self.config.context_compression_trigger_ratio, 0.999_999),
+                compression_trigger_ratio=min(
+                    self.config.context_compression_trigger_ratio, 0.999_999
+                ),
                 compression_context_window_tokens=context_window_tokens,
                 max_compressions=MAX_CONTEXT_COMPRESSIONS,
                 max_steps=max_steps,
                 max_model_calls=max_steps,
                 max_tool_calls=max(32, max_steps * 4),
             )
-            self.foreground.react.model.execution_requirements = LoraForegroundAgent.execution_requirements
+            self.foreground.react.model.execution_requirements = (
+                LoraForegroundAgent.execution_requirements
+            )
 
     async def forward(
         self,
@@ -375,7 +367,11 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         turn_id = context.turn_id
         message_data = plain_data(message.data)
         raw_content = str(
-            (message_data.get("raw_content") if isinstance(message_data, dict) else None)
+            (
+                message_data.get("raw_content")
+                if isinstance(message_data, dict)
+                else None
+            )
             or message.content
         )
         await checkpoint_conversation_message(
@@ -384,7 +380,9 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             message,
             boundary="user-input",
         )
-        projection_pending = context.metadata.get("projection_replacement_pending") is True
+        projection_pending = (
+            context.metadata.get("projection_replacement_pending") is True
+        )
         if projection_pending:
             while not await self.receive_execution_inputs(
                 kinds=(LORA_PROJECTION_READY_KIND,),
@@ -456,14 +454,26 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 "error": None,
                 "message_count": len(committed_messages),
             }
-            return replace(answer, kind="lora.chat.result", data={"result": result}), next_context
+            return replace(
+                answer, kind="lora.chat.result", data={"result": result}
+            ), next_context
         except asyncio.CancelledError:
             status, error = "skipped", "cancelled"
-            store.append("runtime.cancelled", actor="system", payload={"status": status, "reason": error}, turn_id=turn_id)
+            store.append(
+                "runtime.cancelled",
+                actor="system",
+                payload={"status": status, "reason": error},
+                turn_id=turn_id,
+            )
             raise
         except Exception as exc:
             status, error = "error", str(exc)
-            store.append("runtime.error", actor="system", payload={"error": error, "error_type": type(exc).__name__}, turn_id=turn_id)
+            store.append(
+                "runtime.error",
+                actor="system",
+                payload={"error": error, "error_type": type(exc).__name__},
+                turn_id=turn_id,
+            )
             raise
         finally:
             session = manager.load(context.session_id)
@@ -530,7 +540,9 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         await aclose_if_supported(self.llm)
 
     def _register_default_tools(self) -> None:
-        self._standard_tools = StandardTools(workspace_root=self.workspace_root, restrict_to_workspace=False)
+        self._standard_tools = StandardTools(
+            workspace_root=self.workspace_root, restrict_to_workspace=False
+        )
         self._toolkit = ToolKit(
             self._standard_tools.bash.bash,
             self._standard_tools.files.read,
@@ -539,8 +551,13 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             self._standard_tools.files.glob,
             self._standard_tools.files.grep,
         )
-        visible = {definition.name for definition in (*self._toolkit.definitions, DIFF_TOOL_SPEC.definition)}
+        visible = {
+            definition.name
+            for definition in (*self._toolkit.definitions, DIFF_TOOL_SPEC.definition)
+        }
         for spec in self._external_tools:
             if spec.definition.name in visible:
-                raise ValueError(f"duplicate model-visible tool name: {spec.definition.name}")
+                raise ValueError(
+                    f"duplicate model-visible tool name: {spec.definition.name}"
+                )
             visible.add(spec.definition.name)

@@ -1,41 +1,40 @@
 from __future__ import annotations
 
-import os
-import hashlib
 import asyncio
+import hashlib
 import json
-import sqlite3
+import os
 import time
 import warnings
-from contextvars import ContextVar
 from dataclasses import replace
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pygent import (
     AIMessage,
-    Context as PygentContext,
-    FallbackPolicy,
     IdempotencyPolicy,
-    ModelGroupConfig,
     ModelCallLayer,
+    ModelGroup,
     Module,
     PygentAgent,
     ToolAuthorizationDecision,
     ToolAuthorizationRequest,
     ToolKit,
-    ToolSideEffect,
     ToolMessage,
+    ToolSideEffect,
     UserMessage,
     freeze_json_object,
     tool,
 )
+from pygent import (
+    Context as PygentContext,
+)
 from pygent.agent import (
     REACT_PROJECTION_OPERATION_KIND,
     ReplaceMessageProjection,
-    format_context,
     encode_react_projection_operation,
+    format_context,
 )
 from pygent.llm import ModelResourceRef
 from pygent.runtime import (
@@ -51,6 +50,7 @@ from pygent.runtime import (
     SQLiteHistoryStore,
     SQLiteModelDeploymentStore,
 )
+from pygent.runtime.codec import invocation_from_dict, message_to_dict
 from pygent.tool import (
     AgentToolExecutor,
     ExecutorRegistry,
@@ -67,32 +67,28 @@ from pygent.tool.mcp import (
     register_mcp_tools,
 )
 
-from lora.schema import AgentSession, CaseRunRef, RunConfig
 from lora.config import load_run_config
 from lora.core.io import aclose_if_supported, plain_object, read_json, write_json
-from lora.sessions import SessionManager
-from lora.tracing import DIFF_TOOL_SPEC, DiffTool, EventStore
 from lora.runtime.reminders import ReminderService
-from pygent.runtime.codec import invocation_from_dict, message_to_dict
+from lora.schema import AgentSession, CaseRunRef, RunConfig
+from lora.sessions import AgentMessage, CollaborationOperation, SessionManager
+from lora.tracing import DIFF_TOOL_SPEC, DiffTool, EventStore
 
-from .agent import (
-    LORA_PROJECTION_READY_KIND,
-    LoraAgent,
+from .agent.common import (
+    DEFAULT_REACT_MAX_STEPS,
     _initial_lora_context,
     _to_pygent_message,
 )
-from .agent.common import DEFAULT_REACT_MAX_STEPS
+from .agent.core import LORA_PROJECTION_READY_KIND, LoraAgent
 from .agent.pipeline import checkpoint_conversation_message
-from .context import LORA_CONTEXT_CODEC, LoraContext
-from .delegation import (
-    DELEGATE_BACKGROUND_TOOL_SPEC,
-    DELEGATE_TOOL_SPEC,
-    visible_delegation_specs,
+from .agent_collaboration import (
+    AGENT_COLLABORATION_TOOL_SPECS,
+    visible_agent_collaboration_specs,
 )
+from .context import LORA_CONTEXT_CODEC, LoraContext
 from .deployment import (
     LoraModelResourceResolver,
     WorkspaceToolExecutor,
-    migrate_legacy_model_deployments,
 )
 from .eternal_conversation import (
     EternalConversationHarness,
@@ -102,70 +98,9 @@ from .eternal_conversation import (
 )
 from .file_effects import FILE_EFFECT_TOOL_SPEC, FileEffectToolExecutor
 
+if TYPE_CHECKING:
+    from lora.orchestration.session_collaboration import SessionCollaborationService
 
-PYGENT_HISTORY_SCHEMA_VERSION = 7
-
-
-def resolve_runtime_history_path(path: str | Path, durability_mode: str) -> Path:
-    """Choose a fresh journal for incompatible Pygent schemas without deleting history."""
-
-    configured = Path(path)
-    version = _sqlite_schema_version(configured)
-    if (
-        version is None
-        or version == PYGENT_HISTORY_SCHEMA_VERSION
-        or durability_mode == "required"
-    ):
-        return configured
-
-    suffix = configured.suffix or ".sqlite3"
-    stem = (
-        configured.name[: -len(configured.suffix)]
-        if configured.suffix
-        else configured.name
-    )
-    base = configured.with_name(
-        f"{stem}-schema-v{PYGENT_HISTORY_SCHEMA_VERSION}{suffix}"
-    )
-    candidate = base
-    index = 2
-    while _sqlite_schema_version(candidate) not in {
-        None,
-        PYGENT_HISTORY_SCHEMA_VERSION,
-    }:
-        candidate = base.with_name(f"{base.stem}-{index}{base.suffix}")
-        index += 1
-    warnings.warn(
-        f"Pygent history at {configured} uses incompatible schema v{version}; "
-        f"preserving it and starting with {candidate}",
-        RuntimeWarning,
-        stacklevel=2,
-    )
-    return candidate
-
-
-def _sqlite_schema_version(path: Path) -> int | None:
-    if not path.exists():
-        return None
-    try:
-        connection = sqlite3.connect(
-            f"file:{path.resolve().as_posix()}?mode=ro", uri=True
-        )
-        try:
-            tables = connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-            ).fetchall()
-            if not tables:
-                return None
-            row = connection.execute("PRAGMA user_version").fetchone()
-            return 0 if row is None else int(row[0])
-        finally:
-            connection.close()
-    except sqlite3.Error:
-        return None
-
-
-_DELEGATION_DEPTH: ContextVar[int] = ContextVar("lora_delegation_depth", default=0)
 RECOVERY_CLAIM_WAIT_SECONDS = 31.0
 PROJECTION_OPERATION_METADATA_KEY = "projection_replacement_operation"
 PROJECTION_INPUT_ID_METADATA_KEY = "projection_replacement_input_id"
@@ -310,16 +245,15 @@ class LoraRuntimeService:
         tool_max_concurrency: int = 8,
         reminders: ReminderService | None = None,
         own_reminders: bool | None = None,
+        collaboration: SessionCollaborationService | None = None,
     ) -> None:
         self.config = config
+        self.collaboration = collaboration
         self.reminders = reminders or ReminderService(config)
         self._owns_reminders = (
             reminders is None if own_reminders is None else own_reminders
         )
-        history_path = resolve_runtime_history_path(
-            config.runtime_durability.history_path,
-            config.runtime_durability.mode,
-        )
+        history_path = Path(config.runtime_durability.history_path)
         self.history_path = history_path
         model_path = history_path.with_name("model-deployments-v1.sqlite3")
         self.model_path = model_path
@@ -341,7 +275,9 @@ class LoraRuntimeService:
         self.reminders.runtime = self.runtime
         self.runtime.attach_executor_registry(self.executor_registry)
         self._diff_executor = _DiffExecutor(self)
-        standard = StandardTools(workspace_root=config.workspace_root, restrict_to_workspace=False)
+        standard = StandardTools(
+            workspace_root=config.workspace_root, restrict_to_workspace=False
+        )
         ToolKit(
             standard.bash.bash,
             standard.files.read,
@@ -359,18 +295,20 @@ class LoraRuntimeService:
         )
         self.runtime.register_tool(FILE_EFFECT_TOOL_SPEC, FileEffectToolExecutor())
         self.runtime.register_tool(DIFF_TOOL_SPEC, self._diff_executor)
-        delegation_executor = AgentToolExecutor(invoke=self._execute_delegation)
+        collaboration_executor = AgentToolExecutor(
+            invoke=self._execute_agent_collaboration
+        )
         setattr(
-            delegation_executor,
+            collaboration_executor,
             "sandbox_support",
             SandboxExecutorSupport(
                 profiles=("agent",),
                 durable_reconnect=True,
-                deployment_fingerprint="lora:delegation:v1",
+                deployment_fingerprint="lora:agent-collaboration:v1",
             ),
         )
-        for spec in (DELEGATE_TOOL_SPEC, DELEGATE_BACKGROUND_TOOL_SPEC):
-            self.runtime.register_tool(spec, delegation_executor)
+        for spec in AGENT_COLLABORATION_TOOL_SPECS:
+            self.runtime.register_tool(spec, collaboration_executor)
         self.task_manager = DurableToolTaskManager(self.history, self.executor_registry)
         self.runtime.attach_tool_task_manager(self.task_manager)
         self.model_resolver = LoraModelResourceResolver()
@@ -408,9 +346,11 @@ class LoraRuntimeService:
             ),
             durability=DurabilityPolicy(DurabilityMode(config.runtime_durability.mode)),
         )
-        self.external_tools: tuple[ToolSpec, ...] = visible_delegation_specs(config)
+        self.external_tools: tuple[ToolSpec, ...] = visible_agent_collaboration_specs(
+            config,
+            collaboration_available=collaboration is not None,
+        )
         self.warnings: list[str] = []
-        self._delegation_slots = asyncio.Semaphore(config.delegation.max_parallel)
         self._initialized = False
         self._initializing_task: asyncio.Task[None] | None = None
         self._closed = False
@@ -420,6 +360,7 @@ class LoraRuntimeService:
         )
         template = LoraAgent(
             config,
+            external_tools=self.external_tools,
             managed_model=True,
             memory_harness=self.memory_harness,
             reminders=self.reminders,
@@ -433,20 +374,209 @@ class LoraRuntimeService:
             else {}
         )
 
-    async def _execute_delegation(
+    async def _execute_agent_collaboration(
         self,
         spec: ToolSpec,
         call: Any,
         context: ToolExecutionContext,
     ) -> object:
+        collaboration = self.collaboration
+        if collaboration is None:
+            raise RuntimeError("Agent collaboration is unavailable in this runtime")
+        actor = await self._agent_tool_context(context)
         arguments = plain_object(call.arguments)
-        return await self.run_delegated(
-            agent_alias=str(arguments["agent"]),
-            task=str(arguments["task"]),
-            parent_call_id=call.call_id,
-            background=spec.definition.name == "delegate_background",
-            emit=context.emit,
+        name = spec.definition.name
+        submission_id = str(call.idempotency_key or call.call_id)
+        if name == "agent_start":
+            agent_alias = str(arguments["agent"])
+            if agent_alias not in self.config.delegation.allowed_agents:
+                raise PermissionError(
+                    f"collaboration with agent {agent_alias!r} is not allowed"
+                )
+            child_config = load_run_config(
+                workspace_root=self.config.workspace_root,
+                agent_alias=agent_alias,
+                max_steps=self.config.max_steps,
+                context_window=self.config.context_window,
+            )
+            operation = await collaboration.start(
+                config=child_config,
+                manager=SessionManager(child_config),
+                source_session_id=actor.session_id,
+                message=str(arguments["task"]),
+                submission_id=submission_id,
+            )
+            return operation.to_dict()
+        if name == "agent_send":
+            target_session_id = str(arguments["session_id"])
+            if not await collaboration.related_sessions(
+                config=self.config,
+                first_session_id=actor.session_id,
+                second_session_id=target_session_id,
+            ):
+                raise PermissionError("Agent sessions are not related collaborators")
+            message = await collaboration.send(
+                config=self.config,
+                manager=SessionManager(self.config),
+                source_session_id=actor.session_id,
+                source_agent_alias=self.config.agent_alias,
+                target_session_id=target_session_id,
+                message=str(arguments["message"]),
+                submission_id=submission_id,
+            )
+            return message.to_dict()
+        if name == "agent_list":
+            operations = await collaboration.list_operations(
+                config=self.config,
+                session_id=actor.session_id,
+            )
+            return {"operations": [operation.to_dict() for operation in operations]}
+        if name == "agent_status":
+            collaboration_id = str(arguments["collaboration_id"])
+            return await self._agent_collaboration_status(
+                collaboration, collaboration_id, actor.session_id
+            )
+        if name == "agent_wait":
+            timeout = float(arguments.get("timeout_seconds", 30))
+            if not 0 < timeout <= 120:
+                raise ValueError(
+                    "timeout_seconds must be greater than 0 and at most 120"
+                )
+            has_single = "collaboration_id" in arguments
+            multiple = "collaboration_ids" in arguments
+            if has_single == multiple:
+                raise ValueError(
+                    "provide exactly one of collaboration_id or collaboration_ids"
+                )
+            collaboration_ids = (
+                tuple(str(item) for item in arguments["collaboration_ids"])
+                if multiple
+                else (str(arguments["collaboration_id"]),)
+            )
+            if not 1 <= len(collaboration_ids) <= 32:
+                raise ValueError(
+                    "collaboration_ids must contain between 1 and 32 items"
+                )
+            if len(set(collaboration_ids)) != len(collaboration_ids):
+                raise ValueError("collaboration_ids must be unique")
+            return await self._wait_for_agent_collaborations(
+                collaboration,
+                collaboration_ids,
+                actor.session_id,
+                timeout=timeout,
+                multiple=multiple,
+            )
+        raise ValueError(f"unsupported Agent collaboration tool {name!r}")
+
+    async def _agent_tool_context(self, context: ToolExecutionContext) -> LoraContext:
+        if context.execution_id is None:
+            raise RuntimeError("Agent collaboration requires an execution id")
+        record = await self.history.get_execution(context.execution_id)
+        if record is None:
+            raise RuntimeError("Agent collaboration execution record is unavailable")
+        _, decoded = invocation_from_dict(
+            record.input,
+            registry=self.runtime.context_codec_registry,
         )
+        if not isinstance(decoded, LoraContext):
+            raise TypeError("Agent collaboration requires LoraContext")
+        return decoded
+
+    async def _agent_collaboration_status(
+        self,
+        collaboration: SessionCollaborationService,
+        collaboration_id: str,
+        actor_session_id: str,
+    ) -> dict[str, Any]:
+        item = await collaboration.item_status(
+            config=self.config,
+            collaboration_id=collaboration_id,
+        )
+        self._require_collaboration_access(item, actor_session_id)
+        return item.to_dict()
+
+    async def _wait_for_agent_collaborations(
+        self,
+        collaboration: SessionCollaborationService,
+        collaboration_ids: tuple[str, ...],
+        actor_session_id: str,
+        *,
+        timeout: float,
+        multiple: bool,
+    ) -> dict[str, Any]:
+        items = tuple(
+            await asyncio.gather(
+                *(
+                    collaboration.item_status(
+                        config=self.config,
+                        collaboration_id=collaboration_id,
+                    )
+                    for collaboration_id in collaboration_ids
+                )
+            )
+        )
+        for item in items:
+            self._require_collaboration_access(item, actor_session_id)
+        if any(item.done for item in items):
+            completed = items
+            timed_out = False
+        else:
+            for item in items:
+                if isinstance(item, CollaborationOperation):
+                    child_config = load_run_config(
+                        workspace_root=self.config.workspace_root,
+                        agent_alias=item.agent_alias,
+                        max_steps=self.config.max_steps,
+                        context_window=self.config.context_window,
+                    )
+                    await collaboration.resume_operation(
+                        config=child_config,
+                        manager=SessionManager(child_config),
+                        operation_id=item.operation_id,
+                    )
+            completed, timed_out = await collaboration.wait_any(
+                config=self.config,
+                collaboration_ids=collaboration_ids,
+                timeout=timeout,
+            )
+            for item in completed:
+                self._require_collaboration_access(item, actor_session_id)
+        if not multiple:
+            return {**completed[0].to_dict(), "timed_out": timed_out}
+        return {
+            "ready": [item.to_dict() for item in completed if item.done],
+            "pending": [item.to_dict() for item in completed if not item.done],
+            "timed_out": timed_out,
+        }
+
+    @classmethod
+    def _require_collaboration_access(
+        cls,
+        item: AgentMessage | CollaborationOperation,
+        actor_session_id: str,
+    ) -> None:
+        if isinstance(item, AgentMessage):
+            cls._require_message_access(item, actor_session_id)
+        else:
+            cls._require_operation_access(item, actor_session_id)
+
+    @staticmethod
+    def _require_operation_access(
+        operation: CollaborationOperation, actor_session_id: str
+    ) -> None:
+        if actor_session_id not in {
+            operation.source_session_id,
+            operation.target_session_id,
+        }:
+            raise PermissionError("Agent operation is outside this collaboration")
+
+    @staticmethod
+    def _require_message_access(message: AgentMessage, actor_session_id: str) -> None:
+        if actor_session_id not in {
+            message.source_session_id,
+            message.target_session_id,
+        }:
+            raise PermissionError("Agent message is outside this collaboration")
 
     async def initialize(self) -> None:
         if self._closed:
@@ -468,7 +598,6 @@ class LoraRuntimeService:
             Path(self.config.runtime_capacity.coordinator_path),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(migrate_legacy_model_deployments, self.model_path)
         await self.history.open()
         discovered = list(self.external_tools)
         visible_names: set[str] = {
@@ -555,128 +684,23 @@ class LoraRuntimeService:
         self._agent_definitions[key] = agent
         return agent
 
-    async def run_delegated(
-        self,
-        *,
-        agent_alias: str,
-        task: str,
-        parent_call_id: str,
-        background: bool,
-        emit: Any | None,
-    ) -> dict[str, Any]:
-        allowed = self.config.delegation.allowed_agents
-        if agent_alias not in allowed:
-            raise PermissionError(f"delegation to agent {agent_alias!r} is not allowed")
-        if background and not self.config.delegation.background_enabled:
-            raise PermissionError("background delegation is disabled")
-        depth = _DELEGATION_DEPTH.get()
-        if depth >= self.config.delegation.max_depth:
-            raise RuntimeError("delegation depth limit exceeded")
-        token = _DELEGATION_DEPTH.set(depth + 1)
-        try:
-            async with self._delegation_slots:
-                return await self._run_delegated_turn(
-                    agent_alias=agent_alias,
-                    task=task,
-                    parent_call_id=parent_call_id,
-                    emit=emit,
-                )
-        finally:
-            _DELEGATION_DEPTH.reset(token)
-
-    async def _run_delegated_turn(
-        self,
-        *,
-        agent_alias: str,
-        task: str,
-        parent_call_id: str,
-        emit: Any | None,
-    ) -> dict[str, Any]:
-        from pygent.runtime import ExecutionOptions
-
-        child_config = load_run_config(
-            workspace_root=self.config.workspace_root,
-            agent_alias=agent_alias,
-        )
-        manager = SessionManager(child_config)
-        session = manager.create(case_id="delegation", mode="agent")
-        run_ref = manager.start_case_run(
-            session.session_id, "delegation", run_config=child_config
-        )
-        turn_id = f"delegate-{parent_call_id}"
-        child = self.new_agent(
-            interactive_approvals=True,
-            config=child_config,
-        )
-        child_message, child_context = await self._prepare_turn(
-            manager=manager,
-            run_ref=run_ref,
-            message=task,
-            config=child_config,
-            turn_id=turn_id,
-        )
-        bound = await self.bind(child, child)
-        delegated_context = replace(
-            child_context,
-            metadata={
-                **plain_object(child_context.metadata),
-                "parent_tool_call_id": parent_call_id,
-            },
-        )
-        try:
-            handle = await self._start_agent_execution(
-                bound,
-                child_message,
-                delegated_context,
-                execution=ExecutionOptions(
-                    request_id=run_ref.case_run_id,
-                    identity=run_ref.session_id,
-                    idempotency_key=parent_call_id,
-                    deadline=time.monotonic() + 30 * 60,
-                ),
-            )
-        except BaseException:
-            await self.reminders.release_initial(run_ref.session_id, turn_id)
-            raise
-        await self.reminders.acknowledge_initial(
-            run_ref.session_id, turn_id, handle.execution_id
-        )
-        if emit is not None:
-            async with handle.subscribe() as events:
-                async for event in events:
-                    if event.kind == "lora.approval.requested":
-                        await emit(event.kind, plain_object(event.data))
-        output, _ = await handle.result()
-        result = plain_object(plain_object(output.data).get("result"))
-        status = str(result.get("status") or "passed")
-        manager.finish_case_run(
-            run_ref,
-            status if status in {"passed", "failed", "error", "skipped"} else "error",
-        )
-        return {
-            "answer": output.content,
-            "session_id": run_ref.session_id,
-            "case_run_id": run_ref.case_run_id,
-            "execution_id": handle.execution_id,
-        }
-
     async def bind(self, module: Any, agent: LoraAgent) -> Any:
         await self.initialize()
         bound = self.binding.bind(module)
         if agent.llm is not None and (
             module is agent or getattr(module, "agent", None) is agent
         ):
-            requirement = ModelGroupConfig.deferred(
-                name=f"lora:{agent.resolved_agent.alias}",
-                capacity_key="lora-chat-model",
+            requirement = ModelGroup.deferred(
+                name=f"lora:{agent.resolved_agent.alias}"
             )
             handle = bound.model_groups.get(requirement)
             routes = agent._resolved_routes()
+            models = agent._model_entries()
             revision = hashlib.sha256(
                 repr(
                     (
                         agent.resolved_agent.profile,
-                        agent._model_routes(),
+                        models,
                         tuple(
                             (
                                 route.id,
@@ -693,10 +717,7 @@ class LoraRuntimeService:
             self.model_resolver.register(revision, agent.llm)
             await handle.ensure_profile(
                 profile=agent.resolved_agent.profile,
-                routes=agent._model_routes(),
-                fallback=FallbackPolicy(
-                    agent.resolved_agent.fallback or tuple(route.id for route in routes)
-                ),
+                models=models,
                 invoker=agent.llm,
                 resource_ref=ModelResourceRef(
                     resolver_id=self.model_resolver.resolver_id,
@@ -824,14 +845,11 @@ class LoraRuntimeService:
                 stored = await self.history.get_execution(execution_id)
                 if stored is None:
                     raise KeyError(f"unknown durable execution {execution_id!r}")
-                _, context = invocation_from_dict(
+                _, decoded_context = invocation_from_dict(
                     stored.input,
                     registry=self.runtime.context_codec_registry,
                 )
-                if not isinstance(context, LoraContext):
-                    raise TypeError(
-                        "durable Lora execution has an incompatible context"
-                    )
+                context = cast(LoraContext, decoded_context)
                 await self._deliver_projection_replacement(handle, context)
                 return handle
             except ExecutionAdmissionError as exc:
@@ -849,12 +867,11 @@ class LoraRuntimeService:
         stored = await self.history.get_execution(execution_id)
         if stored is None:
             raise KeyError(f"unknown durable execution {execution_id!r}")
-        _, context = invocation_from_dict(
+        _, decoded_context = invocation_from_dict(
             stored.input,
             registry=self.runtime.context_codec_registry,
         )
-        if not isinstance(context, LoraContext):
-            raise TypeError("durable Lora execution has an incompatible context")
+        context = cast(LoraContext, decoded_context)
         return context.case_run_ref
 
     async def execute_case(

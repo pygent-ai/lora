@@ -1,36 +1,44 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import asyncio
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from pygent import (
     AIMessage,
-    Context as PygentContext,
-    Message as PygentMessage,
+    InjectionKind,
     ModelCallLayer,
     Module,
     Reminder,
-    InjectionKind,
     ToolAuthorizationDecision,
     ToolAuthorizationRequest,
     ToolCall,
     ToolCallLayer,
     ToolDefinition,
     ToolMessage,
-    ToolResult as PygentToolResult,
     freeze_json_object,
     thaw_json,
 )
-from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
+from pygent import (
+    Context as PygentContext,
+)
+from pygent import (
+    Message as PygentMessage,
+)
+from pygent import (
+    ToolResult as PygentToolResult,
+)
 from pygent.core import (
     EffectIdempotency,
     EffectRetryPolicy,
+    EffectSafety,
     EffectSideEffect,
     EffectSpec,
+    ExecutionRequirements,
+    RecoverySafety,
     active_infrastructure,
     freeze_json,
 )
@@ -41,12 +49,13 @@ from lora.core.io import plain_data, plain_object
 from lora.runtime.context import LoraContext
 from lora.runtime.context_snapshots import ContextSnapshotStore
 from lora.runtime.eternal_conversation import render_memory_access_instruction
-from lora.runtime.file_effects import DeferredFileEffectBatch, FILE_EFFECT_TOOL_SPEC
 from lora.runtime.file_effect_models import DeferredFileEffectJob
+from lora.runtime.file_effects import FILE_EFFECT_TOOL_SPEC, DeferredFileEffectBatch
 from lora.runtime.reminders import ReminderService
+from lora.runtime.reminders.agent_messages import render_agent_message
 from lora.runtime.tools import ToolObserver
 from lora.schema import RunConfig
-from lora.sessions import SessionManager
+from lora.sessions import AgentMessage, AgentMessageState, SessionManager
 from lora.tracing import EventStore
 
 from .common import (
@@ -180,6 +189,7 @@ async def checkpoint_conversation_message(
         isinstance(metadata, dict)
         and metadata.get("persist_conversation_history") is False
     )
+
     def persist() -> bool:
         manager = SessionManager(config)
         inserted = manager.append_history_checkpoint(
@@ -249,11 +259,13 @@ async def checkpoint_conversation_message(
             idempotency=EffectIdempotency.INHERENT,
             retry_policy=EffectRetryPolicy.REPLAY_SAFE,
         ),
-        request=freeze_json_object({
-            "checkpoint_id": checkpoint_id,
-            "message": payload,
-            "include_in_session": include_in_session,
-        }),
+        request=freeze_json_object(
+            {
+                "checkpoint_id": checkpoint_id,
+                "message": payload,
+                "include_in_session": include_in_session,
+            }
+        ),
         operation=operation,
     )
 
@@ -301,11 +313,14 @@ def _model_tool_definition(definition: ToolDefinition) -> ToolDefinition:
     return replace(definition, parameters=parameters)
 
 
-class LoraToolAuthorization(Module[ToolAuthorizationRequest, ToolAuthorizationDecision]):
+class LoraToolAuthorization(
+    Module[ToolAuthorizationRequest, ToolAuthorizationDecision]
+):
     execution_requirements = ExecutionRequirements(
         recovery_safety=RecoverySafety.MODULE_BOUNDARY_RETRY,
         effect_safety=EffectSafety.MANAGED_EFFECTS,
     )
+
     def __init__(
         self,
         *,
@@ -408,7 +423,9 @@ class DynamicPromptModule(Module[PygentMessage, PygentMessage]):
     execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("config", "prompt_registry")
 
-    def __init__(self, config: RunConfig, prompt_registry: PromptRegistry | None) -> None:
+    def __init__(
+        self, config: RunConfig, prompt_registry: PromptRegistry | None
+    ) -> None:
         super().__init__()
         self.config = config
         self.prompt_registry = prompt_registry
@@ -445,12 +462,14 @@ class DynamicPromptModule(Module[PygentMessage, PygentMessage]):
                 idempotency=EffectIdempotency.INHERENT,
                 retry_policy=EffectRetryPolicy.REPLAY_SAFE,
             ),
-            request=freeze_json_object({
-                "message": message_to_dict(message),
-                "history": context.history,
-                "tool_names": tool_names,
-                "memory_projection": plain_data(context.memory_projection),
-            }),
+            request=freeze_json_object(
+                {
+                    "message": message_to_dict(message),
+                    "history": context.history,
+                    "tool_names": tool_names,
+                    "memory_projection": plain_data(context.memory_projection),
+                }
+            ),
             operation=operation,
         )
         result = thaw_json(effect.value)
@@ -464,6 +483,7 @@ class ForegroundModelModule(Module[PygentMessage, AIMessage]):
     """Foreground provider call with bounded empty tool-followup recovery."""
 
     execution_requirements = EFFECT_FREE_RECOVERY
+
     def __init__(
         self,
         *,
@@ -479,7 +499,11 @@ class ForegroundModelModule(Module[PygentMessage, AIMessage]):
         history = context
         for retry in range(MAX_EMPTY_TOOL_FOLLOWUP_RETRIES + 1):
             answer, model_context = await self.model(current, history)
-            if not isinstance(message, ToolMessage) or answer.content or answer.tool_calls:
+            if (
+                not isinstance(message, ToolMessage)
+                or answer.content
+                or answer.tool_calls
+            ):
                 return answer, model_context
             if retry == MAX_EMPTY_TOOL_FOLLOWUP_RETRIES:
                 raise RuntimeError(
@@ -523,7 +547,9 @@ class ConversationCheckpointModelModule(Module[PygentMessage, AIMessage]):
     execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("config", "inner")
 
-    def __init__(self, config: RunConfig, inner: Module[PygentMessage, AIMessage]) -> None:
+    def __init__(
+        self, config: RunConfig, inner: Module[PygentMessage, AIMessage]
+    ) -> None:
         super().__init__()
         self.config = config
         self.inner = inner
@@ -561,10 +587,11 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
         if infrastructure is None:  # pragma: no cover - managed graph invariant
             raise RuntimeError("tool audit requires managed execution")
         assistant = context.messages[-1] if context.messages else None
-        calls = {
-            call.call_id: call
-            for call in assistant.tool_calls
-        } if isinstance(assistant, AIMessage) else {}
+        calls = (
+            {call.call_id: call for call in assistant.tool_calls}
+            if isinstance(assistant, AIMessage)
+            else {}
+        )
 
         async def operation():
             projected: list[PygentToolResult] = []
@@ -579,11 +606,7 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
             )
             for result in message.results:
                 call = calls.get(result.call_id)
-                arguments = (
-                    plain_data(call.arguments)
-                    if call is not None
-                    else {}
-                )
+                arguments = plain_data(call.arguments) if call is not None else {}
                 if not isinstance(arguments, dict):
                     arguments = {}
                 payload, deferred_job = observer.record_framework_result(
@@ -621,8 +644,7 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
                 {
                     "message": message_to_dict(ToolMessage(results=tuple(projected))),
                     "pending_file_effects": [
-                        plain_data(item)
-                        for item in next_context.pending_file_effects
+                        plain_data(item) for item in next_context.pending_file_effects
                     ],
                 }
             )
@@ -634,16 +656,20 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
                 idempotency=EffectIdempotency.INHERENT,
                 retry_policy=EffectRetryPolicy.REPLAY_SAFE,
             ),
-            request=freeze_json_object({
-                "message": message_to_dict(message),
-                "assistant": (
-                    message_to_dict(assistant)
-                    if isinstance(assistant, AIMessage)
-                    else None
-                ),
-                "turn_id": context.turn_id,
-                "available_tools": [definition.name for definition in context.tools],
-            }),
+            request=freeze_json_object(
+                {
+                    "message": message_to_dict(message),
+                    "assistant": (
+                        message_to_dict(assistant)
+                        if isinstance(assistant, AIMessage)
+                        else None
+                    ),
+                    "turn_id": context.turn_id,
+                    "available_tools": [
+                        definition.name for definition in context.tools
+                    ],
+                }
+            ),
             operation=operation,
         )
         result = thaw_json(effect.value)
@@ -656,7 +682,9 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
         if not isinstance(raw_jobs, list):
             raise TypeError("replayed tool audit pending effects are invalid")
         jobs = tuple(DeferredFileEffectJob.from_dict(item) for item in raw_jobs)
-        next_context = replace(context, pending_file_effects=()).append_file_effects(*jobs)
+        next_context = replace(context, pending_file_effects=()).append_file_effects(
+            *jobs
+        )
         return projected_message, next_context
 
 
@@ -675,11 +703,21 @@ class RuntimeReminderModule(Module[ToolMessage, ToolMessage]):
         infrastructure = active_infrastructure()
         if infrastructure is None:  # pragma: no cover - managed graph invariant
             raise RuntimeError("runtime context requires managed execution")
+        execution_id = infrastructure.managed_execution_id
+        if execution_id is None:
+            raise RuntimeError("runtime context requires an execution id")
+        identity = hashlib.sha256(
+            json.dumps(
+                [context.turn_id, [result.call_id for result in message.results]]
+            ).encode()
+        ).hexdigest()
+        claim_id = f"agent-messages:{execution_id}:{identity}"
         assistant = context.messages[-1] if context.messages else None
-        calls = {
-            call.call_id: call
-            for call in assistant.tool_calls
-        } if isinstance(assistant, AIMessage) else {}
+        calls = (
+            {call.call_id: call for call in assistant.tool_calls}
+            if isinstance(assistant, AIMessage)
+            else {}
+        )
 
         async def operation():
             mutation_indexes = [
@@ -704,7 +742,18 @@ class RuntimeReminderModule(Module[ToolMessage, ToolMessage]):
                 file_mutation=bool(mutation_indexes),
                 has_results=bool(message.results),
             )
-            return freeze_json({"content": reminder})
+            agent_messages = await self.reminders.claim_agent_messages(
+                context.session_id,
+                claim_id=claim_id,
+            )
+            return freeze_json(
+                {
+                    "content": reminder,
+                    "agent_messages": [
+                        item.to_dict(include_content=True) for item in agent_messages
+                    ],
+                }
+            )
 
         effect = await infrastructure.execute_effect(
             spec=EffectSpec(
@@ -713,15 +762,18 @@ class RuntimeReminderModule(Module[ToolMessage, ToolMessage]):
                 idempotency=EffectIdempotency.INHERENT,
                 retry_policy=EffectRetryPolicy.REPLAY_SAFE,
             ),
-            request=freeze_json_object({
-                "message": message_to_dict(message),
-                "assistant": (
-                    message_to_dict(assistant)
-                    if isinstance(assistant, AIMessage)
-                    else None
-                ),
-                "turn_id": context.turn_id,
-            }),
+            request=freeze_json_object(
+                {
+                    "message": message_to_dict(message),
+                    "assistant": (
+                        message_to_dict(assistant)
+                        if isinstance(assistant, AIMessage)
+                        else None
+                    ),
+                    "turn_id": context.turn_id,
+                    "agent_message_claim_id": claim_id,
+                }
+            ),
             operation=operation,
         )
         replayed = thaw_json(effect.value)
@@ -730,17 +782,64 @@ class RuntimeReminderModule(Module[ToolMessage, ToolMessage]):
         content = replayed.get("content")
         if content:
             piece, _ = await self.reminder(
-                PygentMessage(content=content, kind=InjectionKind.RUNTIME_CONTEXT.value), context
+                PygentMessage(
+                    content=content, kind=InjectionKind.RUNTIME_CONTEXT.value
+                ),
+                context,
             )
-            execution_id = infrastructure.managed_execution_id
-            if execution_id is None:
-                raise RuntimeError("runtime context requires an execution id")
-            identity = hashlib.sha256(
-                json.dumps([context.turn_id, [result.call_id for result in message.results]]).encode()
-            ).hexdigest()
             await self.reminders.deliver_tool_context(
-                execution_id, input_id=f"runtime-context:{identity}", content=piece.content
+                execution_id,
+                input_id=f"runtime-context:{identity}",
+                content=piece.content,
             )
+        raw_agent_messages = replayed.get("agent_messages", [])
+        if not isinstance(raw_agent_messages, list):
+            raise TypeError("replayed agent messages are invalid")
+        delivered: list[AgentMessage] = []
+        for raw in raw_agent_messages:
+            if not isinstance(raw, dict):
+                raise TypeError("replayed agent message is invalid")
+            candidate = AgentMessage.from_dict(raw)
+            claimed = await self.reminders.claimed_agent_message(
+                candidate.message_id,
+                claim_id=claim_id,
+            )
+            if claimed is not None:
+                delivered.append(claimed)
+                continue
+            current = await self.reminders.agent_message_status(candidate.message_id)
+            if (
+                current.state is AgentMessageState.DELIVERED
+                and current.delivered_execution_id == execution_id
+            ):
+                delivered.append(candidate)
+        if delivered:
+            agent_context = "\n".join(render_agent_message(item) for item in delivered)
+            message = replace(
+                message,
+                content=(
+                    agent_context
+                    if not message.content
+                    else f"{message.content}\n{agent_context}"
+                ),
+            )
+            try:
+                for item in delivered:
+                    current = await self.reminders.agent_message_status(item.message_id)
+                    if current.state is AgentMessageState.DELIVERED:
+                        continue
+                    await self.reminders.acknowledge_agent_message(
+                        item.message_id,
+                        claim_id=claim_id,
+                        execution_id=execution_id,
+                    )
+            except BaseException:
+                for item in delivered:
+                    await self.reminders.release_agent_message(
+                        item.message_id,
+                        claim_id=claim_id,
+                    )
+                raise
         return message, context
 
 
@@ -804,8 +903,7 @@ class RepeatedToolCallGuardModule(Module[AIMessage, ToolMessage]):
         self, message: AIMessage, context: LoraContext
     ) -> tuple[ToolMessage, LoraContext]:
         signature = tuple(
-            (call.name, repr(call.arguments))
-            for call in message.tool_calls
+            (call.name, repr(call.arguments)) for call in message.tool_calls
         )
         if context.turn_id == self.state.turn_id and signature == self.state.signature:
             self.state.count += 1
@@ -824,6 +922,7 @@ class RepeatedToolCallGuardModule(Module[AIMessage, ToolMessage]):
 
 class PreparedToolModule(Module[AIMessage, ToolMessage]):
     execution_requirements = EFFECT_FREE_RECOVERY
+
     def __init__(
         self,
         *,
@@ -843,9 +942,15 @@ class PreparedToolModule(Module[AIMessage, ToolMessage]):
     ) -> tuple[ToolMessage, LoraContext]:
         tool_message, tool_context = await self.tools(message, context)
         projection_context = tool_context + message
-        tool_message, projection_context = await self.audit(tool_message, projection_context)
-        tool_message, projection_context = await self.reminders(tool_message, projection_context)
-        tool_message, projection_context = await self.persisted_diff(tool_message, projection_context)
+        tool_message, projection_context = await self.audit(
+            tool_message, projection_context
+        )
+        tool_message, projection_context = await self.reminders(
+            tool_message, projection_context
+        )
+        tool_message, projection_context = await self.persisted_diff(
+            tool_message, projection_context
+        )
         return tool_message, replace(
             tool_context,
             pending_file_effects=projection_context.pending_file_effects,
@@ -856,7 +961,9 @@ class ConversationCheckpointToolModule(Module[AIMessage, ToolMessage]):
     execution_requirements = MANAGED_EFFECT_RECOVERY
     trusted_live_resource_attributes = ("config", "inner")
 
-    def __init__(self, config: RunConfig, inner: Module[AIMessage, ToolMessage]) -> None:
+    def __init__(
+        self, config: RunConfig, inner: Module[AIMessage, ToolMessage]
+    ) -> None:
         super().__init__()
         self.config = config
         self.inner = inner

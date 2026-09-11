@@ -6,10 +6,8 @@ This directory contains project-level documentation. Package-local README files 
 
 - [Principles](principles/README.md): normative first principles that constrain product, architecture, memory, compression, and evaluation decisions.
 - [API](api/README.md): local FastAPI service routes, SSE events, and generated OpenAPI contract.
-- [CLI](cli/lora-chat.md): command-line chat usage.
+- [CLI](cli/lora-session.md): session, chat, and Agent-collaboration commands.
 - [Guides](guides/development-guide.md): development workflow and operational guides.
-- [Pygent Runtime Evaluation](guides/pygent-0.2.2-agent-runtime-evaluation.md): managed Agent concurrency architecture, benchmarks, and development-cost assessment.
-- [Pygent 0.2.2 Feedback](design/runtime/pygent-0.2.2-feedback.md): concrete API and Runtime recommendations discovered during migration.
 - [Architecture](architecture/repository-layout.md): active repository layout and runtime boundaries.
 - [Design](design/agent/agent-context-architecture-zh.md): design notes for agent context, prompt composition, runtime behavior, self-optimization, and pygent runtime requirements.
 - [Lora Foreground ReAct Agent Capability Baseline](design/agent/foreground-react-agent-capability-and-pygent-requirements-zh.md): proposed foreground Agent behavior, prompt/input placement, runtime steering semantics, and the minimal Pygent framework capabilities required to support it.

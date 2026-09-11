@@ -14,6 +14,8 @@ This repository is moving toward a local desktop architecture with three main la
 - `credentials` and `config`: external configuration inputs.
 - `sessions` and `tracing`: persisted runtime state and observability.
 - `runtime`: agent execution, tools, prompt/context management, and runtime services.
+- `orchestration`: application-level coordination across persisted sessions and
+  managed executions, independent of HTTP and agent policy.
 - `workflows`: application use cases that coordinate multiple feature domains.
 - `evaluation`: cases, scoring, analysis, regression, and test generation.
 - `repair`: orchestration across evaluation and runtime capabilities.
@@ -24,7 +26,7 @@ Dependencies should generally point in this direction:
 ```text
 cli / lora_api
         |
-workflows / repair
+workflows / repair / orchestration
         |
 evaluation / runtime
         |
@@ -47,13 +49,23 @@ The agent is a package because it contains several independently changing concer
 - `runtime/agent/skill_catalog.py`: project/user Skill discovery and shadowing.
 - `runtime/agent/common.py`: message codecs and small persistence helpers.
 
-`runtime/agent/__init__.py` is the compatibility facade for the former `runtime/agent.py` module.
+`runtime/agent/__init__.py` only marks the implementation package; callers import
+the owning module directly instead of relying on re-export facades.
 
-## Composition and compatibility boundaries
+## Composition boundaries
 
 - `workflows/case_run.py` is the sole case-run application entry point, so runtime no longer depends on evaluation.
 - `runtime/file_effect_models.py` holds dependency-light file-effect data contracts; observation remains in `tools.py` and deferred execution in `file_effects.py`.
-- `runtime/deployment.py` and `runtime/delegation.py` isolate Pygent adapter policy from the session-oriented `runtime/service.py` facade.
+- `runtime/deployment.py` and `runtime/agent_collaboration.py` isolate Pygent adapter policy from the session-oriented `runtime/service.py` facade.
+- `orchestration/managed_turn.py` owns the transport-independent lifecycle of one
+  submitted turn; `orchestration/session_execution.py` owns submission,
+  per-session lanes, active indexes, and coordinated shutdown.
+  `orchestration/runtime_pool.py` exclusively owns configuration generations of
+  workspace runtimes and lends them to turns through idempotent leases. Case-run
+  creation and finalization happen inside the same lane.
+  `orchestration/session_turns.py` is the shared CLI/API submission use case,
+  while `orchestration/execution_host.py` composes and closes short-lived CLI
+  execution resources.
 - `runtime/context.py` is the execution-state boundary: portable run identity,
   turn state, history, and pending side effects travel through `LoraContext`;
   reusable Agent/Module definitions do not retain per-run mutable state.

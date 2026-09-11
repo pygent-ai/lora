@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from lora.schema import RunConfig
 from lora_api.container import ApiContext
-from lora_api.models.responses import ProjectListResponse, ProjectResponse, RuntimeConfigResponse
-from lora_api.project_state import SessionScope, active_project_scope_id, build_session_scopes
+from lora_api.models.responses import (
+    ProjectListResponse,
+    ProjectResponse,
+    RuntimeConfigResponse,
+)
+from lora_api.project_state import (
+    SessionScope,
+    active_project_scope_id,
+    build_session_scopes,
+)
 
 
 def project_list_response(context: ApiContext) -> ProjectListResponse:
@@ -11,11 +19,16 @@ def project_list_response(context: ApiContext) -> ProjectListResponse:
     active_scope_id = active_project_scope_id(config.workspace_root)
     scopes = [
         scope
-        for scope in build_session_scopes(context.project_state, active_workspace_root=config.workspace_root)
+        for scope in build_session_scopes(
+            context.project_state, active_workspace_root=config.workspace_root
+        )
         if scope.workspace_root is not None
     ]
     projects = [_project_response(scope) for scope in scopes]
-    active = next((project for project in projects if project.scope_id == active_scope_id), projects[0])
+    active = next(
+        (project for project in projects if project.scope_id == active_scope_id),
+        projects[0],
+    )
     return ProjectListResponse(active=active, projects=projects)
 
 
@@ -36,7 +49,9 @@ def remove_project(context: ApiContext, scope_id: str) -> bool:
     )
     if scope is None:
         return False
-    return context.project_state.forget_project(scope.workspace_root)
+    workspace_root = scope.workspace_root
+    assert workspace_root is not None
+    return context.project_state.forget_project(workspace_root)
 
 
 def config_response(config: RunConfig) -> RuntimeConfigResponse:

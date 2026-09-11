@@ -6,15 +6,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from .case import CaseManager
 from lora.config import load_mapping_file
-from .evaluator import Evaluator
 from lora.core.io import append_jsonl, write_json
-from lora.workflows.case_run import execute_case_run
 from lora.schema import CaseRunRef, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import EventStore
+from lora.workflows.case_run import execute_case_run
 
+from .case import CaseManager
+from .evaluator import Evaluator
 
 RegressionStatus = Literal["passed", "failed", "error", "skipped"]
 
@@ -30,8 +30,15 @@ class RegressionCaseSpec:
         if not isinstance(path, str) or not path.strip():
             raise ValueError("regression cases[].path must be a non-empty string")
         session_mode = data.get("session_mode")
-        if session_mode is not None and session_mode not in {"new", "resume", "fork", "shared"}:
-            raise ValueError("regression cases[].session_mode must be one of new, resume, fork, shared")
+        if session_mode is not None and session_mode not in {
+            "new",
+            "resume",
+            "fork",
+            "shared",
+        }:
+            raise ValueError(
+                "regression cases[].session_mode must be one of new, resume, fork, shared"
+            )
         return cls(path=path, session_mode=session_mode)
 
     def to_dict(self) -> dict[str, Any]:
@@ -123,7 +130,9 @@ class RegressionRunner:
         status: RegressionStatus = "skipped" if not manifest.cases else "passed"
         try:
             for index, case_spec in enumerate(manifest.cases):
-                case_result = self._run_case(case_spec, manifest_path=Path(manifest_path), index=index)
+                case_result = self._run_case(
+                    case_spec, manifest_path=Path(manifest_path), index=index
+                )
                 case_results.append(case_result)
                 append_jsonl(run_dir / "case_runs.jsonl", case_result)
                 status = _combined_status(case_results)
@@ -147,8 +156,14 @@ class RegressionRunner:
             )
         return result
 
-    def _run_case(self, case_spec: RegressionCaseSpec, *, manifest_path: Path, index: int) -> dict[str, Any]:
-        case_path = _resolve_case_path(case_spec.path, workspace_root=Path(self.config.workspace_root), manifest_path=manifest_path)
+    def _run_case(
+        self, case_spec: RegressionCaseSpec, *, manifest_path: Path, index: int
+    ) -> dict[str, Any]:
+        case_path = _resolve_case_path(
+            case_spec.path,
+            workspace_root=Path(self.config.workspace_root),
+            manifest_path=manifest_path,
+        )
         try:
             payload = execute_case_run(
                 config=self.config,
@@ -172,7 +187,9 @@ class RegressionRunner:
     ) -> dict[str, Any]:
         case_id = f"manifest-case-{index + 1}"
         session = self.session_manager.create(case_id, mode="regression-error")
-        ref = self.session_manager.start_case_run(session.session_id, case_id, run_config=self.config)
+        ref = self.session_manager.start_case_run(
+            session.session_id, case_id, run_config=self.config
+        )
         store = EventStore(ref)
         store.append_error(
             exc,
@@ -180,8 +197,17 @@ class RegressionRunner:
             payload={"case_path": str(case_path), "manifest_case": case_spec.to_dict()},
             turn_id="turn-0001",
         )
-        verdict = {"status": "error", "failures": [], "errors": [{"error": str(exc), "error_type": type(exc).__name__}]}
-        metrics = {"event_count": len(store.list_by_run()), "message_count": 0, "tool_call_count": 0, "turn_count": 1}
+        verdict = {
+            "status": "error",
+            "failures": [],
+            "errors": [{"error": str(exc), "error_type": type(exc).__name__}],
+        }
+        metrics = {
+            "event_count": len(store.list_by_run()),
+            "message_count": 0,
+            "tool_call_count": 0,
+            "turn_count": 1,
+        }
         write_json(Path(ref.run_dir) / "metrics.json", metrics)
         write_json(Path(ref.run_dir) / "verdict.json", verdict)
         write_json(
@@ -215,7 +241,9 @@ class RegressionRunner:
         return f"regression-{stamp}"
 
 
-def _case_summary(case_spec: RegressionCaseSpec, case_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+def _case_summary(
+    case_spec: RegressionCaseSpec, case_path: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "path": case_spec.path,
         "resolved_path": str(case_path),
@@ -231,7 +259,9 @@ def _case_summary(case_spec: RegressionCaseSpec, case_path: Path, payload: dict[
     }
 
 
-def _resolve_case_path(case_path: str, *, workspace_root: Path, manifest_path: Path) -> Path:
+def _resolve_case_path(
+    case_path: str, *, workspace_root: Path, manifest_path: Path
+) -> Path:
     path = Path(case_path).expanduser()
     if not path.is_absolute():
         root_relative = (workspace_root / path).resolve()
@@ -268,7 +298,8 @@ def _result_payload(
         "passed": sum(1 for case in cases if case.get("status") == "passed"),
         "failed": sum(1 for case in cases if case.get("status") == "failed"),
         "error": sum(1 for case in cases if case.get("status") == "error"),
-        "skipped": sum(1 for case in cases if case.get("status") == "skipped") + max(total - len(cases), 0),
+        "skipped": sum(1 for case in cases if case.get("status") == "skipped")
+        + max(total - len(cases), 0),
     }
     return {
         "regression_run_id": run_id,

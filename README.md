@@ -1,8 +1,8 @@
 # Lora
 
-Lora 是基于 Pygent 0.3.6 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
+Lora 是基于 Pygent 0.3.10 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
 
-本版本直接采用 Pygent 0.3.3 的 Execution schema v1，不读取或迁移旧 Runtime journal；默认数据库使用 `*-v1.sqlite3` 路径。若 `preferred`/`disabled` 持久化发现该路径中的 Pygent 内部 SQLite schema 不兼容，Lora 会保留旧库并切换到带 `-schema-v7` 后缀的新 journal；`required` 模式仍会明确失败。
+Runtime journal 直接使用当前 PyPI Pygent 管理的 SQLite schema 和配置路径。
 
 ## 安装
 
@@ -98,7 +98,7 @@ eternal_conversation:
 ## 使用
 
 ```powershell
-uv run lora chat --message "分析当前项目"
+uv run lora session run --new --message "分析当前项目"
 uv run lora --agent dev case run cases/example.yaml
 uv run lora-api --workspace-root E:\Projects\lora
 npm run dev
@@ -145,6 +145,6 @@ npm --prefix apps/desktop test
 npm --prefix apps/desktop run build
 ```
 
-更多说明见 [CLI](docs/cli/lora-chat.md)、[本地 API](docs/api/local-service.md) 和[开发指南](docs/guides/development-guide.md)。
+更多说明见 [CLI](docs/cli/lora-session.md)、[本地 API](docs/api/local-service.md) 和[开发指南](docs/guides/development-guide.md)。
 
-本地开发依赖通过 `tool.uv.sources` 使用相邻目录 `../pygent` 的源码；`uv sync` 会安装该版本，包含执行输入取消固定字节大小上限的修复。
+运行时依赖通过 PyPI 安装锁定的官方 `pygent-ai` 版本；仓库不使用本地 Pygent 源码覆盖。

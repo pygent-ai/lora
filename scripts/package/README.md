@@ -8,7 +8,7 @@ Windows desktop packaging is split into two steps:
 The resulting Electron app starts the bundled `lora-api.exe` at launch, and the Windows installer adds the bundled CLI directory to the current user's PATH. Target machines do not need Python, `uv`, or project Python dependencies installed. After installation, open a new terminal to run commands such as:
 
 ```powershell
-lora chat --new -m "hello"
+lora session chat --new
 ```
 
 Useful commands from the repository root:

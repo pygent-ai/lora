@@ -10,9 +10,9 @@ from typing import Any, Literal
 from pygent import ToolResult as PygentToolResult
 
 from lora.core.io import plain_data
-from lora.tracing import DiffRecorder, read_snapshot_content
 from lora.core.redaction import redact_secrets
-from lora.tracing import EventStore
+from lora.tracing import DiffRecorder, EventStore, read_snapshot_content
+
 from .file_effect_models import DeferredFileEffectJob, FileEffect, FileSnapshot
 
 MAX_BASH_RESULT_CHARS = 20_000

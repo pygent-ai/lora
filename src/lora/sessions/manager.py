@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import shutil
+import sqlite3
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -57,7 +57,11 @@ class SessionManager:
                 "workspace_root": str(self.workspace_root),
             },
         )
-        return SessionRef(session_id=session_id, session_dir=str(session_dir), workspace_root=str(self.workspace_root))
+        return SessionRef(
+            session_id=session_id,
+            session_dir=str(session_dir),
+            workspace_root=str(self.workspace_root),
+        )
 
     def load(self, session_id: str) -> AgentSession:
         session_dir = self._session_dir(session_id)
@@ -82,7 +86,9 @@ class SessionManager:
     def fork(self, source_session_id: str) -> SessionRef:
         source_dir = self._session_dir(source_session_id)
         if not source_dir.exists():
-            raise FileNotFoundError(f"Source session {source_session_id!r} does not exist")
+            raise FileNotFoundError(
+                f"Source session {source_session_id!r} does not exist"
+            )
         source_meta = read_json(source_dir / "metadata.json")
         case_id = source_meta.get("case_id", "fork")
         target = self.create(case_id=case_id, mode="fork")
@@ -123,24 +129,44 @@ class SessionManager:
         self._save_session(session)
         return target
 
-    def start_case_run(self, session_id: str, case_id: str, run_config: RunConfig | None = None) -> CaseRunRef:
+    def start_case_run(
+        self, session_id: str, case_id: str, run_config: RunConfig | None = None
+    ) -> CaseRunRef:
         validate_path_id(case_id, "case_id")
         session = self.load(session_id)
         case_run_id = self._new_case_run_id(session_id, case_id)
-        run_dir = self._session_dir(session_id) / "cases" / case_id / "runs" / case_run_id
+        run_dir = (
+            self._session_dir(session_id) / "cases" / case_id / "runs" / case_run_id
+        )
         run_dir.mkdir(parents=True, exist_ok=False)
-        ref = CaseRunRef(session_id=session_id, case_id=case_id, case_run_id=case_run_id, run_dir=str(run_dir))
+        ref = CaseRunRef(
+            session_id=session_id,
+            case_id=case_id,
+            case_run_id=case_run_id,
+            run_dir=str(run_dir),
+        )
         config = run_config or self.config
         write_json(run_dir / "run_config.json", config.to_dict())
         write_json_atomic(
             run_dir / "run_metadata.json",
-            {"status": "running", "started_at": utc_now(), "history_start_index": len(session.history), **ref.to_dict()},
+            {
+                "status": "running",
+                "started_at": utc_now(),
+                "history_start_index": len(session.history),
+                **ref.to_dict(),
+            },
         )
         metadata_path = self._session_dir(session_id) / "metadata.json"
         metadata = read_json(metadata_path)
-        metadata.update(last_case_run_id=case_run_id, last_case_run_status="running", updated_at=utc_now())
+        metadata.update(
+            last_case_run_id=case_run_id,
+            last_case_run_status="running",
+            updated_at=utc_now(),
+        )
         write_json_atomic(metadata_path, metadata)
-        self._append_session_event(session_id, "case.started", {"case_id": case_id, "case_run_id": case_run_id})
+        self._append_session_event(
+            session_id, "case.started", {"case_id": case_id, "case_run_id": case_run_id}
+        )
         return ref
 
     def finish_case_run(self, case_run_ref: CaseRunRef, status: str) -> None:
@@ -174,7 +200,11 @@ class SessionManager:
         self._append_session_event(
             case_run_ref.session_id,
             "case.finished",
-            {"case_id": case_run_ref.case_id, "case_run_id": case_run_ref.case_run_id, "status": status},
+            {
+                "case_id": case_run_ref.case_id,
+                "case_run_id": case_run_ref.case_run_id,
+                "status": status,
+            },
         )
 
     def show(self, session_id: str) -> dict[str, Any]:
@@ -182,39 +212,90 @@ class SessionManager:
         metadata = read_json(self._session_dir(session_id) / "metadata.json")
         return {"session": session.to_dict(), "metadata": metadata}
 
-    def history_with_run_timing(self, session: AgentSession) -> list[dict[str, Any]]:
-        """Project durable checkpoint ownership for the UI without changing model history.
+    def list_sessions(self, *, mode: str | None = None) -> list[dict[str, Any]]:
+        if not self.sessions_root.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        for metadata_path in self.sessions_root.glob("*/metadata.json"):
+            if not (metadata_path.parent / "session.json").is_file():
+                continue
+            metadata = read_json(metadata_path)
+            session_mode = str(metadata.get("mode") or "")
+            if mode is not None and session_mode != mode:
+                continue
+            session_id = str(metadata.get("session_id") or metadata_path.parent.name)
+            records.append(
+                {
+                    "session_id": session_id,
+                    "case_id": str(metadata.get("case_id") or ""),
+                    "mode": session_mode,
+                    "title": str(metadata.get("title") or session_id),
+                    "created_at": str(metadata.get("created_at") or ""),
+                    "updated_at": str(metadata.get("updated_at") or ""),
+                    "last_case_run_id": metadata.get("last_case_run_id"),
+                    "last_case_run_status": metadata.get("last_case_run_status"),
+                }
+            )
+        return sorted(
+            records, key=lambda record: str(record["updated_at"]), reverse=True
+        )
 
-        Checkpoints form the suffix of raw history (older sessions may have a
-        legacy prefix). Verify each boundary instead of matching message text
-        or assuming that run ordering equals conversation ordering.
-        """
-        history = [dict(message) for message in session.history]
+    def save_title_from_user_input(self, session_id: str, user_input: str) -> None:
+        """Persist the first meaningful user message as the session title."""
+
+        session = self.load(session_id)
+        metadata_path = Path(session.session_dir) / "metadata.json"
+        metadata = read_json(metadata_path)
+        if _clean_title(str(metadata.get("title") or "")):
+            return
+        title = _clean_title(user_input)
+        if not title:
+            return
+        metadata["title"] = title[:120]
+        write_json(metadata_path, metadata)
+
+    def save_title(self, session_id: str, title: str) -> None:
+        """Persist an explicit application-owned session title."""
+
+        session = self.load(session_id)
+        clean = _clean_title(title)
+        if not clean:
+            raise ValueError("title must be non-empty")
+        metadata_path = Path(session.session_dir) / "metadata.json"
+        metadata = read_json(metadata_path)
+        metadata["title"] = clean[:120]
+        metadata["updated_at"] = utc_now()
+        write_json_atomic(metadata_path, metadata)
+
+    def history_with_run_timing(self, session: AgentSession) -> list[dict[str, Any]]:
+        """Project checkpoint-owned history with its run timing."""
         database_path = self._checkpoint_database_path(session.session_id)
         if not database_path.exists():
-            return history
+            return []
         with closing(self._checkpoint_connection(database_path)) as connection:
             rows = connection.execute(
                 """SELECT case_id, case_run_id, message_json
                    FROM conversation_checkpoints
                    WHERE include_in_session = 1 AND sequence <= ?
-                   ORDER BY sequence DESC""",
+                   ORDER BY sequence""",
                 (int(session.metadata.get("history_checkpoint_seq") or 0),),
             ).fetchall()
+        history: list[dict[str, Any]] = []
         timings: dict[str, dict[str, Any]] = {}
-        for index, (case_id, run_id, message_json) in zip(
-            range(len(history) - 1, -1, -1), rows
-        ):
-            if history[index] != json.loads(message_json):
-                break
+        for case_id, run_id, message_json in rows:
             if run_id not in timings:
                 ref = CaseRunRef(
-                    session_id=session.session_id, case_id=case_id,
+                    session_id=session.session_id,
+                    case_id=case_id,
                     case_run_id=run_id,
-                    run_dir=str(Path(session.session_dir) / "cases" / case_id / "runs" / run_id),
+                    run_dir=str(
+                        Path(session.session_dir) / "cases" / case_id / "runs" / run_id
+                    ),
                 )
                 timings[run_id] = self.run_timing(ref)
-            history[index]["run_timing"] = timings[run_id]
+            message = json.loads(message_json)
+            message["run_timing"] = timings[run_id]
+            history.append(message)
         return history
 
     def run_timing(self, ref: CaseRunRef) -> dict[str, Any]:
@@ -225,6 +306,27 @@ class SessionManager:
             "finished_at": metadata.get("finished_at"),
             "status": metadata.get("status"),
         }
+
+    def load_run_config(
+        self,
+        ref: CaseRunRef,
+        *,
+        credential_source: RunConfig | None = None,
+    ) -> RunConfig:
+        """Load persisted run settings and rehydrate non-persisted credentials."""
+
+        config = RunConfig.from_dict(read_json(Path(ref.run_dir) / "run_config.json"))
+        source = (
+            credential_source.resolved_agent if credential_source is not None else None
+        )
+        target = config.resolved_agent
+        if source is not None and target is not None:
+            credentials = {
+                (route.id, route.api_key_env): route.api_key for route in source.routes
+            }
+            for route in target.routes:
+                route.api_key = credentials.get((route.id, route.api_key_env))
+        return config
 
     def save(self, session: AgentSession) -> None:
         session.updated_at = utc_now()
@@ -267,7 +369,9 @@ class SessionManager:
                         case_run_ref.case_run_id,
                         turn_id,
                         str(message.get("role") or "user"),
-                        json.dumps(redact_secrets(message), ensure_ascii=False, sort_keys=True),
+                        json.dumps(
+                            redact_secrets(message), ensure_ascii=False, sort_keys=True
+                        ),
                         int(include_in_session),
                         utc_now(),
                     ),
@@ -278,9 +382,13 @@ class SessionManager:
         session_dir = self._session_dir(session_id)
         matches = list((session_dir / "cases").glob(f"*/runs/{case_run_id}"))
         if not matches:
-            raise FileNotFoundError(f"Case run {case_run_id!r} does not exist under session {session_id!r}")
+            raise FileNotFoundError(
+                f"Case run {case_run_id!r} does not exist under session {session_id!r}"
+            )
         if len(matches) > 1:
-            raise ValueError(f"Case run {case_run_id!r} is ambiguous under session {session_id!r}")
+            raise ValueError(
+                f"Case run {case_run_id!r} is ambiguous under session {session_id!r}"
+            )
         run_dir = matches[0]
         metadata = read_json(run_dir / "run_metadata.json")
         return CaseRunRef(
@@ -293,7 +401,9 @@ class SessionManager:
     def _save_session(self, session: AgentSession) -> None:
         validate_path_id(session.session_id, "session_id")
         session_dir = self._session_dir(session.session_id)
-        write_json_atomic(session_dir / "session.json", redact_secrets(session.to_dict()))
+        write_json_atomic(
+            session_dir / "session.json", redact_secrets(session.to_dict())
+        )
 
     def _apply_history_checkpoints(self, session: AgentSession) -> AgentSession:
         database_path = self._checkpoint_database_path(session.session_id)
@@ -314,15 +424,17 @@ class SessionManager:
             cursor_sequence = int(sequence)
             if include_in_session:
                 message = json.loads(message_json)
-                if not isinstance(message, dict):
-                    raise ValueError("conversation checkpoint message must be a JSON object")
                 session.history.append(message)
         if rows:
             session.metadata["history_checkpoint_seq"] = cursor_sequence
         return session
 
     def _checkpoint_database_path(self, session_id: str) -> Path:
-        return self._session_dir(session_id) / "context" / "conversation-checkpoints.sqlite3"
+        return (
+            self._session_dir(session_id)
+            / "context"
+            / "conversation-checkpoints.sqlite3"
+        )
 
     @staticmethod
     def _checkpoint_connection(path: Path) -> sqlite3.Connection:
@@ -357,20 +469,36 @@ class SessionManager:
 
     def _new_session_id(self, case_id: str, mode: str) -> str:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        digest = hashlib.sha1(f"{case_id}:{mode}:{stamp}:{utc_now()}".encode("utf-8")).hexdigest()[:6]
+        digest = hashlib.sha1(
+            f"{case_id}:{mode}:{stamp}:{utc_now()}".encode("utf-8")
+        ).hexdigest()[:6]
         return f"{mode}-{_slug(case_id)}-{stamp}-{digest}"
 
     def _new_case_run_id(self, session_id: str, case_id: str) -> str:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        digest = hashlib.sha1(f"{session_id}:{case_id}:{stamp}".encode("utf-8")).hexdigest()[:6]
+        digest = hashlib.sha1(
+            f"{session_id}:{case_id}:{stamp}".encode("utf-8")
+        ).hexdigest()[:6]
         return f"run-{stamp}-{digest}"
 
-    def _append_session_event(self, session_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    def _append_session_event(
+        self, session_id: str, event_type: str, payload: dict[str, Any]
+    ) -> None:
         path = self._session_dir(session_id) / "logs" / "session-events.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
-        event = {"type": event_type, "timestamp": utc_now(), "session_id": session_id, "payload": payload}
+        event = {
+            "type": event_type,
+            "timestamp": utc_now(),
+            "session_id": session_id,
+            "payload": payload,
+        }
         append_jsonl(path, event)
+
 
 def _slug(value: str) -> str:
     clean = "".join(ch if ch.isalnum() else "-" for ch in value.lower()).strip("-")
     return clean or "case"
+
+
+def _clean_title(value: str) -> str:
+    return " ".join(value.split())

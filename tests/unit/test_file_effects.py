@@ -4,13 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lora.runtime.file_effect_models import FileEffect
 from lora.runtime.file_effects import (
     DeferredFileEffectBatch,
     DeferredFileEffectJob,
     FileEffectBaselineStore,
     process_file_effect_batch,
 )
-from lora.runtime.file_effect_models import FileEffect
 from lora.runtime.tools import FileEffectTracker, FileSnapshot
 from lora.schema import CaseRunRef
 from lora.tracing import EventStore
@@ -41,7 +41,12 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
 
     def test_batch_create_records_tool_call_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=Path(tmp) / "run")
+            run = CaseRunRef(
+                session_id="s1",
+                case_id="chat",
+                case_run_id="r1",
+                run_dir=Path(tmp) / "run",
+            )
             job = DeferredFileEffectJob(
                 tool_call_id="tool-1",
                 tool_name="bash",
@@ -50,7 +55,9 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
                 declared=[],
             )
 
-            batch = DeferredFileEffectBatch.create(case_run_ref=run, workspace_root=Path(tmp), jobs=[job])
+            batch = DeferredFileEffectBatch.create(
+                case_run_ref=run, workspace_root=Path(tmp), jobs=[job]
+            )
 
             self.assertEqual(batch.case_run_ref.case_run_id, "r1")
             self.assertEqual(batch.turn_id, "turn-0001")
@@ -64,7 +71,9 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
             session_dir.mkdir(parents=True)
             (session_dir / "session.json").write_text("{}", encoding="utf-8")
             workspace.mkdir()
-            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir)
+            run = CaseRunRef(
+                session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir
+            )
 
             from lora.runtime.file_effects import process_file_effect_batch
 
@@ -77,7 +86,9 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
                 requires_snapshot=False,
             )
 
-            batch = DeferredFileEffectBatch.create(case_run_ref=run, workspace_root=workspace, jobs=[job])
+            batch = DeferredFileEffectBatch.create(
+                case_run_ref=run, workspace_root=workspace, jobs=[job]
+            )
             process_file_effect_batch(batch)
 
     def test_first_declared_write_is_recorded_as_new_and_seeds_baseline(self) -> None:
@@ -123,9 +134,10 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
             )
 
             rows = list(EventStore.iter_jsonl(run_dir / "file_events.jsonl"))
-            self.assertEqual([(row["type"], row["path"]) for row in rows], [
-                ("file.write", str(created.resolve()))
-            ])
+            self.assertEqual(
+                [(row["type"], row["path"]) for row in rows],
+                [("file.write", str(created.resolve()))],
+            )
             baseline = FileEffectBaselineStore(session_dir).load()
             self.assertIsNotNone(baseline)
             self.assertIn(str(created.resolve()), baseline)
@@ -142,7 +154,9 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
             second = workspace / "second.txt"
             first.write_text("before", encoding="utf-8")
             second.write_text("before", encoding="utf-8")
-            run = CaseRunRef(session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir)
+            run = CaseRunRef(
+                session_id="s1", case_id="chat", case_run_id="r1", run_dir=run_dir
+            )
             tracker = FileEffectTracker(workspace, EventStore(run))
             FileEffectBaselineStore(session_dir).save(tracker.snapshot_workspace())
             first.write_text("after", encoding="utf-8")
@@ -178,8 +192,7 @@ class FileEffectStateTests(unittest.IsolatedAsyncioTestCase):
 
             rows = list(EventStore.iter_jsonl(run_dir / "file_events.jsonl"))
             owners = {
-                Path(row["path"]).name: row["payload"]["tool_call_id"]
-                for row in rows
+                Path(row["path"]).name: row["payload"]["tool_call_id"] for row in rows
             }
             self.assertEqual(owners, {"first.txt": "call-1", "second.txt": "call-2"})
 

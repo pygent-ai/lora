@@ -1,14 +1,13 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any, Literal
 
 from lora.core.paths import project_lora_root as resolve_project_lora_root
-
+from lora.runtime.context import LoraContext
 from lora.schema import BashCliPreset
 from lora.tracing import EventStore
-from lora.runtime.context import LoraContext
 
 from .common import (
     _file_lock,
@@ -41,6 +40,7 @@ from .prompt_sources import (
     _render_token_budget_prompt,
     _render_tool_result_reminders_prompt,
 )
+
 
 class PromptRegistry:
     def __init__(self) -> None:
@@ -177,9 +177,13 @@ class PromptComposer:
         include: list[str] | None = None,
         exclude: list[str] | None = None,
     ) -> list[PromptModule]:
-        return self.registry.resolve(phase="request_system", include=include, exclude=exclude, render_context=ctx)
+        return self.registry.resolve(
+            phase="request_system", include=include, exclude=exclude, render_context=ctx
+        )
 
-    def compose_static(self, ctx: PromptRenderContext) -> tuple[str, list[dict[str, Any]]]:
+    def compose_static(
+        self, ctx: PromptRenderContext
+    ) -> tuple[str, list[dict[str, Any]]]:
         modules = self.registry.resolve(phase="static", render_context=ctx)
         return self._compose_modules(ctx, modules)
 
@@ -189,7 +193,9 @@ class PromptComposer:
         *,
         module_ids: list[str] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
-        modules = self.registry.resolve(phase="request_system", include=module_ids, render_context=ctx)
+        modules = self.registry.resolve(
+            phase="request_system", include=module_ids, render_context=ctx
+        )
         return self._compose_modules(ctx, modules)
 
     def compose(self, ctx: PromptRenderContext) -> tuple[str, list[dict[str, Any]]]:
@@ -212,7 +218,9 @@ class PromptComposer:
             text = module.render(ctx)
             if not text:
                 if module.required:
-                    raise ValueError(f"Required prompt module {module.id!r} rendered empty content")
+                    raise ValueError(
+                        f"Required prompt module {module.id!r} rendered empty content"
+                    )
                 continue
             parts.append(text)
             rendered_modules.append(
@@ -274,13 +282,22 @@ class StaticPromptSessionCache:
                 "module_ids": [module["id"] for module in modules],
                 "modules": modules,
                 "registry_version": _hash_json(
-                    [{"id": module["id"], "version_hash": module["version_hash"]} for module in modules]
+                    [
+                        {"id": module["id"], "version_hash": module["version_hash"]}
+                        for module in modules
+                    ]
                 ),
                 "cache_status": "ready",
             }
             _write_text_atomic(self.text_path, text)
             _write_json_atomic(self.metadata_path, metadata)
-            return StaticPromptResult(text=text, prompt_hash=prompt_hash, modules=modules, metadata=metadata, created=True)
+            return StaticPromptResult(
+                text=text,
+                prompt_hash=prompt_hash,
+                modules=modules,
+                metadata=metadata,
+                created=True,
+            )
 
     def _read_cached(self) -> StaticPromptResult | None:
         text_exists = self.text_path.exists()
@@ -288,15 +305,21 @@ class StaticPromptSessionCache:
         if not text_exists and not metadata_exists:
             return None
         if text_exists != metadata_exists:
-            raise RuntimeError(f"Incomplete static prompt cache under {self.prompt_dir}")
+            raise RuntimeError(
+                f"Incomplete static prompt cache under {self.prompt_dir}"
+            )
 
         text = self.text_path.read_text(encoding="utf-8")
         metadata = json.loads(self.metadata_path.read_text(encoding="utf-8"))
         if metadata.get("cache_status") != "ready":
-            raise RuntimeError(f"Static prompt cache is not ready: {self.metadata_path}")
+            raise RuntimeError(
+                f"Static prompt cache is not ready: {self.metadata_path}"
+            )
         prompt_hash = _hash_text(text)
         if metadata.get("prompt_hash") != prompt_hash:
-            raise RuntimeError(f"Static prompt cache hash mismatch: {self.metadata_path}")
+            raise RuntimeError(
+                f"Static prompt cache hash mismatch: {self.metadata_path}"
+            )
         return StaticPromptResult(
             text=text,
             prompt_hash=prompt_hash,
@@ -323,15 +346,25 @@ class PromptInjectionPolicy:
             )
 
         if not dynamic_modules:
-            return PromptInjectionDecision(inject_dynamic=False, module_ids=[], reason="no_dynamic_modules")
+            return PromptInjectionDecision(
+                inject_dynamic=False, module_ids=[], reason="no_dynamic_modules"
+            )
 
         if request_context.request_type == "summary":
-            module_ids = [module.id for module in dynamic_modules if module.type == "memory"]
+            module_ids = [
+                module.id for module in dynamic_modules if module.type == "memory"
+            ]
             return PromptInjectionDecision(
                 inject_dynamic=bool(module_ids),
                 module_ids=module_ids,
-                skipped_module_ids=[module.id for module in dynamic_modules if module.id not in module_ids],
-                reason="summary_memory_modules" if module_ids else "summary_no_memory_modules",
+                skipped_module_ids=[
+                    module.id
+                    for module in dynamic_modules
+                    if module.id not in module_ids
+                ],
+                reason="summary_memory_modules"
+                if module_ids
+                else "summary_no_memory_modules",
             )
 
         if request_context.request_type in {"agent_turn", "case_run", "evaluation"}:
@@ -364,21 +397,37 @@ class AgentContextManager:
     ) -> None:
         self.session_dir = session_dir
         self.workspace_root = workspace_root
-        self.user_lora_root = (user_lora_root or Path.home() / ".lora").expanduser().resolve()
+        self.user_lora_root = (
+            (user_lora_root or Path.home() / ".lora").expanduser().resolve()
+        )
         self.project_lora_root = (
-            project_lora_root or resolve_project_lora_root(workspace_root, self.user_lora_root)
-        ).expanduser().resolve()
-        self.project_skills_dir = (self.project_lora_root / "skills").expanduser().resolve()
+            (
+                project_lora_root
+                or resolve_project_lora_root(workspace_root, self.user_lora_root)
+            )
+            .expanduser()
+            .resolve()
+        )
+        self.project_skills_dir = (
+            (self.project_lora_root / "skills").expanduser().resolve()
+        )
         self.user_skills_dir = (self.user_lora_root / "skills").expanduser().resolve()
         self.store = store
         self.prompt_composer = prompt_composer or PromptComposer(prompt_registry)
-        self.static_prompt_cache = StaticPromptSessionCache(session_dir, self.prompt_composer)
+        self.static_prompt_cache = StaticPromptSessionCache(
+            session_dir, self.prompt_composer
+        )
         self.injection_policy = PromptInjectionPolicy()
         self.cli_bash_presets = list(cli_bash_presets or [])
 
-    def projection(self, history: list[dict[str, Any]], limit: int = 8) -> dict[str, Any]:
+    def projection(
+        self, history: list[dict[str, Any]], limit: int = 8
+    ) -> dict[str, Any]:
         recent_messages = [
-            {"role": message.get("role"), "content": str(message.get("content", ""))[:1200]}
+            {
+                "role": message.get("role"),
+                "content": str(message.get("content", ""))[:1200],
+            }
             for message in history[-limit:]
         ]
         return {"recent_messages": recent_messages}
@@ -388,7 +437,9 @@ class AgentContextManager:
         *,
         context: LoraContext,
         tool_names: list[str],
-        request_type: Literal["agent_turn", "case_run", "summary", "evaluation"] = "agent_turn",
+        request_type: Literal[
+            "agent_turn", "case_run", "summary", "evaluation"
+        ] = "agent_turn",
     ) -> ModelRequestPrompt:
         projection = self.projection(context.history)
         if self.store is not None:
@@ -426,7 +477,9 @@ class AgentContextManager:
             project_skills_dir=self.project_skills_dir,
         )
         static_prompt = self.static_prompt_cache.get_or_create(render_ctx)
-        request_system_modules = self.prompt_composer.resolve_request_system_modules(render_ctx)
+        request_system_modules = self.prompt_composer.resolve_request_system_modules(
+            render_ctx
+        )
         request_context = PromptRequestContext(
             session_id=context.session_id,
             case_run_id=context.case_run_id or None,
@@ -451,11 +504,15 @@ class AgentContextManager:
         request_system_prompt_hash: str | None = None
         request_system_rendered_modules: list[dict[str, Any]] = []
         if decision.inject_dynamic:
-            request_system_text, request_system_rendered_modules = self.prompt_composer.compose_request_system(
-                render_ctx,
-                module_ids=decision.module_ids,
+            request_system_text, request_system_rendered_modules = (
+                self.prompt_composer.compose_request_system(
+                    render_ctx,
+                    module_ids=decision.module_ids,
+                )
             )
-            request_system_prompt_hash = _hash_text(request_system_text) if request_system_text else None
+            request_system_prompt_hash = (
+                _hash_text(request_system_text) if request_system_text else None
+            )
 
         prompt_parts = [static_prompt.text]
         if request_system_text:
@@ -480,9 +537,13 @@ class AgentContextManager:
                 payload={
                     "prompt": prompt,
                     "module_ids": [module["id"] for module in modules],
-                    "static_module_ids": [module["id"] for module in static_prompt.modules],
+                    "static_module_ids": [
+                        module["id"] for module in static_prompt.modules
+                    ],
                     "dynamic_module_ids": [],
-                    "request_system_module_ids": [module["id"] for module in request_system_rendered_modules],
+                    "request_system_module_ids": [
+                        module["id"] for module in request_system_rendered_modules
+                    ],
                     "modules": modules,
                     "prompt_hash": prompt_hash,
                     "static_prompt_hash": static_prompt.prompt_hash,

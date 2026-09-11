@@ -16,18 +16,24 @@ Owns model execution, tool execution, context management, and the high-level run
   source of execution-scoped facts. It carries session/case/run/turn identity,
   model projection, complete persisted history, and deferred file-effect jobs.
 - `context_compression.py`: model-context compaction.
-- `reminders/`: session bootstrap and Git/CLI/Skill observations. Pygent 0.3.6
+- `reminders/`: session bootstrap, Git/CLI/Skill observations, and the persistent
+  Agent-message inbox. Pygent 0.3.10
   `Reminder` / `format_context` render native runtime context. Tool updates use
   v2 `AppendToolResultContent` operations with stable input IDs; raw ToolResults
-  remain unchanged. There is no legacy system-reminder renderer or v1 adapter.
+  remain unchanged. Agent messages require nested XML, so the reminder module
+  appends their escaped `<runtime-context><agent-message>` envelope directly to
+  `ToolMessage.content`; the outer conversation checkpoint persists that exact
+  projection. There is no legacy system-reminder renderer or v1 adapter.
 - `tools.py`: tool observation and file-effect discovery.
 - `file_effect_models.py`: dependency-light file-effect contracts.
 - `file_effects.py`: deferred file-effect persistence and execution.
 - `deployment.py`: model-resource and workspace executor adapters.
-- `delegation.py`: delegation tool definitions and visibility policy.
+- `agent_collaboration.py`: model-visible session collaboration tool definitions
+  and visibility policy.
 - `service.py`: session-oriented runtime facade used by API and CLI adapters.
 
-Compatibility imports from `lora.runtime.agent` and `lora.runtime` are preserved by package exports.
+Runtime callers import concrete owning modules; package-level compatibility
+re-exports are intentionally not provided.
 
 ## Runtime-state boundary
 
@@ -45,9 +51,8 @@ Deferred file effects flow explicitly through `LoraContext.pending_file_effects`
 tool observation appends jobs, and the persisted-diff module drains them into the
 managed Pygent tool task. There is no hidden observer-owned queue.
 
-`LoraContext` schema version 2 is the first schema with these run facts. Completed
-records remain readable as history, but an in-flight execution journaled with the
-older context codec must be restarted rather than resumed across this upgrade.
+Checkpoint restoration delegates directly to Pygent's current context codec
+registry without Lora-owned version detection or migration branches.
 
 ## Eternal conversation projection
 

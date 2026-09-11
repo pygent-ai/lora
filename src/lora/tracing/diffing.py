@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pygent import IdempotencyPolicy, ToolSideEffect, ToolKit, tool
 from pydantic import Field
+from pygent import IdempotencyPolicy, ToolKit, ToolSideEffect, tool
 
-from lora.schema import CaseRunRef
 from lora.core.io import write_text
+from lora.schema import CaseRunRef
 
 from .events import EventStore
 
@@ -82,7 +82,9 @@ class DiffRecorder:
             available=bool(getattr(effect, "after_content_available", False)),
             reason=getattr(effect, "after_content_unavailable_reason", None),
         )
-        artifact = self._write_artifact(effect, relative_path=relative_path, before=before, after=after)
+        artifact = self._write_artifact(
+            effect, relative_path=relative_path, before=before, after=after
+        )
         payload = {
             "diff_id": artifact.diff_id,
             "tool_call_id": effect.tool_call_id,
@@ -94,10 +96,14 @@ class DiffRecorder:
             "after_exists": effect.after_exists,
             "before_hash": effect.before_hash,
             "after_hash": effect.after_hash,
-            "snapshot_before_path": self._snapshot_path(effect.tool_call_id, "before", relative_path)
+            "snapshot_before_path": self._snapshot_path(
+                effect.tool_call_id, "before", relative_path
+            )
             if before.available
             else None,
-            "snapshot_after_path": self._snapshot_path(effect.tool_call_id, "after", relative_path)
+            "snapshot_after_path": self._snapshot_path(
+                effect.tool_call_id, "after", relative_path
+            )
             if after.available
             else None,
             "patch_available": artifact.patch_available,
@@ -107,7 +113,9 @@ class DiffRecorder:
         }
         if artifact.reason is not None:
             payload["patch_unavailable_reason"] = artifact.reason
-        self.store.append("diff.created", actor="tool", payload=payload, turn_id=turn_id)
+        self.store.append(
+            "diff.created", actor="tool", payload=payload, turn_id=turn_id
+        )
 
     def _write_artifact(
         self,
@@ -119,17 +127,38 @@ class DiffRecorder:
     ) -> DiffArtifact:
         diff_id = f"diff_{uuid.uuid4().hex}"
         if before.available and before.content is not None:
-            write_text(Path(self._snapshot_path(effect.tool_call_id, "before", relative_path)), before.content)
+            write_text(
+                Path(self._snapshot_path(effect.tool_call_id, "before", relative_path)),
+                before.content,
+            )
         if after.available and after.content is not None:
-            write_text(Path(self._snapshot_path(effect.tool_call_id, "after", relative_path)), after.content)
+            write_text(
+                Path(self._snapshot_path(effect.tool_call_id, "after", relative_path)),
+                after.content,
+            )
 
         missing_reason = _missing_patch_reason(effect.type, before, after)
         if missing_reason is not None:
-            return DiffArtifact(diff_id=diff_id, patch_available=False, patch_path=None, reason=missing_reason)
+            return DiffArtifact(
+                diff_id=diff_id,
+                patch_available=False,
+                patch_path=None,
+                reason=missing_reason,
+            )
 
-        before_lines = [] if effect.before_exists is False else _split_patch_lines(before.content or "")
-        after_lines = [] if effect.after_exists is False else _split_patch_lines(after.content or "")
-        fromfile = "/dev/null" if effect.before_exists is False else f"a/{relative_path}"
+        before_lines = (
+            []
+            if effect.before_exists is False
+            else _split_patch_lines(before.content or "")
+        )
+        after_lines = (
+            []
+            if effect.after_exists is False
+            else _split_patch_lines(after.content or "")
+        )
+        fromfile = (
+            "/dev/null" if effect.before_exists is False else f"a/{relative_path}"
+        )
         tofile = "/dev/null" if effect.after_exists is False else f"b/{relative_path}"
         patch_lines = list(
             difflib.unified_diff(
@@ -151,7 +180,9 @@ class DiffRecorder:
             patch_line_count=len(patch.splitlines()),
         )
 
-    def _snapshot_path(self, tool_call_id: str, side: Literal["before", "after"], relative_path: str) -> str:
+    def _snapshot_path(
+        self, tool_call_id: str, side: Literal["before", "after"], relative_path: str
+    ) -> str:
         target = self.diffs_dir / "snapshots" / tool_call_id / side
         for part in Path(relative_path).parts:
             if part in {"", ".", ".."}:
@@ -192,7 +223,9 @@ class DiffTool:
         ] = "run",
         path: Annotated[
             str | None,
-            Field(description="Optional workspace path whose persisted changes to show."),
+            Field(
+                description="Optional workspace path whose persisted changes to show."
+            ),
         ] = None,
         tool_call_id: Annotated[
             str | None,
@@ -200,25 +233,37 @@ class DiffTool:
         ] = None,
         format: Annotated[
             Literal["summary", "patch", "json"],
-            Field(description="Result detail: compact summary, unified patches, or records."),
+            Field(
+                description="Result detail: compact summary, unified patches, or records."
+            ),
         ] = "summary",
         limit: Annotated[
             int,
-            Field(ge=1, description="Maximum number of persisted diff records to return."),
+            Field(
+                ge=1, description="Maximum number of persisted diff records to return."
+            ),
         ] = 20,
     ) -> dict[str, Any]:
         records = self._records(scope)
         if scope == "turn":
-            records = [record for record in records if record.get("turn_id") == self.turn_id]
+            records = [
+                record for record in records if record.get("turn_id") == self.turn_id
+            ]
         if path:
             normalized = _normalize_filter_path(path, self.workspace_root)
             records = [
                 record
                 for record in records
-                if record.get("path") == normalized or record.get("relative_path") == _relative_workspace_path(Path(normalized), self.workspace_root)
+                if record.get("path") == normalized
+                or record.get("relative_path")
+                == _relative_workspace_path(Path(normalized), self.workspace_root)
             ]
         if tool_call_id:
-            records = [record for record in records if record.get("tool_call_id") == tool_call_id]
+            records = [
+                record
+                for record in records
+                if record.get("tool_call_id") == tool_call_id
+            ]
         records = records[: max(0, int(limit))]
 
         if format == "json":
@@ -253,7 +298,9 @@ class DiffTool:
             raise ValueError(f"Unsupported diff scope: {scope}")
         return list(EventStore.iter_jsonl(path))
 
-    def _patch_result(self, scope: str, records: list[dict[str, Any]]) -> dict[str, Any]:
+    def _patch_result(
+        self, scope: str, records: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         patches: list[str] = []
         warnings: list[dict[str, Any]] = []
         for record in records:
@@ -263,7 +310,8 @@ class DiffTool:
                     {
                         "diff_id": record.get("diff_id"),
                         "path": record.get("relative_path"),
-                        "reason": record.get("patch_unavailable_reason") or "patch artifact is unavailable",
+                        "reason": record.get("patch_unavailable_reason")
+                        or "patch artifact is unavailable",
                     }
                 )
                 continue
@@ -272,7 +320,10 @@ class DiffTool:
         result: dict[str, Any] = {"scope": scope, "count": len(records), "patch": patch}
         if warnings:
             result["warnings"] = warnings
-        if len(patch) > MAX_INLINE_PATCH_CHARS or len(patch.splitlines()) > MAX_INLINE_PATCH_LINES:
+        if (
+            len(patch) > MAX_INLINE_PATCH_CHARS
+            or len(patch.splitlines()) > MAX_INLINE_PATCH_LINES
+        ):
             result.update(
                 {
                     "status": "truncated",
@@ -280,7 +331,11 @@ class DiffTool:
                     "char_count": len(patch),
                     "line_count": len(patch.splitlines()),
                     "preview": "\n".join(patch.splitlines()[:MAX_INLINE_PATCH_LINES]),
-                    "patch_paths": [record.get("patch_path") for record in records if record.get("patch_path")],
+                    "patch_paths": [
+                        record.get("patch_path")
+                        for record in records
+                        if record.get("patch_path")
+                    ],
                 }
             )
             result.pop("patch", None)
@@ -299,16 +354,33 @@ class DiffTool:
     required_permissions=("filesystem:read",),
 )
 async def _diff_contract(
-    scope: Annotated[Literal["turn", "run", "session"], Field(description="File-effect history scope to inspect.")] = "run",
-    path: Annotated[str | None, Field(description="Optional workspace path whose persisted changes to show.")] = None,
-    tool_call_id: Annotated[str | None, Field(description="Optional originating tool call ID to filter by.")] = None,
-    format: Annotated[Literal["summary", "patch", "json"], Field(description="Result detail: compact summary, unified patches, or records.")] = "summary",
-    limit: Annotated[int, Field(ge=1, description="Maximum number of persisted diff records to return.")] = 20,
+    scope: Annotated[
+        Literal["turn", "run", "session"],
+        Field(description="File-effect history scope to inspect."),
+    ] = "run",
+    path: Annotated[
+        str | None,
+        Field(description="Optional workspace path whose persisted changes to show."),
+    ] = None,
+    tool_call_id: Annotated[
+        str | None, Field(description="Optional originating tool call ID to filter by.")
+    ] = None,
+    format: Annotated[
+        Literal["summary", "patch", "json"],
+        Field(
+            description="Result detail: compact summary, unified patches, or records."
+        ),
+    ] = "summary",
+    limit: Annotated[
+        int,
+        Field(ge=1, description="Maximum number of persisted diff records to return."),
+    ] = 20,
 ) -> dict[str, Any]:
     raise RuntimeError("diff is resolved by the Lora runtime executor")
 
 
 DIFF_TOOL_SPEC = ToolKit(_diff_contract).specs[0]
+
 
 def read_snapshot_content(path: Path) -> DiffSnapshotContent:
     try:
@@ -316,11 +388,17 @@ def read_snapshot_content(path: Path) -> DiffSnapshotContent:
     except OSError as exc:
         return DiffSnapshotContent(content=None, available=False, reason=str(exc))
     if stat.st_size > MAX_DIFF_SNAPSHOT_BYTES:
-        return DiffSnapshotContent(content=None, available=False, reason="file exceeds max snapshot size")
+        return DiffSnapshotContent(
+            content=None, available=False, reason="file exceeds max snapshot size"
+        )
     try:
-        return DiffSnapshotContent(content=path.read_text(encoding="utf-8"), available=True)
+        return DiffSnapshotContent(
+            content=path.read_text(encoding="utf-8"), available=True
+        )
     except UnicodeDecodeError:
-        return DiffSnapshotContent(content=None, available=False, reason="file is not UTF-8 text")
+        return DiffSnapshotContent(
+            content=None, available=False, reason="file is not UTF-8 text"
+        )
     except OSError as exc:
         return DiffSnapshotContent(content=None, available=False, reason=str(exc))
 
@@ -346,7 +424,9 @@ def _change_type(event_type: str) -> str:
     return event_type.removeprefix("file.")
 
 
-def _missing_patch_reason(effect_type: str, before: DiffSnapshotContent, after: DiffSnapshotContent) -> str | None:
+def _missing_patch_reason(
+    effect_type: str, before: DiffSnapshotContent, after: DiffSnapshotContent
+) -> str | None:
     if effect_type in {"file.edit", "file.delete"} and not before.available:
         return before.reason or "before snapshot is unavailable"
     if effect_type in {"file.edit", "file.write"} and not after.available:

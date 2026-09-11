@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from pygent import AIMessage, freeze_json_object
+from pygent import AIMessage, ModelContinuation, freeze_json_object
 from pygent.llm import DefaultModelInvoker, ModelExecution, ModelProviderResponse
 
 from lora.runtime.agent.model_invoker import LoraModelInvoker
@@ -13,12 +13,26 @@ from lora.runtime.agent.model_invoker import LoraModelInvoker
 async def test_reasoning_is_scoped_to_each_call_and_reset_on_retry(monkeypatch):
     def execute(self, *, label):
         async def invoke(emit):
-            identity = {'route_id': 'primary', 'attempt': 1}
+            identity = {'model_key': 'primary', 'attempt': 1}
             await emit('model.reasoning.delta', freeze_json_object({**identity, 'text': 'discarded'}))
             await asyncio.sleep(0)
             await emit('model.output.reset', freeze_json_object(identity))
             await emit('model.reasoning.delta', freeze_json_object({**identity, 'text': label}))
-            return ModelProviderResponse(message=AIMessage(content=label, metadata={'route_id': 'primary'}), usage={})
+            return ModelProviderResponse(
+                message=AIMessage(
+                    content=label,
+                    metadata={'route_id': 'primary'},
+                    continuation=ModelContinuation(
+                        provider='deepseek',
+                        protocol='openai_chat_completions',
+                        data={
+                            'version': 1,
+                            'reasoning_content': f'{label}-continuation',
+                        },
+                    ),
+                ),
+                usage={},
+            )
         return ModelExecution(invoke)
 
     monkeypatch.setattr(DefaultModelInvoker, 'execute', execute)
@@ -28,6 +42,24 @@ async def test_reasoning_is_scoped_to_each_call_and_reset_on_retry(monkeypatch):
         assert [dict(response.message.metadata) for response in responses] == [
             {'route_id': 'primary', 'reasoning_content': 'first'},
             {'route_id': 'primary', 'reasoning_content': 'second'},
+        ]
+        assert [response.message.continuation for response in responses] == [
+            ModelContinuation(
+                provider='deepseek',
+                protocol='openai_chat_completions',
+                data={
+                    'version': 1,
+                    'reasoning_content': 'first-continuation',
+                },
+            ),
+            ModelContinuation(
+                provider='deepseek',
+                protocol='openai_chat_completions',
+                data={
+                    'version': 1,
+                    'reasoning_content': 'second-continuation',
+                },
+            ),
         ]
     finally:
         await invoker.aclose()

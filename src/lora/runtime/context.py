@@ -3,12 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
 
-from pygent import ContextCodec, FrozenJsonObject, PygentAgentContext, freeze_json_object
-from pygent.runtime.context_codec import ContextCodecRegistry
+from pygent import (
+    ContextCodec,
+    FrozenJsonObject,
+    PygentAgentContext,
+    freeze_json_object,
+)
 from pygent.runtime.codec import message_to_dict
+from pygent.runtime.context_codec import ContextCodecRegistry
 
 from lora.core.io import plain_object
 from lora.schema import CaseRunRef
+
 from .file_effect_models import DeferredFileEffectJob
 
 
@@ -26,7 +32,9 @@ class LoraContext(PygentAgentContext):
     turn_id: str | None = None
     eternal_memory_enabled: bool = False
     memory_covered_through: int = 0
-    memory_projection: FrozenJsonObject = field(default_factory=lambda: freeze_json_object({}))
+    memory_projection: FrozenJsonObject = field(
+        default_factory=lambda: freeze_json_object({})
+    )
     raw_history_location: str = ""
     pending_file_effects: tuple[FrozenJsonObject, ...] = ()
 
@@ -51,9 +59,13 @@ class LoraContext(PygentAgentContext):
         """Append deferred effects as strict portable JSON values."""
 
         encoded = tuple(freeze_json_object(job.to_dict()) for job in jobs)
-        return replace(self, pending_file_effects=(*self.pending_file_effects, *encoded))
+        return replace(
+            self, pending_file_effects=(*self.pending_file_effects, *encoded)
+        )
 
-    def drain_file_effects(self) -> tuple[tuple[DeferredFileEffectJob, ...], LoraContext]:
+    def drain_file_effects(
+        self,
+    ) -> tuple[tuple[DeferredFileEffectJob, ...], LoraContext]:
         """Return pending effects and a context with the queue cleared."""
 
         jobs = tuple(

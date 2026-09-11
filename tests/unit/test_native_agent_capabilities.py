@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-import time
+import json
 import shutil
+import time
 from pathlib import Path
 from typing import Any
-import json
+from xml.etree import ElementTree
 
 import pytest
-from xml.etree import ElementTree
 from pygent import AIMessage, ToolCall, ToolMessage, UserMessage
 from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
-from lora.schema import BashCliPreset
-from lora.runtime.service import LoraRuntimeService
 from lora.runtime.context_snapshots import ContextSnapshotStore
-from lora.sessions import SessionManager
+from lora.runtime.service import LoraRuntimeService
+from lora.schema import BashCliPreset
+from lora.sessions import AgentMessageState, SessionCollaborationStore, SessionManager
 from lora.tracing import EventStore
 
 
@@ -24,7 +24,7 @@ class _CapabilityInvoker:
         self.skill_path = skill_path
         self.requests: list[tuple[Any, Any]] = []
 
-    def validate_route(self, _route: Any) -> None:
+    def validate_model(self, _model: Any) -> None:
         return None
 
     def execute(self, *, message: Any, context: Any, **_kwargs: Any) -> ModelExecution:
@@ -84,7 +84,7 @@ class _ProjectionInvoker:
     def __init__(self) -> None:
         self.requests: list[tuple[Any, Any]] = []
 
-    def validate_route(self, _route: Any) -> None:
+    def validate_model(self, _model: Any) -> None:
         return None
 
     def execute(self, *, message: Any, context: Any, **_kwargs: Any) -> ModelExecution:
@@ -103,7 +103,104 @@ class _ProjectionInvoker:
 
 
 @pytest.mark.asyncio
-async def test_authorized_external_file_tools_complete_with_audit(tmp_path: Path) -> None:
+async def test_agent_message_is_appended_after_tool_result_without_starting_a_turn(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "seed.txt").write_text("seed", encoding="utf-8")
+    config = load_run_config(workspace_root=tmp_path)
+    config.eternal_conversation.enabled = False
+    config.runtime_approvals.enabled = False
+    assert config.resolved_agent is not None
+    for route in config.resolved_agent.routes:
+        route.api_key = "agent-message-test"
+        route.api_key_source = "test"
+
+    manager = SessionManager(config)
+    target = manager.create(case_id="agent-message-target", mode="chat")
+    source = manager.create(case_id="agent-message-source", mode="agent")
+    run = manager.start_case_run(
+        target.session_id,
+        "agent-message-target",
+        run_config=config,
+    )
+    store = SessionCollaborationStore(config.lora_root)
+
+    class Invoker(_ProjectionInvoker):
+        def execute(
+            self, *, message: Any, context: Any, **_kwargs: Any
+        ) -> ModelExecution:
+            index = len(self.requests)
+            self.requests.append((message, context))
+
+            async def invoke(_emit: Any) -> ModelProviderResponse:
+                if index == 0:
+                    store.enqueue_message(
+                        submission_id="agent-message-during-turn",
+                        fingerprint="agent-message-during-turn",
+                        source_session_id=source.session_id,
+                        source_agent_alias="reviewer",
+                        target_session_id=target.session_id,
+                        content="Inspect <artifact> & report back.",
+                    )
+                    answer = AIMessage(
+                        tool_calls=(
+                            ToolCall(
+                                call_id="read-before-message",
+                                name="read",
+                                arguments={"file_path": "seed.txt"},
+                            ),
+                        )
+                    )
+                else:
+                    answer = AIMessage(content="message observed")
+                return ModelProviderResponse(message=answer, usage={})
+
+            return ModelExecution(invoke)
+
+    invoker = Invoker()
+    service = LoraRuntimeService(config)
+    service._model_invokers[config.resolved_agent.alias] = invoker
+    for agent in service._agent_definitions.values():
+        agent.llm = invoker
+    try:
+        handle = await service.start_turn(
+            manager=manager,
+            message="read the seed",
+            run_ref=run,
+            turn_id="turn-agent-message",
+            interactive_approvals=False,
+            deadline=time.monotonic() + 60,
+        )
+        output, _ = await handle.result()
+    finally:
+        manager.finish_case_run(run, "passed")
+        await service.close()
+
+    assert output.content == "message observed"
+    assert len(invoker.requests) == 2
+    followup = invoker.requests[1][0]
+    assert isinstance(followup, ToolMessage)
+    assert followup.content is not None
+    assert '<runtime-context>\n  <agent-message message-id="msg-' in followup.content
+    assert f'source-session-id="{source.session_id}"' in followup.content
+    assert 'source-agent-alias="reviewer"' in followup.content
+    assert "Inspect &lt;artifact&gt; &amp; report back." in followup.content
+    message = store.enqueue_message(
+        submission_id="agent-message-during-turn",
+        fingerprint="agent-message-during-turn",
+        source_session_id=source.session_id,
+        source_agent_alias="reviewer",
+        target_session_id=target.session_id,
+        content="Inspect <artifact> & report back.",
+    )
+    assert message.state is AgentMessageState.DELIVERED
+    assert message.delivered_execution_id is not None
+
+
+@pytest.mark.asyncio
+async def test_authorized_external_file_tools_complete_with_audit(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     external = tmp_path / "authorized"
@@ -111,7 +208,10 @@ async def test_authorized_external_file_tools_complete_with_audit(tmp_path: Path
     target = external / "example.txt"
     calls = [
         ("write", {"file_path": str(target), "content": "before"}),
-        ("edit", {"file_path": str(target), "old_string": "before", "new_string": "after"}),
+        (
+            "edit",
+            {"file_path": str(target), "old_string": "before", "new_string": "after"},
+        ),
         ("read", {"file_path": str(target)}),
         ("glob", {"path": str(external), "pattern": "*.txt"}),
         ("grep", {"path": str(external), "pattern": "after"}),
@@ -120,7 +220,9 @@ async def test_authorized_external_file_tools_complete_with_audit(tmp_path: Path
     ]
 
     class Invoker(_ProjectionInvoker):
-        def execute(self, *, message: Any, context: Any, **_kwargs: Any) -> ModelExecution:
+        def execute(
+            self, *, message: Any, context: Any, **_kwargs: Any
+        ) -> ModelExecution:
             index = len(self.requests)
             self.requests.append((message, context))
 
@@ -128,9 +230,15 @@ async def test_authorized_external_file_tools_complete_with_audit(tmp_path: Path
                 answer = AIMessage(content="done")
                 if index < len(calls):
                     name, arguments = calls[index]
-                    answer = AIMessage(tool_calls=(ToolCall(
-                        call_id=f"external-{index}", name=name, arguments=arguments,
-                    ),))
+                    answer = AIMessage(
+                        tool_calls=(
+                            ToolCall(
+                                call_id=f"external-{index}",
+                                name=name,
+                                arguments=arguments,
+                            ),
+                        )
+                    )
                 return ModelProviderResponse(message=answer, usage={})
 
             return ModelExecution(invoke)
@@ -144,7 +252,9 @@ async def test_authorized_external_file_tools_complete_with_audit(tmp_path: Path
         route.api_key_source = "test"
     manager = SessionManager(config)
     session = manager.create(case_id="external-tools", mode="chat")
-    run = manager.start_case_run(session.session_id, "external-tools", run_config=config)
+    run = manager.start_case_run(
+        session.session_id, "external-tools", run_config=config
+    )
     invoker = Invoker()
     service = LoraRuntimeService(config)
     service._model_invokers[config.resolved_agent.alias] = invoker
@@ -152,8 +262,11 @@ async def test_authorized_external_file_tools_complete_with_audit(tmp_path: Path
         agent.llm = invoker
     try:
         handle = await service.start_turn(
-            manager=manager, message=f"Read and write files in {external}; this path is authorized.",
-            run_ref=run, turn_id="external-tools", interactive_approvals=False,
+            manager=manager,
+            message=f"Read and write files in {external}; this path is authorized.",
+            run_ref=run,
+            turn_id="external-tools",
+            interactive_approvals=False,
             deadline=time.monotonic() + 60,
         )
         output, _ = await handle.result()
@@ -218,7 +331,9 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
         "native-capabilities",
         run_config=config,
     )
-    invoker = _CapabilityInvoker(Path(config.lora_root) / "skills" / "native-created" / "SKILL.md")
+    invoker = _CapabilityInvoker(
+        Path(config.lora_root) / "skills" / "native-created" / "SKILL.md"
+    )
     service = LoraRuntimeService(config)
     service._model_invokers[config.resolved_agent.alias] = invoker
     for agent in service._agent_definitions.values():
@@ -242,7 +357,11 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
     assert len(invoker.requests) == 2
     first_message, first_context = invoker.requests[0]
     initial_projection = first_message.content
-    initial_projection = ElementTree.fromstring("<root>" + initial_projection + "</root>").find("runtime-context").text
+    initial_projection = (
+        ElementTree.fromstring("<root>" + initial_projection + "</root>")
+        .find("runtime-context")
+        .text
+    )
     assert "<skills-context>" in initial_projection
     assert "existing-skill" in initial_projection
     assert "<available-bash-cli>" in initial_projection
@@ -251,7 +370,9 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
     followup, _ = invoker.requests[1]
     assert isinstance(followup, ToolMessage)
     tool_projection = ElementTree.fromstring(followup.content).text
-    assert all("<runtime-context>" not in str(result.output) for result in followup.results)
+    assert all(
+        "<runtime-context>" not in str(result.output) for result in followup.results
+    )
     assert "<new-skills>" in tool_projection
     assert "native-created" in tool_projection
     assert "<new-bash-cli>" in tool_projection
@@ -306,7 +427,8 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("snapshot_ready", [False, True])
 async def test_eternal_memory_replaces_projection_before_first_model_call(
-    tmp_path: Path, snapshot_ready: bool,
+    tmp_path: Path,
+    snapshot_ready: bool,
 ) -> None:
     config = load_run_config(workspace_root=tmp_path)
     config.eternal_conversation.enabled = True
@@ -318,12 +440,29 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
 
     manager = SessionManager(config)
     session_ref = manager.create(case_id="native-projection", mode="chat")
+    seed_run = manager.start_case_run(
+        session_ref.session_id,
+        "native-projection-seed",
+        run_config=config,
+    )
+    manager.append_history_checkpoint(
+        seed_run,
+        turn_id="turn-seed",
+        checkpoint_id="seed-user",
+        message={"role": "user", "content": "previous request"},
+    )
+    manager.append_history_checkpoint(
+        seed_run,
+        turn_id="turn-seed",
+        checkpoint_id="seed-assistant",
+        message={
+            "role": "assistant",
+            "content": "previous final answer",
+            "usage": {},
+        },
+    )
+    manager.finish_case_run(seed_run, "passed")
     session = manager.load(session_ref.session_id)
-    session.history = [
-        {"role": "user", "content": "previous request"},
-        {"role": "assistant", "content": "previous final answer"},
-    ]
-    manager.save(session)
     state_dir = Path(session.session_dir) / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     if snapshot_ready:
@@ -394,8 +533,11 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
             session_ref.session_id, "native-projection-3", run_config=config
         )
         third_handle = await service.start_turn(
-            manager=manager, message="third request", run_ref=third_run,
-            turn_id="turn-projection-3", interactive_approvals=False,
+            manager=manager,
+            message="third request",
+            run_ref=third_run,
+            turn_id="turn-projection-3",
+            interactive_approvals=False,
             deadline=time.monotonic() + 60,
         )
         await third_handle.result()
@@ -417,7 +559,8 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
         ["lora.memory.snapshot", None, None] if snapshot_ready else [None, None]
     )
     assert [item.content for item in model_context.messages[offset:]] == [
-        "previous request", "previous final answer",
+        "previous request",
+        "previous final answer",
     ]
     assert "<memory-access-instruction>" in model_context.system_prompt
     assert "<memory-snapshot" not in model_context.system_prompt
@@ -434,10 +577,12 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
     third_current, third_context = invoker.requests[2]
     assert third_current.data["raw_content"] == "third request"
     assert [item.data.get("raw_content") for item in third_context.messages[1::2]] == [
-        "current request", "second request",
+        "current request",
+        "second request",
     ]
     assert [item.content for item in third_context.messages[2::2]] == [
-        "projection applied", "projection applied",
+        "projection applied",
+        "projection applied",
     ]
     assert [item["role"] for item in manager.load(session_ref.session_id).history] == [
         "user",

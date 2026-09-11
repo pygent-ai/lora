@@ -4,13 +4,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from fastapi import HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from httpx import ASGITransport, AsyncClient
 
-from lora.tracing import EventStore
 from lora.runtime.context_snapshots import ContextSnapshotStore
 from lora.runtime.reminders import BootstrapStatus
+from lora.tracing import EventStore
 from lora_api.app import create_app
 from lora_api.dependencies import ApiContext
 from lora_api.routers.health import health
@@ -22,14 +22,16 @@ from lora_api.services.session_service import SessionService
 @pytest.mark.asyncio
 async def test_lifespan_closes_runtime_when_application_body_fails(monkeypatch):
     app = create_app(workspace_root=".")
-    runtime = AsyncMock()
-    app.state.api_context._runtime_service = runtime
+    lease = AsyncMock()
+    acquire = AsyncMock(return_value=lease)
+    monkeypatch.setattr(ApiContext, "acquire_runtime", acquire)
     close = AsyncMock()
     monkeypatch.setattr(ApiContext, "aclose", close)
     with pytest.raises(RuntimeError, match="application failed"):
         async with app.router.lifespan_context(app):
             raise RuntimeError("application failed")
     close.assert_awaited_once()
+    lease.release.assert_awaited_once()
 
 
 def test_create_app_allows_desktop_renderer_cors_requests() -> None:
@@ -58,7 +60,7 @@ async def test_session_creation_prewarms_without_constructing_runtime(tmp_path) 
     task = reminders._preparations[session.session_id]
     await task
 
-    assert context._runtime_service is None
+    assert context._runtime_pool is None
     state = reminders.store.load_bootstrap(reminders.scope(session.session_id))
     assert state["status"] == BootstrapStatus.READY.value
     await context.aclose()
@@ -78,7 +80,9 @@ def test_health_exposes_backend_instance_header(
 
 
 @pytest.mark.asyncio
-async def test_missing_session_returns_readable_404_after_listing(tmp_path, monkeypatch) -> None:
+async def test_missing_session_returns_readable_404_after_listing(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     app = create_app(workspace_root=str(tmp_path))
     context = app.state.api_context
@@ -108,17 +112,18 @@ async def test_missing_session_returns_readable_404_after_listing(tmp_path, monk
 @pytest.mark.asyncio
 async def test_chat_stream_returns_structured_error_for_stale_session(tmp_path) -> None:
     app = create_app(workspace_root=str(tmp_path))
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/chat/stream",
-            json={
-                "message": "hello",
-                "session_id": "missing-session",
-                "case_id": "chat",
-            },
-        )
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/chat/stream",
+                json={
+                    "message": "hello",
+                    "session_id": "missing-session",
+                    "case_id": "chat",
+                },
+            )
 
     assert response.status_code == 200
     assert "lora.transport.error" in response.text

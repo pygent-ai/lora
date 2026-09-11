@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from lora.tracing import EventStore
 from lora.runtime.context_snapshots import ContextSnapshotStore
-
+from lora.tracing import EventStore
 from lora_api.dependencies import ApiContext, get_api_context
 from lora_api.models.responses import TraceEventsResponse
 

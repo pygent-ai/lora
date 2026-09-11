@@ -5,7 +5,8 @@ import os
 import sys
 from pathlib import Path
 
-from lora.core.io import load_env_file, non_empty_string as _non_empty
+from lora.core.io import load_env_file
+from lora.core.io import non_empty_string as _non_empty
 
 try:
     import keyring
@@ -79,7 +80,9 @@ def get_keyring_credential(env_name: str) -> str | None:
 
 def set_keyring_credential(env_name: str, value: str) -> None:
     if keyring is None:
-        raise RuntimeError("keyring is not installed; run `uv add keyring` to use OS credential storage")
+        raise RuntimeError(
+            "keyring is not installed; run `uv add keyring` to use OS credential storage"
+        )
     keyring.set_password(KEYRING_SERVICE, env_name, value)
 
 

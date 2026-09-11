@@ -6,16 +6,18 @@ from types import SimpleNamespace
 import pytest
 from pygent import (
     AIMessage,
+    CapabilityPresetCatalog,
     Context,
     GenerationConfig,
+    ModelEntry,
     ModelErrorKind,
-    ModelRoute,
+    ModelSpec,
     Module,
     PygentAgent,
     PygentAgentContext,
-    UserMessage,
     ToolCall,
     ToolMessage,
+    UserMessage,
     freeze_json_object,
 )
 from pygent.llm import (
@@ -25,37 +27,39 @@ from pygent.llm import (
 )
 
 from lora.config import load_run_config
-from lora.schema import ModelRouteConfig, ResolvedAgentConfig
-from lora.runtime import agent
-from lora.runtime.agent import (
-    LoraAgent,
-    LoraCompressorModule,
-    PromptRenderContext,
-    RepeatedToolCallGuardModule,
-    _render_available_tools_prompt,
-)
-from lora.runtime.agent.pipeline import MAX_IDENTICAL_FOREGROUND_TOOL_CALLS
-from lora.runtime.context import LoraContext
+from lora.runtime.agent.common import DEFAULT_REACT_MAX_STEPS
+from lora.runtime.agent.compressor import LoraCompressorModule
 from lora.runtime.agent.core import (
     MODEL_RETRYABLE_ERROR_KINDS,
     PYGENT_VERIFY_SSL_ENV,
+    LoraAgent,
     _actual_model_route,
     _model_route_trace_payload,
     _preferred_model_route,
     _verify_ssl_from_env,
 )
-from lora.runtime.agent.common import DEFAULT_REACT_MAX_STEPS
-
-
-def test_agent_package_exports_supported_entry_points() -> None:
-    assert LoraAgent is agent.LoraAgent
-    assert PromptRenderContext is agent.PromptRenderContext
-    assert callable(_render_available_tools_prompt)
+from lora.runtime.agent.pipeline import (
+    MAX_IDENTICAL_FOREGROUND_TOOL_CALLS,
+    RepeatedToolCallGuardModule,
+)
+from lora.runtime.agent.prompt_models import PromptRenderContext
+from lora.runtime.context import LoraContext
+from lora.schema import ModelRouteConfig, ResolvedAgentConfig
 
 
 def test_agent_runtime_is_split_by_responsibility() -> None:
     assert LoraAgent.__module__ == "lora.runtime.agent.core"
     assert PromptRenderContext.__module__ == "lora.runtime.agent.prompt_models"
+
+
+def test_runtime_packages_do_not_reexport_implementation_symbols() -> None:
+    import lora.runtime as runtime_package
+    import lora.runtime.agent as agent_package
+
+    assert not hasattr(runtime_package, "ToolObserver")
+    assert not hasattr(runtime_package, "LoraAgent")
+    assert not hasattr(agent_package, "LoraAgent")
+    assert not hasattr(agent_package, "PromptRenderContext")
 
 
 class _EchoToolModule(Module[AIMessage, ToolMessage]):
@@ -67,16 +71,22 @@ class _EchoToolModule(Module[AIMessage, ToolMessage]):
 @pytest.mark.asyncio
 async def test_foreground_identical_tool_call_guard_is_scoped_to_turn() -> None:
     guard = RepeatedToolCallGuardModule(_EchoToolModule())
-    message = AIMessage(tool_calls=(ToolCall(
-        call_id="call-1",
-        name="bash",
-        arguments={"command": "same command"},
-    ),))
+    message = AIMessage(
+        tool_calls=(
+            ToolCall(
+                call_id="call-1",
+                name="bash",
+                arguments={"command": "same command"},
+            ),
+        )
+    )
     first_turn = LoraContext(turn_id="turn-1")
 
     for _ in range(MAX_IDENTICAL_FOREGROUND_TOOL_CALLS - 1):
         await guard.invoke(message, first_turn)
-    with pytest.raises(RuntimeError, match="identical tool arguments.*durable baseline"):
+    with pytest.raises(
+        RuntimeError, match="identical tool arguments.*durable baseline"
+    ):
         await guard.invoke(message, first_turn)
 
     await guard.invoke(message, LoraContext(turn_id="turn-2"))
@@ -95,22 +105,31 @@ def test_lora_foreground_uses_pygent_030_native_agent_and_compressor(
 
     assert issubclass(LoraContext, PygentAgentContext)
     assert isinstance(model_agent.foreground, PygentAgent)
-    assert isinstance(model_agent.foreground.react.model.compressor, LoraCompressorModule)
+    assert isinstance(
+        model_agent.foreground.react.model.compressor, LoraCompressorModule
+    )
     assert model_agent.foreground.react.max_steps == DEFAULT_REACT_MAX_STEPS == 500
     assert model_agent.foreground.react.max_model_calls == DEFAULT_REACT_MAX_STEPS
 
 
-@pytest.mark.parametrize("base_url", ["https://api.deepseek.com", "https://api.openai.com/v1"])
-def test_model_invoker_enables_streaming_for_all_routes(monkeypatch, base_url: str) -> None:
-    from lora.runtime.agent import core
+@pytest.mark.parametrize(
+    "base_url", ["https://api.deepseek.com", "https://api.openai.com/v1"]
+)
+def test_model_invoker_enables_streaming_for_all_routes(
+    monkeypatch, base_url: str
+) -> None:
+    import lora.runtime.agent.core as core
 
-    route = SimpleNamespace(id="primary", provider="openai", base_url=base_url, api_key="test")
+    route = SimpleNamespace(
+        id="primary", provider="openai", base_url=base_url, api_key="test"
+    )
     agent = SimpleNamespace(_resolved_routes=lambda: (route,))
     monkeypatch.setattr(core, "OpenAICompatibleClient", lambda **kwargs: object())
     monkeypatch.setattr(core, "LoraModelInvoker", lambda **kwargs: kwargs)
 
     invoker = LoraAgent._build_model_invoker(agent)
-    assert invoker["capabilities"]["primary"].streaming is True
+    assert set(invoker["adapters"]) == {"openai_chat_completions"}
+    assert set(invoker["clients"]) == {"primary"}
 
 
 def test_coding_agent_uses_provider_generation_defaults(tmp_path: Path) -> None:
@@ -184,16 +203,20 @@ def test_trace_actual_route_comes_from_model_response_metadata() -> None:
 
     actual = _actual_model_route(
         config,
-        AIMessage(content="ok", metadata={"route_id": "fallback"}),
+        AIMessage(content="ok", metadata={"model_key": "fallback"}),
     )
 
     assert actual is fallback_route
     assert _actual_model_route(config, AIMessage(content="missing metadata")) is None
 
 
-def test_file_editing_guidance_comes_from_pygent_tool_definitions(tmp_path: Path) -> None:
+def test_file_editing_guidance_comes_from_pygent_tool_definitions(
+    tmp_path: Path,
+) -> None:
     model_agent = LoraAgent(load_run_config(workspace_root=tmp_path))
-    definitions = {definition.name: definition for definition in model_agent.tool_definitions}
+    definitions = {
+        definition.name: definition for definition in model_agent.tool_definitions
+    }
 
     assert "multiple smaller atomic edit calls" in definitions["edit"].description
     assert "Prefer edit for focused changes" in definitions["write"].description
@@ -208,7 +231,12 @@ def test_model_retry_policy_retries_incomplete_provider_responses() -> None:
         backoff_maximum=4,
         backoff_multiplier=2,
     )
-    route = SimpleNamespace(id="primary", provider="openai", model_name="test-model")
+    route = SimpleNamespace(
+        id="primary",
+        provider="openai",
+        model_name="test-model",
+        base_url="https://example.test/v1",
+    )
     model_agent = LoraAgent.__new__(LoraAgent)
     model_agent.resolved_agent = SimpleNamespace(
         alias="test",
@@ -232,8 +260,21 @@ def test_model_retry_policy_retries_incomplete_provider_responses() -> None:
 
 def test_pygent_adapter_classifies_invalid_tool_calls_for_model_retry() -> None:
     adapter = OpenAICompatibleAdapter()
+    capabilities = CapabilityPresetCatalog.builtin().presets[
+        "text_tools_structured_reasoning"
+    ].materialize(context_tokens=1_000_000, max_output_tokens=384_000)
+    entry = ModelEntry(
+        "primary",
+        ModelSpec(
+            provider="openai",
+            model_id="test-model",
+            protocol="openai_chat_completions",
+            capabilities=capabilities,
+        ),
+    )
     request = ModelProviderRequest(
-        route=ModelRoute("primary", provider="openai", model="test-model"),
+        model_key=entry.name,
+        model=entry.spec,
         message=UserMessage(content="inspect the workspace"),
         context=Context(),
         generation=GenerationConfig(),

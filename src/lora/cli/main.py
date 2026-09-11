@@ -1,26 +1,27 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from lora.evaluation import FailureAnalyzer
-from lora.cli.automations import register_automation_parser
 from lora.cli.credentials import register_credentials_parser
-from lora.evaluation import CaseManager
+from lora.cli.automations import register_automation_parser
+from lora.cli.sessions import register_session_parser
 from lora.config import load_run_config
-from lora.core.io import plain_object
-from lora.evaluation import Evaluator
-from lora.evaluation import RegressionRunner
+from lora.evaluation import (
+    CaseManager,
+    Evaluator,
+    FailureAnalyzer,
+    RegressionRegistrar,
+    RegressionRunner,
+    TestGenerator,
+)
 from lora.repair import RepairWorkflow
-from lora.workflows import execute_case_run
-from lora.runtime.service import LoraRuntimeService
 from lora.sessions import SessionManager
-from lora.evaluation import RegressionRegistrar, TestGenerator
 from lora.tracing import EventStore
+from lora.workflows import execute_case_run
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -49,28 +50,26 @@ def _configure_stdio() -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="lora", description="Agent self-optimization harness CLI")
-    parser.add_argument("--workspace-root", default=None, help="Workspace root. Defaults to cwd or LORA_WORKSPACE_ROOT.")
-    parser.add_argument("--agent", dest="agent_alias", default=None, help="Agent profile alias.")
-    parser.add_argument("--max-steps", type=int, default=None, help="Maximum agent steps; -1 means unlimited.")
+    parser = argparse.ArgumentParser(
+        prog="lora", description="Agent self-optimization harness CLI"
+    )
+    parser.add_argument(
+        "--workspace-root",
+        default=None,
+        help="Workspace root. Defaults to cwd or LORA_WORKSPACE_ROOT.",
+    )
+    parser.add_argument(
+        "--agent", dest="agent_alias", default=None, help="Agent profile alias."
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Maximum agent steps; -1 means unlimited.",
+    )
 
     sub = parser.add_subparsers(dest="command", required=True)
-    session = sub.add_parser("session", help="Manage sessions")
-    session_sub = session.add_subparsers(dest="session_command", required=True)
-
-    create = session_sub.add_parser("create", help="Create a session")
-    create.add_argument("--case", required=True, dest="case_id")
-    create.add_argument("--mode", default="e2e")
-    create.set_defaults(handler=_session_create)
-
-    show = session_sub.add_parser("show", help="Show a session")
-    show.add_argument("session_id")
-    show.set_defaults(handler=_session_show)
-
-    resume = session_sub.add_parser("resume", help="Validate that a session can be resumed")
-    resume.add_argument("session_id")
-    resume.set_defaults(handler=_session_show)
-
+    register_session_parser(sub)
     register_automation_parser(sub)
 
     case = sub.add_parser("case", help="Run or inspect cases")
@@ -99,24 +98,32 @@ def build_parser() -> argparse.ArgumentParser:
     test = sub.add_parser("test", help="Generate and register regression tests")
     test_sub = test.add_subparsers(dest="test_command", required=True)
 
-    test_generate = test_sub.add_parser("generate", help="Generate a deterministic regression case from a failed run")
+    test_generate = test_sub.add_parser(
+        "generate", help="Generate a deterministic regression case from a failed run"
+    )
     test_generate.add_argument("session_id")
     test_generate.add_argument("case_run_id")
     test_generate.set_defaults(handler=_test_generate)
 
-    test_register = test_sub.add_parser("register", help="Register a case file in the regression manifest")
+    test_register = test_sub.add_parser(
+        "register", help="Register a case file in the regression manifest"
+    )
     test_register.add_argument("case_file")
     test_register.set_defaults(handler=_test_register)
 
     repair = sub.add_parser("repair", help="Plan, capture, and gate repair attempts")
     repair_sub = repair.add_subparsers(dest="repair_command", required=True)
 
-    repair_plan = repair_sub.add_parser("plan", help="Create a deterministic repair plan for a failed run")
+    repair_plan = repair_sub.add_parser(
+        "plan", help="Create a deterministic repair plan for a failed run"
+    )
     repair_plan.add_argument("session_id")
     repair_plan.add_argument("case_run_id")
     repair_plan.set_defaults(handler=_repair_plan)
 
-    repair_apply = repair_sub.add_parser("apply", help="Capture the current workspace diff as a repair attempt")
+    repair_apply = repair_sub.add_parser(
+        "apply", help="Capture the current workspace diff as a repair attempt"
+    )
     repair_apply.add_argument("repair_plan_path")
     repair_apply.set_defaults(handler=_repair_apply)
 
@@ -128,23 +135,8 @@ def build_parser() -> argparse.ArgumentParser:
     optimize.add_argument("case_file")
     optimize.set_defaults(handler=_optimize)
 
-    chat = sub.add_parser("chat", help="Chat with an agent")
-    chat.add_argument("-m", "--message", default=None, help="Run one chat turn and print the result as JSON.")
-    chat.add_argument("--session", dest="session_id", default=None, help="Resume an existing session.")
-    chat.add_argument("--new", action="store_true", help="Start a new chat session even when config has a session_id.")
-    chat.set_defaults(handler=_chat)
-
     register_credentials_parser(sub)
     return parser
-
-
-def _session_create(args: argparse.Namespace) -> dict[str, Any]:
-    manager = _manager(args)
-    return manager.create(args.case_id, mode=args.mode).to_dict()
-
-
-def _session_show(args: argparse.Namespace) -> dict[str, Any]:
-    return _manager(args).show(args.session_id)
 
 
 def _case_run(args: argparse.Namespace) -> dict[str, Any]:
@@ -169,7 +161,11 @@ def _case_run(args: argparse.Namespace) -> dict[str, Any]:
 def _case_replay(args: argparse.Namespace) -> dict[str, Any]:
     ref = _find_case_run(_manager(args), args.session_id, args.case_run_id)
     events = [event.to_dict() for event in EventStore(ref).list_by_run()]
-    return {"session_id": args.session_id, "case_run_id": args.case_run_id, "events": events}
+    return {
+        "session_id": args.session_id,
+        "case_run_id": args.case_run_id,
+        "events": events,
+    }
 
 
 def _case_analyze(args: argparse.Namespace) -> dict[str, Any]:
@@ -181,7 +177,11 @@ def _case_analyze(args: argparse.Namespace) -> dict[str, Any]:
         Evaluator().evaluate(case, ref)
     verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
     events = EventStore(ref).list_by_run()
-    result = FailureAnalyzer().analyze(verdict=verdict, events=events, run_dir=run_dir).to_dict()
+    result = (
+        FailureAnalyzer()
+        .analyze(verdict=verdict, events=events, run_dir=run_dir)
+        .to_dict()
+    )
     analysis = {
         "session_id": ref.session_id,
         "case_id": ref.case_id,
@@ -192,7 +192,9 @@ def _case_analyze(args: argparse.Namespace) -> dict[str, Any]:
         json.dumps(analysis, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    EventStore(ref).append("analysis.created", actor="system", payload=analysis, turn_id=None)
+    EventStore(ref).append(
+        "analysis.created", actor="system", payload=analysis, turn_id=None
+    )
     return analysis
 
 
@@ -200,7 +202,11 @@ def _regression_run(args: argparse.Namespace) -> dict[str, Any]:
     manager = _manager(args)
     manifest = Path(manager.config.lora_root) / "regression.json"
     if not manifest.exists():
-        return {"status": "skipped", "reason": "regression manifest not found", "manifest": str(manifest)}
+        return {
+            "status": "skipped",
+            "reason": "regression manifest not found",
+            "manifest": str(manifest),
+        }
     return RegressionRunner(
         config=manager.config,
         session_manager=manager,
@@ -211,10 +217,14 @@ def _regression_run(args: argparse.Namespace) -> dict[str, Any]:
 
 def _test_generate(args: argparse.Namespace) -> dict[str, Any]:
     manager = _manager(args)
-    return TestGenerator(config=manager.config, session_manager=manager).generate(
-        args.session_id,
-        args.case_run_id,
-    ).to_dict()
+    return (
+        TestGenerator(config=manager.config, session_manager=manager)
+        .generate(
+            args.session_id,
+            args.case_run_id,
+        )
+        .to_dict()
+    )
 
 
 def _test_register(args: argparse.Namespace) -> dict[str, Any]:
@@ -246,120 +256,6 @@ def _optimize(args: argparse.Namespace) -> dict[str, Any]:
         }
     )
     return {"run": run_payload, "analysis": _case_analyze(analysis_args)}
-
-
-def _chat(args: argparse.Namespace) -> dict[str, Any] | None:
-    return asyncio.run(_chat_async(args))
-
-
-async def _chat_async(args: argparse.Namespace) -> dict[str, Any] | None:
-    config = load_run_config(
-        workspace_root=args.workspace_root,
-        session_id=getattr(args, "session_id", None),
-        agent_alias=args.agent_alias,
-        max_steps=args.max_steps,
-    )
-    manager = SessionManager(config)
-    session_id = None if args.new else (getattr(args, "session_id", None) or config.session_id)
-    if session_id is None:
-        session_id = manager.create("chat", mode="chat").session_id
-
-    runtime = LoraRuntimeService(config)
-    runtime.reminders.prewarm_session(session_id)
-    await runtime.initialize()
-
-    try:
-        if args.message is not None:
-            run_ref = manager.start_case_run(session_id, "chat", run_config=config)
-            status = "error"
-            try:
-                handle = await runtime.start_turn(
-                    manager=manager,
-                    message=args.message,
-                    run_ref=run_ref,
-                    turn_id="turn-0001",
-                    interactive_approvals=False,
-                )
-                output, _ = await handle.result()
-                result = plain_object(plain_object(output.data).get("result"))
-                result["runtime_execution_id"] = handle.execution_id
-                status = result["status"]
-                return _chat_message_payload(run_ref, result)
-            finally:
-                manager.finish_case_run(run_ref, status)
-
-        print(f"lora chat session: {session_id}")
-        print("Type /exit or /quit to end.")
-        turn_index = 1
-        while True:
-            try:
-                user_input = await asyncio.to_thread(input, "> ")
-            except EOFError:
-                break
-            if user_input.strip() in {"/exit", "/quit"}:
-                break
-            if not user_input.strip():
-                continue
-            streamed = False
-            run_ref = manager.start_case_run(session_id, "chat", run_config=config)
-            status = "error"
-            try:
-                handle = await runtime.start_turn(
-                    manager=manager,
-                    message=user_input,
-                    run_ref=run_ref,
-                    turn_id=f"turn-{turn_index:04d}",
-                    interactive_approvals=True,
-                )
-                async with handle.subscribe() as execution_events:
-                    async for event in execution_events:
-                        data = plain_object(event.data)
-                        if (
-                            event.kind == "model.text.delta"
-                            and ".foreground.react.model.model" in event.module_path
-                        ):
-                            chunk = str(data.get("text") or "")
-                            if chunk:
-                                streamed = True
-                                print(chunk, end="", flush=True)
-                        elif event.kind == "lora.approval.requested":
-                            answer = await asyncio.to_thread(
-                                input,
-                                f"Approve {data.get('tool_name')} {data.get('arguments')}? [y/N] ",
-                            )
-                            await runtime.deliver_approval(
-                                str(data["approval_id"]),
-                                approved=answer.strip().lower() in {"y", "yes"},
-                                comment="interactive CLI decision",
-                            )
-                output, _ = await handle.result()
-                result = plain_object(plain_object(output.data).get("result"))
-                status = result["status"]
-                if streamed:
-                    print()
-                elif result["final_answer"]:
-                    print(result["final_answer"])
-                if result["error"]:
-                    print(f"agent error: {result['error']}", file=sys.stderr)
-                    break
-            finally:
-                manager.finish_case_run(run_ref, status)
-            turn_index += 1
-    finally:
-        await runtime.close(cancel=True)
-    return None
-
-
-def _chat_message_payload(run_ref: Any, result: dict[str, Any]) -> dict[str, Any]:
-    payload = {
-        "final_answer": str(result.get("final_answer") or ""),
-        "session_id": run_ref.session_id,
-        "case_run_id": run_ref.case_run_id,
-        "run_dir": str(run_ref.run_dir),
-    }
-    if result.get("error"):
-        payload["error"] = str(result["error"])
-    return payload
 
 
 def _manager(args: argparse.Namespace) -> SessionManager:

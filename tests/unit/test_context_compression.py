@@ -4,7 +4,7 @@ from pathlib import Path
 
 from lora.config import load_run_config
 from lora.core.io import append_jsonl
-from lora.runtime import (
+from lora.runtime.context_compression import (
     collect_recent_file_reads,
     parse_summary,
     render_file_read_block,
@@ -12,9 +12,10 @@ from lora.runtime import (
 
 
 def test_parse_summary_requires_non_empty_summary_tags() -> None:
-    assert parse_summary(
-        "<analysis>x</analysis><summary>\n这是压缩摘要\n</summary>"
-    ) == "这是压缩摘要"
+    assert (
+        parse_summary("<analysis>x</analysis><summary>\n这是压缩摘要\n</summary>")
+        == "这是压缩摘要"
+    )
     assert parse_summary("这是普通文本") is None
     assert parse_summary("<summary>   </summary>") is None
     assert parse_summary("</summary><summary>bad") is None

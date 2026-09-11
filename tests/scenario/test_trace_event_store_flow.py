@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lora.evaluation import CaseManager
+from lora.evaluation.regression import RegressionRunner
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import DESIGN_EVENT_TYPES, EventStore
-from lora.evaluation.regression import RegressionRunner
-from lora.evaluation import CaseManager
 
 
 class TraceEventStoreScenarioTests(unittest.TestCase):
@@ -59,12 +59,44 @@ class TraceEventStoreScenarioTests(unittest.TestCase):
 
             replayed = store.list_by_run(session.session_id, run.case_run_id)
             self.assertEqual([event.type for event in replayed], expected_types)
-            self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "events.jsonl"))), len(expected_types))
-            self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "messages.jsonl"))), 4)
-            self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))), 1)
-            self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))), 1)
-            self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))), 4)
-            self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "diffs" / "diff_events.jsonl"))), 1)
+            self.assertEqual(
+                len(list(EventStore.iter_jsonl(Path(run.run_dir) / "events.jsonl"))),
+                len(expected_types),
+            )
+            self.assertEqual(
+                len(list(EventStore.iter_jsonl(Path(run.run_dir) / "messages.jsonl"))),
+                4,
+            )
+            self.assertEqual(
+                len(
+                    list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))
+                ),
+                1,
+            )
+            self.assertEqual(
+                len(
+                    list(
+                        EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl")
+                    )
+                ),
+                1,
+            )
+            self.assertEqual(
+                len(
+                    list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))
+                ),
+                4,
+            )
+            self.assertEqual(
+                len(
+                    list(
+                        EventStore.iter_jsonl(
+                            Path(run.run_dir) / "diffs" / "diff_events.jsonl"
+                        )
+                    )
+                ),
+                1,
+            )
 
     def test_regression_run_records_started_and_finished_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -80,8 +112,13 @@ class TraceEventStoreScenarioTests(unittest.TestCase):
                 case_manager=CaseManager(root),
             ).run(manifest)
 
-            events = list(EventStore.iter_jsonl(Path(result["run_dir"]) / "events.jsonl"))
-            self.assertEqual([event["type"] for event in events], ["regression.started", "regression.finished"])
+            events = list(
+                EventStore.iter_jsonl(Path(result["run_dir"]) / "events.jsonl")
+            )
+            self.assertEqual(
+                [event["type"] for event in events],
+                ["regression.started", "regression.finished"],
+            )
             self.assertEqual(events[-1]["payload"]["status"], "skipped")
 
 
@@ -90,7 +127,11 @@ def _actor_for(event_type: str) -> str:
         return "user"
     if event_type.startswith("conversation.assistant"):
         return "assistant"
-    if event_type.startswith("tool.") or event_type.startswith("file.") or event_type.startswith("diff."):
+    if (
+        event_type.startswith("tool.")
+        or event_type.startswith("file.")
+        or event_type.startswith("diff.")
+    ):
         return "tool"
     return "system"
 
@@ -120,7 +161,11 @@ def _payload_for(event_type: str) -> dict[str, object]:
     if event_type == "tool.call":
         return {"tool_name": "read_text_file", "args": {"path": "README.md"}}
     if event_type == "tool.result":
-        return {"tool_call_id": "evt_call", "status": "success", "result": "README content"}
+        return {
+            "tool_call_id": "evt_call",
+            "status": "success",
+            "result": "README content",
+        }
     if event_type == "tool.unknown":
         return {"tool_call_id": "evt_call", "requested_tool": "missing"}
     if event_type.startswith("file."):

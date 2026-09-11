@@ -14,8 +14,8 @@ Task duration is owned by the case run's `run_metadata.json`. Session history
 messages expose `run_timing` with `case_run_id`, `started_at`, `finished_at`, and
 `status`; timestamps are UTC ISO 8601 strings, and unavailable values are null.
 Checkpoint sequence and run identity associate this data with conversation
-boundaries without adding display metadata to model-visible history. Legacy
-messages without a verified checkpoint boundary have no `run_timing`.
+boundaries without adding display metadata to model-visible history. The current
+checkpoint store is the authoritative source for restored message timing.
 
 Chat start and terminal SSE events expose the same object in `data.run_timing`,
 including on reconnect. Active streams wait for final run persistence before

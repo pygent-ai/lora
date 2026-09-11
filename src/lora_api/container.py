@@ -13,8 +13,14 @@ from .project_state import GuiProjectState, SessionScope
 
 if TYPE_CHECKING:
     from lora.automations import AutomationScheduler, AutomationService, AutomationStore
+    from lora.orchestration import (
+        RuntimeLease,
+        SessionCollaborationService,
+        SessionExecutionCoordinator,
+        SessionTurnService,
+        WorkspaceRuntimePool,
+    )
     from lora.runtime.reminders import ReminderService
-    from lora.runtime.service import LoraRuntimeService
 
 
 @dataclass(slots=True)
@@ -29,9 +35,12 @@ class ApiContext:
     _config: RunConfig | None = None
     _manager: SessionManager | None = None
     _project_state: GuiProjectState | None = None
-    _runtime_service: LoraRuntimeService | None = None
     _reminders: ReminderService | None = None
     _chat_registry: Any | None = None
+    _session_coordinator: SessionExecutionCoordinator | None = None
+    _session_turns: SessionTurnService | None = None
+    _session_collaboration: SessionCollaborationService | None = None
+    _runtime_pool: WorkspaceRuntimePool | None = None
     _terminal_service: Any | None = None
     _automation_store: AutomationStore | None = None
     _automation_service: AutomationService | None = None
@@ -60,19 +69,6 @@ class ApiContext:
             return self._project_state
 
     @property
-    def runtime_service(self) -> LoraRuntimeService:
-        with self._lock:
-            if self._runtime_service is None:
-                from lora.runtime.service import LoraRuntimeService
-
-                self._runtime_service = LoraRuntimeService(
-                    self.config,
-                    reminders=self.reminders,
-                    own_reminders=True,
-                )
-            return self._runtime_service
-
-    @property
     def reminders(self) -> ReminderService:
         with self._lock:
             if self._reminders is None:
@@ -87,6 +83,56 @@ class ApiContext:
             if self._chat_registry is None:
                 raise RuntimeError("chat registry has not been configured")
             return self._chat_registry
+
+    @property
+    def session_coordinator(self) -> SessionExecutionCoordinator:
+        with self._lock:
+            if self._session_coordinator is None:
+                from lora.orchestration import SessionExecutionCoordinator
+
+                self._session_coordinator = SessionExecutionCoordinator()
+            return self._session_coordinator
+
+    @property
+    def runtime_pool(self) -> WorkspaceRuntimePool:
+        with self._lock:
+            if self._runtime_pool is None:
+                from lora.orchestration import WorkspaceRuntimePool
+
+                self._runtime_pool = WorkspaceRuntimePool()
+            return self._runtime_pool
+
+    @property
+    def session_collaboration(self) -> SessionCollaborationService:
+        with self._lock:
+            if self._session_collaboration is None:
+                from lora.orchestration import (
+                    SessionCollaborationService,
+                    SessionTurnService,
+                )
+
+                self._session_turns = SessionTurnService(
+                    coordinator=self.session_coordinator,
+                    acquire_runtime=self.acquire_runtime,
+                )
+                self._session_collaboration = SessionCollaborationService(
+                    turns=self._session_turns
+                )
+                self.runtime_pool.attach_collaboration(self._session_collaboration)
+            return self._session_collaboration
+
+    async def acquire_runtime(
+        self,
+        *,
+        config: RunConfig | None = None,
+        manager: SessionManager | None = None,
+    ) -> RuntimeLease:
+        _ = self.session_collaboration
+        effective_config = config or self.config
+        return await self.runtime_pool.acquire(
+            config=effective_config,
+            manager=manager,
+        )
 
     @property
     def terminal_service(self) -> Any:
@@ -152,40 +198,51 @@ class ApiContext:
         with self._lock:
             automation_scheduler = self._automation_scheduler
             self._automation_scheduler = None
-            runtime = self._runtime_service
-            self._runtime_service = None
             reminders = self._reminders
             self._reminders = None
             registry = self._chat_registry
             self._chat_registry = None
+            coordinator = self._session_coordinator
+            self._session_coordinator = None
+            collaboration = self._session_collaboration
+            self._session_collaboration = None
+            self._session_turns = None
+            runtime_pool = self._runtime_pool
+            self._runtime_pool = None
             terminal_service = self._terminal_service
             self._terminal_service = None
         if automation_scheduler is not None:
             await automation_scheduler.close()
         if terminal_service is not None:
             terminal_service.close()
+        if runtime_pool is not None:
+            await runtime_pool.stop_accepting()
+        if collaboration is not None:
+            await collaboration.aclose()
         if registry is not None:
             await registry.close()
-        if runtime is not None:
-            await runtime.close(cancel=True)
-        elif reminders is not None:
+            coordinator = None
+        if coordinator is not None:
+            await coordinator.close()
+        if runtime_pool is not None:
+            await runtime_pool.close(cancel=True)
+        if reminders is not None:
             await reminders.close()
 
     async def areload(self, overrides: dict[str, Any] | None = None) -> RunConfig:
         with self._lock:
-            runtime = self._runtime_service
-            self._runtime_service = None
+            old_config = self.config
             reminders = self._reminders
             self._reminders = None
-        if runtime is not None:
-            registry = self._chat_registry
-            if registry is not None and hasattr(registry, "retire_runtime"):
-                await registry.retire_runtime(runtime)
-            else:
-                await runtime.close(cancel=True)
-        elif reminders is not None:
+            runtime_pool = self._runtime_pool
+        if reminders is not None:
             await reminders.close()
-        return self.reload(overrides)
+        config = self.reload(overrides)
+        if runtime_pool is not None:
+            from lora.orchestration import RuntimeScopeKey
+
+            await runtime_pool.retire_scope(RuntimeScopeKey.from_config(old_config))
+        return config
 
     def reload(self, overrides: dict[str, Any] | None = None) -> RunConfig:
         if overrides:

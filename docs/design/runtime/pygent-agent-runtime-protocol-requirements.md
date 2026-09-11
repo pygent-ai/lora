@@ -4,7 +4,7 @@
 
 Lora 当前有三种面向用户的对话入口：
 
-- CLI: `lora chat` 和 `lora chat --message "..."`
+- CLI: `lora session chat` 和 `lora session run --message "..."`
 - 本地 API: `POST /chat/stream`
 - 桌面端 Electron/React UI
 

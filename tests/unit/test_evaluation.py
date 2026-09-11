@@ -4,8 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora.evaluation import CaseManager
-from lora.evaluation import Evaluator
+from lora.evaluation import CaseManager, Evaluator
 from lora.schema import CaseDefinition, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import EventStore
@@ -19,7 +18,9 @@ class EvaluatorTests(unittest.TestCase):
             config = RunConfig(workspace_root=root, lora_root=root / ".lora")
             manager = SessionManager(config)
             session = manager.create("case-a")
-            run = manager.start_case_run(session.session_id, "case-a", run_config=config)
+            run = manager.start_case_run(
+                session.session_id, "case-a", run_config=config
+            )
             case = CaseDefinition.from_dict(
                 {
                     "id": "case-a",
@@ -34,7 +35,12 @@ class EvaluatorTests(unittest.TestCase):
             )
             CaseManager(root).prepare_workspace(case, run)
             store = EventStore(run)
-            store.append("tool.call", actor="assistant", payload={"tool_name": "read_text_file"}, turn_id="turn-0001")
+            store.append(
+                "tool.call",
+                actor="assistant",
+                payload={"tool_name": "read_text_file"},
+                turn_id="turn-0001",
+            )
             store.append(
                 "conversation.assistant_message",
                 actor="assistant",
@@ -74,7 +80,10 @@ class EvaluatorTests(unittest.TestCase):
             result = Evaluator().evaluate(case, run)
 
             self.assertEqual(result.status, "failed")
-            self.assertEqual({failure["type"] for failure in result.verdict["failures"]}, {"answer.contains", "tool.required"})
+            self.assertEqual(
+                {failure["type"] for failure in result.verdict["failures"]},
+                {"answer.contains", "tool.required"},
+            )
 
 
 if __name__ == "__main__":

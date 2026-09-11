@@ -13,7 +13,10 @@ from lora.credentials import read_env_entries
 
 class CredentialsCliTests(unittest.TestCase):
     def test_credentials_set_list_validate_and_delete(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch("lora.config.Path.home", return_value=Path(tmp)):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("lora.config.loader.Path.home", return_value=Path(tmp)),
+        ):
             root = Path(tmp) / "workspace"
             user_root = Path(tmp) / ".lora"
             root.mkdir()
@@ -50,7 +53,10 @@ class CredentialsCliTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(exit_code, 0)
-            self.assertEqual(read_env_entries(user_root / "credentials.env")["DEV_API_KEY"], "cli-secret")
+            self.assertEqual(
+                read_env_entries(user_root / "credentials.env")["DEV_API_KEY"],
+                "cli-secret",
+            )
 
             buffer = io.StringIO()
             with patch("sys.stdout", buffer):
@@ -60,7 +66,16 @@ class CredentialsCliTests(unittest.TestCase):
 
             buffer = io.StringIO()
             with patch("sys.stdout", buffer):
-                exit_code = main(["--workspace-root", str(root), "--agent", "dev", "credentials", "validate"])
+                exit_code = main(
+                    [
+                        "--workspace-root",
+                        str(root),
+                        "--agent",
+                        "dev",
+                        "credentials",
+                        "validate",
+                    ]
+                )
             self.assertEqual(exit_code, 0)
             self.assertIn('"status": "ok"', buffer.getvalue())
 
@@ -77,7 +92,10 @@ class CredentialsCliTests(unittest.TestCase):
             self.assertEqual(read_env_entries(user_root / "credentials.env"), {})
 
     def test_credentials_validate_reports_missing_key(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch("lora.config.Path.home", return_value=Path(tmp)):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("lora.config.loader.Path.home", return_value=Path(tmp)),
+        ):
             root = Path(tmp)
             user_root = root / ".lora"
             user_root.mkdir()
@@ -88,7 +106,16 @@ class CredentialsCliTests(unittest.TestCase):
             os.environ.pop("DEV_API_KEY", None)
             buffer = io.StringIO()
             with patch("sys.stdout", buffer):
-                exit_code = main(["--workspace-root", str(root), "--agent", "dev", "credentials", "validate"])
+                exit_code = main(
+                    [
+                        "--workspace-root",
+                        str(root),
+                        "--agent",
+                        "dev",
+                        "credentials",
+                        "validate",
+                    ]
+                )
             self.assertEqual(exit_code, 0)
             self.assertIn('"status": "missing"', buffer.getvalue())
 

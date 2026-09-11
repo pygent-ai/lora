@@ -5,14 +5,11 @@ from html import unescape
 from pathlib import Path
 from typing import Any
 
-from lora.core.io import read_json
-from lora.core.io import validate_path_id
-from lora.core.io import write_json
+from lora.core.io import read_json, validate_path_id
+from lora.runtime.reminders import ReminderService
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
-from lora.runtime.reminders import ReminderService
 from lora.tracing.events import EventStore
-
 from lora_api.container import ApiContext
 from lora_api.models.responses import (
     SessionDetailResponse,
@@ -36,7 +33,9 @@ class SessionService:
         self.reminders = reminders
         self.scope_id = scope_id
 
-    def list_chat_sessions(self, *, scope_id: str | None = None) -> list[SessionRecordResponse]:
+    def list_chat_sessions(
+        self, *, scope_id: str | None = None
+    ) -> list[SessionRecordResponse]:
         sessions_root = Path(self.manager.sessions_root)
         if not sessions_root.exists():
             return []
@@ -47,25 +46,36 @@ class SessionService:
             metadata = read_json(metadata_path)
             if metadata.get("mode") != "chat":
                 continue
-            records.append(_record_from_metadata(metadata_path.parent, metadata, scope_id=scope_id))
+            records.append(
+                _record_from_metadata(metadata_path.parent, metadata, scope_id=scope_id)
+            )
         return sorted(records, key=lambda record: record.updated_at, reverse=True)
 
-    def create_session(self, *, case_id: str = "chat", mode: str = "chat") -> SessionRecordResponse:
+    def create_session(
+        self, *, case_id: str = "chat", mode: str = "chat"
+    ) -> SessionRecordResponse:
         ref = self.manager.create(case_id, mode=mode)
         if self.reminders is not None:
             self.reminders.prewarm_session(ref.session_id)
         metadata = read_json(Path(ref.session_dir) / "metadata.json")
-        return _record_from_metadata(Path(ref.session_dir), metadata, scope_id=self.scope_id)
+        return _record_from_metadata(
+            Path(ref.session_dir), metadata, scope_id=self.scope_id
+        )
 
     def load_detail(self, session_id: str) -> SessionDetailResponse:
         session = self.manager.load(session_id)
         metadata = read_json(Path(session.session_dir) / "metadata.json")
         run_metadata = {}
-        if metadata.get("last_case_run_id") and metadata.get("last_case_run_status") == "running":
+        if (
+            metadata.get("last_case_run_id")
+            and metadata.get("last_case_run_status") == "running"
+        ):
             ref = self.manager.find_case_run(session_id, metadata["last_case_run_id"])
             run_metadata = read_json(Path(ref.run_dir) / "run_metadata.json")
         return SessionDetailResponse(
-            session=_record_from_metadata(Path(session.session_dir), metadata, scope_id=self.scope_id),
+            session=_record_from_metadata(
+                Path(session.session_dir), metadata, scope_id=self.scope_id
+            ),
             history=self.manager.history_with_run_timing(session),
             metadata=session.metadata,
             runtime_execution_id=run_metadata.get("runtime_execution_id"),
@@ -85,16 +95,7 @@ class SessionService:
         return deleted
 
     def save_title_from_user_input(self, session_id: str, user_input: str) -> None:
-        session = self.manager.load(session_id)
-        metadata_path = Path(session.session_dir) / "metadata.json"
-        metadata = read_json(metadata_path)
-        if _clean_title(str(metadata.get("title") or "")):
-            return
-        title = _clean_title(user_input)
-        if not title:
-            return
-        metadata["title"] = title[:120]
-        write_json(metadata_path, metadata)
+        self.manager.save_title_from_user_input(session_id, user_input)
 
 
 def session_groups_response(context: ApiContext) -> SessionGroupListResponse:
@@ -102,7 +103,9 @@ def session_groups_response(context: ApiContext) -> SessionGroupListResponse:
     active_scope_id = active_project_scope_id(config.workspace_root)
     collapsed_ids = set(context.project_state.collapsed_scope_ids or [])
     groups: list[SessionGroupResponse] = []
-    for scope in build_session_scopes(context.project_state, active_workspace_root=config.workspace_root):
+    for scope in build_session_scopes(
+        context.project_state, active_workspace_root=config.workspace_root
+    ):
         try:
             manager = SessionManager(_config_for_listing_scope(context, scope))
         except (OSError, ValueError):
@@ -133,15 +136,23 @@ def session_service_for_scope(
     *,
     with_reminders: bool = False,
 ) -> SessionService:
-    if not scope_id or scope_id == active_project_scope_id(context.config.workspace_root):
+    if not scope_id or scope_id == active_project_scope_id(
+        context.config.workspace_root
+    ):
         return SessionService(
             context.manager,
             context.reminders if with_reminders else None,
             scope_id=scope_id,
         )
     scope = next(
-        (item for item in build_session_scopes(context.project_state, active_workspace_root=context.config.workspace_root)
-         if item.scope_id == scope_id),
+        (
+            item
+            for item in build_session_scopes(
+                context.project_state,
+                active_workspace_root=context.config.workspace_root,
+            )
+            if item.scope_id == scope_id
+        ),
         None,
     )
     if scope is None:
@@ -167,7 +178,11 @@ def _record_from_metadata(
     mode = str(metadata.get("mode") or "chat")
     created_at = str(metadata.get("created_at") or "")
     updated_at = str(metadata.get("updated_at") or created_at)
-    title = _clean_title(str(metadata.get("title") or "")) or _first_user_message_title(session_dir) or _display_title(session_id)
+    title = (
+        _clean_title(str(metadata.get("title") or ""))
+        or _first_user_message_title(session_dir)
+        or _display_title(session_id)
+    )
     return SessionRecordResponse(
         session_id=session_id,
         session_dir=str(session_dir),
@@ -202,7 +217,10 @@ def _first_user_message_from_events(session_dir: Path) -> str:
     events_paths = sorted((session_dir / "cases").glob("*/runs/*/events.jsonl"))
     for events_path in events_paths:
         for row in EventStore.iter_jsonl(events_path):
-            if not isinstance(row, dict) or row.get("type") != "conversation.user_message":
+            if (
+                not isinstance(row, dict)
+                or row.get("type") != "conversation.user_message"
+            ):
                 continue
             payload = row.get("payload")
             if not isinstance(payload, dict):

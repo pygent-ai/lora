@@ -4,6 +4,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from lora.core.io import non_empty_string as _non_empty
+from lora.credentials import (
+    DEFAULT_API_KEY_ENV,
+    load_credentials,
+    lookup_credential,
+)
 from lora.schema import (
     BashCliPreset,
     DelegationConfig,
@@ -18,18 +24,14 @@ from lora.schema import (
     RuntimeDurabilityConfig,
     default_cli_bash_presets,
 )
-from lora.credentials import (
-    DEFAULT_API_KEY_ENV,
-    lookup_credential,
-    load_credentials,
-)
-from lora.core.io import non_empty_string as _non_empty
-from .yaml_subset import parse_yaml_subset
 
+from .yaml_subset import parse_yaml_subset
 
 DEFAULT_MODEL_NAME = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 USER_CONFIG_FILENAME = "config.yaml"
+
+
 def load_run_config(
     *,
     workspace_root: str | Path | None = None,
@@ -39,7 +41,11 @@ def load_run_config(
     max_steps: int | None = None,
     context_window: int | None = None,
 ) -> RunConfig:
-    root = Path(workspace_root or os.environ.get("LORA_WORKSPACE_ROOT") or Path.cwd()).expanduser().resolve()
+    root = (
+        Path(workspace_root or os.environ.get("LORA_WORKSPACE_ROOT") or Path.cwd())
+        .expanduser()
+        .resolve()
+    )
     user_lora_root = (Path.home() / ".lora").expanduser().resolve()
     load_credentials(user_lora_root=user_lora_root)
     config_path = user_lora_root / USER_CONFIG_FILENAME
@@ -61,11 +67,17 @@ def load_run_config(
         user_lora_root=user_lora_root,
     )
     agent_profile = _agent_profile(config_data, resolved_agent.alias)
-    model_request = agent_profile.get("model_request") if isinstance(agent_profile.get("model_request"), dict) else {}
+    model_request = (
+        agent_profile.get("model_request")
+        if isinstance(agent_profile.get("model_request"), dict)
+        else {}
+    )
     assert isinstance(model_request, dict)
     return RunConfig(
         workspace_root=str(root),
-        session_id=session_id or os.environ.get("LORA_SESSION_ID") or _dig(config_data, "session_id"),
+        session_id=session_id
+        or os.environ.get("LORA_SESSION_ID")
+        or _dig(config_data, "session_id"),
         case_file=resolved_case_file,
         max_steps=int(configured_max_steps),
         agent_alias=resolved_agent.alias,
@@ -105,12 +117,18 @@ def load_run_config(
             _dig(config_data, "context_compression.file_read_max_chars"),
             default=5000,
         ),
-        runtime_durability=RuntimeDurabilityConfig(**(_dig(config_data, "runtime.durability") or {})),
-        runtime_capacity=RuntimeCapacityConfig(**(_dig(config_data, "runtime.capacity") or {})),
+        runtime_durability=RuntimeDurabilityConfig(
+            **(_dig(config_data, "runtime.durability") or {})
+        ),
+        runtime_capacity=RuntimeCapacityConfig(
+            **(_dig(config_data, "runtime.capacity") or {})
+        ),
         runtime_approvals=_resolve_runtime_approvals(config_data),
         mcp_servers=_resolve_mcp_servers(config_data, root),
         delegation=_resolve_delegation(config_data),
-        eternal_conversation=_resolve_eternal_conversation(config_data, resolved_agent.alias, root),
+        eternal_conversation=_resolve_eternal_conversation(
+            config_data, resolved_agent.alias, root
+        ),
     )
 
 
@@ -125,6 +143,7 @@ def _read_config(path: Path | None) -> dict[str, Any]:
         return load_mapping_file(path)
     except OSError as exc:
         raise ValueError(f"Cannot read config file {path}: {exc}") from exc
+
 
 def _default_config() -> dict[str, Any]:
     return {
@@ -205,9 +224,19 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
     _require_known_keys(
         data,
         {
-            "max_steps", "session_id", "allow_read_outside_workspace",
-            "context_window", "agent", "agents", "user", "cli", "context_compression",
-            "runtime", "mcp", "delegation", "eternal_conversation",
+            "max_steps",
+            "session_id",
+            "allow_read_outside_workspace",
+            "context_window",
+            "agent",
+            "agents",
+            "user",
+            "cli",
+            "context_compression",
+            "runtime",
+            "mcp",
+            "delegation",
+            "eternal_conversation",
         },
         "config",
     )
@@ -221,17 +250,29 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
     _validate_mapping(data.get("cli"), {"bash"}, "cli")
     cli = data.get("cli")
     if isinstance(cli, dict):
-        _validate_mapping(cli.get("bash"), {"presets", "full_output_allowlist"}, "cli.bash")
+        _validate_mapping(
+            cli.get("bash"), {"presets", "full_output_allowlist"}, "cli.bash"
+        )
         bash = cli.get("bash")
         if isinstance(bash, dict) and isinstance(bash.get("presets"), list):
             for index, preset in enumerate(bash["presets"]):
                 if isinstance(preset, dict):
-                    _require_known_keys(preset, {"name", "command", "description"}, f"cli.bash.presets[{index}]")
-    _validate_mapping(data.get("runtime"), {"durability", "capacity", "approvals"}, "runtime")
+                    _require_known_keys(
+                        preset,
+                        {"name", "command", "description"},
+                        f"cli.bash.presets[{index}]",
+                    )
+    _validate_mapping(
+        data.get("runtime"), {"durability", "capacity", "approvals"}, "runtime"
+    )
     runtime = data.get("runtime")
     if isinstance(runtime, dict):
-        _validate_mapping(runtime.get("durability"), {"mode", "history_path"}, "runtime.durability")
-        _validate_mapping(runtime.get("capacity"), {"scope", "coordinator_path"}, "runtime.capacity")
+        _validate_mapping(
+            runtime.get("durability"), {"mode", "history_path"}, "runtime.durability"
+        )
+        _validate_mapping(
+            runtime.get("capacity"), {"scope", "coordinator_path"}, "runtime.capacity"
+        )
         _validate_mapping(
             runtime.get("approvals"),
             {"enabled", "timeout_seconds", "preauthorized_tools"},
@@ -244,7 +285,18 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
             if isinstance(server, dict):
                 _require_known_keys(
                     server,
-                    {"name", "transport", "command", "args", "cwd", "env_from", "url", "headers_env", "timeout", "required"},
+                    {
+                        "name",
+                        "transport",
+                        "command",
+                        "args",
+                        "cwd",
+                        "env_from",
+                        "url",
+                        "headers_env",
+                        "timeout",
+                        "required",
+                    },
                     f"mcp.servers[{index}]",
                 )
     _validate_mapping(
@@ -254,7 +306,12 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
     )
     _validate_mapping(
         data.get("eternal_conversation"),
-        {"enabled", "extractor_agent_alias", "builder_agent_alias", "dynamic_memory_cli_path"},
+        {
+            "enabled",
+            "extractor_agent_alias",
+            "builder_agent_alias",
+            "dynamic_memory_cli_path",
+        },
         "eternal_conversation",
     )
     agents = data.get("agents")
@@ -283,7 +340,13 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
                     )
         _validate_mapping(
             request.get("retry"),
-            {"max_attempts_per_route", "attempt_idle_timeout_seconds", "backoff_initial", "backoff_maximum", "backoff_multiplier"},
+            {
+                "max_attempts_per_route",
+                "attempt_idle_timeout_seconds",
+                "backoff_initial",
+                "backoff_maximum",
+                "backoff_multiplier",
+            },
             f"agents[{index}].model_request.retry",
         )
 
@@ -308,9 +371,17 @@ def _resolve_agent_config(
     cli_agent_alias: str | None,
     user_lora_root: Path,
 ) -> ResolvedAgentConfig:
-    alias = _non_empty(cli_agent_alias) or _non_empty(_dig(config_data, "agent.default_alias")) or "default"
+    alias = (
+        _non_empty(cli_agent_alias)
+        or _non_empty(_dig(config_data, "agent.default_alias"))
+        or "default"
+    )
     profile = _agent_profile(config_data, alias)
-    model_request = profile.get("model_request") if isinstance(profile.get("model_request"), dict) else {}
+    model_request = (
+        profile.get("model_request")
+        if isinstance(profile.get("model_request"), dict)
+        else {}
+    )
     assert isinstance(model_request, dict)
 
     routes = _resolve_model_routes(
@@ -355,10 +426,18 @@ def _resolve_model_routes(
         )
         routes.append(
             ModelRouteConfig(
-                id=_required_config(item.get("id"), f"model_request.routes[{index}].id"),
-                provider=_required_config(item.get("provider"), f"model_request.routes[{index}].provider"),
-                model_name=_required_config(item.get("model_name"), f"model_request.routes[{index}].model_name"),
-                base_url=_required_config(item.get("base_url"), f"model_request.routes[{index}].base_url"),
+                id=_required_config(
+                    item.get("id"), f"model_request.routes[{index}].id"
+                ),
+                provider=_required_config(
+                    item.get("provider"), f"model_request.routes[{index}].provider"
+                ),
+                model_name=_required_config(
+                    item.get("model_name"), f"model_request.routes[{index}].model_name"
+                ),
+                base_url=_required_config(
+                    item.get("base_url"), f"model_request.routes[{index}].base_url"
+                ),
                 api_key_env=env_name,
                 api_key=key,
                 api_key_source=source,
@@ -436,11 +515,19 @@ def _resolve_eternal_conversation(
     cli_path = None
     if configured_path:
         candidate = Path(str(configured_path)).expanduser()
-        cli_path = str((candidate if candidate.is_absolute() else root / candidate).resolve())
+        cli_path = str(
+            (candidate if candidate.is_absolute() else root / candidate).resolve()
+        )
     return EternalConversationConfig(
         enabled=_bool_config(_dig(data, "eternal_conversation.enabled"), default=False),
-        extractor_agent_alias=_non_empty(_dig(data, "eternal_conversation.extractor_agent_alias")) or default_alias,
-        builder_agent_alias=_non_empty(_dig(data, "eternal_conversation.builder_agent_alias")) or default_alias,
+        extractor_agent_alias=_non_empty(
+            _dig(data, "eternal_conversation.extractor_agent_alias")
+        )
+        or default_alias,
+        builder_agent_alias=_non_empty(
+            _dig(data, "eternal_conversation.builder_agent_alias")
+        )
+        or default_alias,
         dynamic_memory_cli_path=cli_path,
     )
 
@@ -475,7 +562,9 @@ def _resolve_bash_full_output_allowlist(config_data: dict[str, Any]) -> list[str
     for index, item in enumerate(entries):
         value = _non_empty(item)
         if value is None:
-            raise ValueError(f"cli.bash.full_output_allowlist[{index}] must be a non-empty string")
+            raise ValueError(
+                f"cli.bash.full_output_allowlist[{index}] must be a non-empty string"
+            )
         resolved.append(value)
     return resolved
 

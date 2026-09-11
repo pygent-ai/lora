@@ -1,2 +1,1 @@
-"""HTTP route placeholders for the local API layer."""
-
+"""HTTP routes for the local API layer."""

@@ -7,8 +7,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from lora_api.container import ApiContext
-from lora_api.routers import automations
-from lora_api.routers import chat, health, projects, runtime, sessions, settings, terminal, tool_results, traces, workspace
+from lora_api.routers import (
+    automations,
+    chat,
+    health,
+    projects,
+    runtime,
+    sessions,
+    settings,
+    terminal,
+    tool_results,
+    traces,
+    workspace,
+)
 from lora_api.services.chat_runner import ChatRunRegistry
 
 
@@ -23,18 +34,25 @@ def create_app(
         agent_alias=agent_alias,
         max_steps=max_steps,
     )
-    context.attach_chat_registry(ChatRunRegistry())
+    context.attach_chat_registry(ChatRunRegistry(context.session_coordinator))
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        lease = None
         try:
-            await context.runtime_service.initialize()
+            lease = await context.acquire_runtime()
+            await lease.release()
+            lease = None
             context.start_automation_scheduler()
             yield
         finally:
+            if lease is not None:
+                await lease.release()
             await context.aclose()
 
-    app = FastAPI(title="Lora Local API", version=package_version("lora"), lifespan=lifespan)
+    app = FastAPI(
+        title="Lora Local API", version=package_version("lora"), lifespan=lifespan
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",

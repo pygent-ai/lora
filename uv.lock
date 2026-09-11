@@ -620,7 +620,7 @@ wheels = [
 
 [[package]]
 name = "pygent-ai"
-version = "0.3.6"
+version = "0.3.10"
 source = { editable = "../pygent" }
 dependencies = [
     { name = "aiosqlite" },
@@ -660,8 +660,9 @@ requires-dist = [
     { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.23" },
     { name = "typing-extensions", specifier = ">=4.12" },
     { name = "uvicorn", specifier = ">=0.30" },
+    { name = "websockets", marker = "extra == 'az-conformance'", specifier = ">=15.0" },
 ]
-provides-extras = ["performance", "dev"]
+provides-extras = ["performance", "az-conformance", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -5,12 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .case import CaseManager
 from lora.core.io import read_json, write_json
-from .regression import RegressionManifest
 from lora.schema import CaseDefinition, CaseRunRef, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import EventStore
+
+from .case import CaseManager
+from .regression import RegressionManifest
 
 
 @dataclass(slots=True)
@@ -57,14 +58,22 @@ class TestGenerator:
                 reason="source run already passed",
             )
 
-        source_case = CaseManager(self.config.workspace_root).load(run_dir / "case.yaml")
+        source_case = CaseManager(self.config.workspace_root).load(
+            run_dir / "case.yaml"
+        )
         analysis = _read_optional_json(run_dir / "analysis.json")
         generated_case = _generated_case(source_case, verdict)
-        generated_dir = Path(self.session_manager.show(session_id)["session"]["session_dir"]) / "generated_tests" / case_run_id
+        generated_dir = (
+            Path(self.session_manager.show(session_id)["session"]["session_dir"])
+            / "generated_tests"
+            / case_run_id
+        )
         generated_dir.mkdir(parents=True, exist_ok=True)
         generated_path = generated_dir / "generated_case.yaml"
         metadata_path = generated_dir / "metadata.json"
-        generated_path.write_text(_dump_yaml(generated_case.to_dict()), encoding="utf-8")
+        generated_path.write_text(
+            _dump_yaml(generated_case.to_dict()), encoding="utf-8"
+        )
 
         metadata = {
             "source_session_id": session_id,
@@ -112,14 +121,25 @@ class RegressionRegistrar:
             case_path = Path(self.config.workspace_root) / case_path
         case_path = case_path.resolve()
         CaseManager(self.config.workspace_root).load(case_path)
-        normalized_path = _normalized_case_path(case_path, workspace_root=Path(self.config.workspace_root))
+        normalized_path = _normalized_case_path(
+            case_path, workspace_root=Path(self.config.workspace_root)
+        )
 
         manifest = self._load_manifest()
         existing = [case.to_dict() for case in manifest.cases]
-        already_registered = any(_normalize_manifest_path(item["path"]) == normalized_path for item in existing)
+        already_registered = any(
+            _normalize_manifest_path(item["path"]) == normalized_path
+            for item in existing
+        )
         if not already_registered:
             existing.append({"path": normalized_path, "session_mode": "new"})
-        existing = sorted(existing, key=lambda item: (str(item.get("path")), str(item.get("session_mode") or "")))
+        existing = sorted(
+            existing,
+            key=lambda item: (
+                str(item.get("path")),
+                str(item.get("session_mode") or ""),
+            ),
+        )
 
         payload = {
             "version": manifest.version,
@@ -140,7 +160,9 @@ class RegressionRegistrar:
         return RegressionManifest.from_file(self.manifest_path)
 
 
-def find_case_run(manager: SessionManager, session_id: str, case_run_id: str) -> CaseRunRef:
+def find_case_run(
+    manager: SessionManager, session_id: str, case_run_id: str
+) -> CaseRunRef:
     return manager.find_case_run(session_id, case_run_id)
 
 
@@ -164,7 +186,9 @@ def _copy_workspace_setup(workspace: dict[str, Any]) -> dict[str, Any]:
     return {"setup": setup}
 
 
-def _narrow_expect(source_expect: dict[str, Any], verdict: dict[str, Any]) -> dict[str, Any]:
+def _narrow_expect(
+    source_expect: dict[str, Any], verdict: dict[str, Any]
+) -> dict[str, Any]:
     expect: dict[str, Any] = {}
     for failure in _failures(verdict, "answer.contains"):
         expected = failure.get("expected")
@@ -173,7 +197,9 @@ def _narrow_expect(source_expect: dict[str, Any], verdict: dict[str, Any]) -> di
     for failure in _failures(verdict, "tool.required"):
         expected = failure.get("expected")
         if expected is not None:
-            expect.setdefault("tool_calls", {}).setdefault("required", []).append({"name": expected})
+            expect.setdefault("tool_calls", {}).setdefault("required", []).append(
+                {"name": expected}
+            )
     for failure in _failures(verdict, "files.unchanged"):
         path = failure.get("path") or failure.get("expected")
         if path is not None:
@@ -181,7 +207,9 @@ def _narrow_expect(source_expect: dict[str, Any], verdict: dict[str, Any]) -> di
     return _dedupe_expect(expect) or dict(source_expect)
 
 
-def _narrow_metrics(source_metrics: dict[str, Any], verdict: dict[str, Any]) -> dict[str, Any]:
+def _narrow_metrics(
+    source_metrics: dict[str, Any], verdict: dict[str, Any]
+) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
     for failure in _failures(verdict, "metrics.max_turns"):
         expected = failure.get("expected")
@@ -229,7 +257,11 @@ def _recommended_tests(analysis: dict[str, Any] | None) -> list[dict[str, Any]]:
     recommended: list[dict[str, Any]] = []
     for root_cause in analysis.get("root_causes") or []:
         if isinstance(root_cause, dict):
-            recommended.extend(item for item in root_cause.get("recommended_tests") or [] if isinstance(item, dict))
+            recommended.extend(
+                item
+                for item in root_cause.get("recommended_tests") or []
+                if isinstance(item, dict)
+            )
     return recommended
 
 

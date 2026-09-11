@@ -7,13 +7,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
-from lora.evaluation import CaseManager
 from lora.core.io import read_json, write_json
-from lora.evaluation import RegressionRunner
+from lora.evaluation import CaseManager, RegressionRunner
 from lora.schema import CaseRunRef, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import EventStore
-
 
 RepairStatus = Literal["planned", "skipped"]
 GateStatus = Literal["passed", "failed", "error", "skipped"]
@@ -34,7 +32,9 @@ class RepairPlan:
     recommended_checks: list[dict[str, Any]] = field(default_factory=list)
     gate: dict[str, Any] = field(default_factory=dict)
     plan_path: str | None = None
-    created_at: str = field(default_factory=lambda: datetime.now().astimezone().isoformat())
+    created_at: str = field(
+        default_factory=lambda: datetime.now().astimezone().isoformat()
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -55,7 +55,9 @@ class RepairPlan:
             recommended_checks=list(data.get("recommended_checks") or []),
             gate=dict(data.get("gate") or {}),
             plan_path=data.get("plan_path"),
-            created_at=str(data.get("created_at") or datetime.now().astimezone().isoformat()),
+            created_at=str(
+                data.get("created_at") or datetime.now().astimezone().isoformat()
+            ),
         )
 
 
@@ -70,7 +72,11 @@ class RepairWorkflow:
         ref = self.find_case_run(session_id, case_run_id)
         run_dir = Path(ref.run_dir)
         verdict = read_json(run_dir / "verdict.json", default={})
-        status = str(verdict.get("status") or read_json(run_dir / "run_metadata.json", default={}).get("status") or "error")
+        status = str(
+            verdict.get("status")
+            or read_json(run_dir / "run_metadata.json", default={}).get("status")
+            or "error"
+        )
         if status == "passed":
             return {
                 "status": "skipped",
@@ -94,7 +100,9 @@ class RepairWorkflow:
             failures=list(verdict.get("failures") or []),
             errors=list(verdict.get("errors") or []),
             root_causes=list(analysis.get("root_causes") or []),
-            recommended_checks=_recommended_checks(verdict, analysis, self.workspace_root),
+            recommended_checks=_recommended_checks(
+                verdict, analysis, self.workspace_root
+            ),
             gate=_gate_config(self.workspace_root, self.lora_root),
         )
         plan.plan_path = str(repair_dir / "repair_plan.json")
@@ -117,7 +125,9 @@ class RepairWorkflow:
         plan = RepairPlan.from_dict(read_json(plan_path))
         ref = self.find_case_run(plan.session_id, plan.case_run_id)
         attempt_id = self._new_attempt_id(plan.repair_id)
-        attempt_dir = self._repair_dir(plan.session_id, plan.repair_id) / "attempts" / attempt_id
+        attempt_dir = (
+            self._repair_dir(plan.session_id, plan.repair_id) / "attempts" / attempt_id
+        )
         attempt_dir.mkdir(parents=True, exist_ok=False)
 
         diff = _git_diff(self.workspace_root)
@@ -172,10 +182,18 @@ class RepairWorkflow:
                 case_manager=CaseManager(self.workspace_root),
             ).run(regression_manifest)
             status = regression["status"]
-            results.append({"kind": "regression", "status": status, "result": regression})
+            results.append(
+                {"kind": "regression", "status": status, "result": regression}
+            )
         else:
             status = "skipped"
-            results.append({"kind": "none", "status": "skipped", "reason": "no gate commands or regression manifest found"})
+            results.append(
+                {
+                    "kind": "none",
+                    "status": "skipped",
+                    "reason": "no gate commands or regression manifest found",
+                }
+            )
 
         gate_result = {
             "attempt_id": repair_attempt_id,
@@ -204,7 +222,9 @@ class RepairWorkflow:
         return self.session_manager.find_case_run(session_id, case_run_id)
 
     def find_attempt_dir(self, attempt_id: str) -> Path:
-        matches = list((self.lora_root / "sessions").glob(f"*/repairs/*/attempts/{attempt_id}"))
+        matches = list(
+            (self.lora_root / "sessions").glob(f"*/repairs/*/attempts/{attempt_id}")
+        )
         if not matches:
             raise FileNotFoundError(f"Repair attempt {attempt_id!r} does not exist")
         if len(matches) > 1:
@@ -212,7 +232,9 @@ class RepairWorkflow:
         return matches[0]
 
     def _repair_dir(self, session_id: str, repair_id: str) -> Path:
-        session_dir = Path(self.session_manager.show(session_id)["session"]["session_dir"])
+        session_dir = Path(
+            self.session_manager.show(session_id)["session"]["session_dir"]
+        )
         path = session_dir / "repairs" / repair_id
         path.mkdir(parents=True, exist_ok=True)
         return path
@@ -231,7 +253,9 @@ class RepairWorkflow:
 def _failure_summary(verdict: dict[str, Any], analysis: dict[str, Any]) -> str:
     root_causes = analysis.get("root_causes") or []
     if root_causes:
-        return str(root_causes[0].get("summary") or root_causes[0].get("type") or "Run failed")
+        return str(
+            root_causes[0].get("summary") or root_causes[0].get("type") or "Run failed"
+        )
     failures = verdict.get("failures") or []
     if failures:
         return "; ".join(str(item.get("message", item)) for item in failures[:3])
@@ -241,7 +265,9 @@ def _failure_summary(verdict: dict[str, Any], analysis: dict[str, Any]) -> str:
     return f"Run status is {verdict.get('status', 'unknown')}"
 
 
-def _suspected_files(verdict: dict[str, Any], analysis: dict[str, Any], events: list[dict[str, Any]]) -> list[str]:
+def _suspected_files(
+    verdict: dict[str, Any], analysis: dict[str, Any], events: list[dict[str, Any]]
+) -> list[str]:
     files: list[str] = []
     for root_cause in analysis.get("root_causes") or []:
         for value in root_cause.get("suspected_files") or []:
@@ -260,10 +286,16 @@ def _suspected_files(verdict: dict[str, Any], analysis: dict[str, Any], events: 
     return sorted(dict.fromkeys(files))
 
 
-def _recommended_checks(verdict: dict[str, Any], analysis: dict[str, Any], workspace_root: Path) -> list[dict[str, Any]]:
+def _recommended_checks(
+    verdict: dict[str, Any], analysis: dict[str, Any], workspace_root: Path
+) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     for root_cause in analysis.get("root_causes") or []:
-        checks.extend(item for item in root_cause.get("recommended_tests") or [] if isinstance(item, dict))
+        checks.extend(
+            item
+            for item in root_cause.get("recommended_tests") or []
+            if isinstance(item, dict)
+        )
     if (workspace_root / "tests").exists():
         checks.append(
             {
@@ -273,7 +305,12 @@ def _recommended_checks(verdict: dict[str, Any], analysis: dict[str, Any], works
             }
         )
     if not checks and verdict.get("failures"):
-        checks.append({"kind": "manual", "description": "Add or run a deterministic check for the failed assertion."})
+        checks.append(
+            {
+                "kind": "manual",
+                "description": "Add or run a deterministic check for the failed assertion.",
+            }
+        )
     return checks
 
 
@@ -306,13 +343,17 @@ def _normalise_commands(value: Any) -> list[list[str]]:
                 raise ValueError("gate command parts must be strings")
             commands.append(list(command))
         else:
-            raise ValueError("gate.commands entries must be strings, string lists, or {command: [...]}")
+            raise ValueError(
+                "gate.commands entries must be strings, string lists, or {command: [...]}"
+            )
     return commands
 
 
 def _run_command(command: Sequence[str], *, cwd: Path) -> dict[str, Any]:
     try:
-        completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=300, check=False)
+        completed = subprocess.run(
+            command, cwd=cwd, capture_output=True, text=True, timeout=300, check=False
+        )
         status: GateStatus = "passed" if completed.returncode == 0 else "failed"
         return {
             "kind": "command",
@@ -349,7 +390,9 @@ def _gate_status(results: list[dict[str, Any]]) -> GateStatus:
 def _git_diff(workspace_root: Path) -> dict[str, Any]:
     command = ["git", "diff", "--binary", "--no-ext-diff"]
     try:
-        completed = subprocess.run(command, cwd=workspace_root, capture_output=True, text=True, check=False)
+        completed = subprocess.run(
+            command, cwd=workspace_root, capture_output=True, text=True, check=False
+        )
         return {
             "command": command,
             "exit_code": completed.returncode,

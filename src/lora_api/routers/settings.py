@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from lora.config import load_run_config, update_user_model_group, update_user_approvals
+from lora.config import load_run_config, update_user_approvals, update_user_model_group
 from lora.core.io import non_empty_string
 from lora.credentials import set_user_credential
 from lora_api.dependencies import ApiContext, get_api_context
@@ -17,7 +17,9 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 
 @router.get("", response_model=RuntimeConfigResponse)
-def get_settings(context: ApiContext = Depends(get_api_context)) -> RuntimeConfigResponse:
+def get_settings(
+    context: ApiContext = Depends(get_api_context),
+) -> RuntimeConfigResponse:
     return config_response(context.config)
 
 
@@ -30,9 +32,14 @@ async def update_settings(
     if overrides.get("workspace_root"):
         workspace = Path(overrides["workspace_root"]).expanduser()
         if not workspace.is_dir():
-            raise HTTPException(status_code=400, detail="Project folder does not exist or is not accessible. Choose an existing folder.")
+            raise HTTPException(
+                status_code=400,
+                detail="Project folder does not exist or is not accessible. Choose an existing folder.",
+            )
     user_lora_root = context.config.user_lora_root or ""
-    agent_alias = overrides.get("agent_alias", context.agent_alias or context.config.agent_alias)
+    agent_alias = overrides.get(
+        "agent_alias", context.agent_alias or context.config.agent_alias
+    )
     if request.model_group is not None:
         model_request = _model_request_payload(request)
         update_user_model_group(

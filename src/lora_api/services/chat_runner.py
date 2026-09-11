@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import time
 from collections.abc import AsyncIterator
@@ -11,7 +10,12 @@ from typing import Any
 
 from pygent import thaw_json
 
-from lora.core.io import append_jsonl, plain_object
+from lora.core.io import append_jsonl, read_json
+from lora.orchestration import (
+    ManagedSessionTurn,
+    SessionExecutionCoordinator,
+    SessionTurnService,
+)
 from lora.schema import CaseRunRef
 from lora_api.container import ApiContext
 from lora_api.models.events import ExecutionEvent
@@ -20,17 +24,23 @@ from lora_api.services.session_service import session_service_for_scope
 
 CHAT_KEEPALIVE_SECONDS = 10.0
 _TERMINAL_EVENTS = {
-    "execution.completed", "execution.failed", "execution.cancelled",
+    "execution.completed",
+    "execution.failed",
+    "execution.cancelled",
     "execution.deadline_exceeded",
 }
 
 
-def _with_run_timing(event: ExecutionEvent, manager: Any, ref: CaseRunRef) -> ExecutionEvent:
+def _with_run_timing(
+    event: ExecutionEvent, manager: Any, ref: CaseRunRef
+) -> ExecutionEvent:
     if event.kind not in _TERMINAL_EVENTS | {"execution.started", "lora.chat.started"}:
         return event
-    return event.model_copy(update={
-        "data": {**event.data, "run_timing": manager.run_timing(ref)},
-    })
+    return event.model_copy(
+        update={
+            "data": {**event.data, "run_timing": manager.run_timing(ref)},
+        }
+    )
 
 
 async def stream_chat_turn(
@@ -46,7 +56,11 @@ async def stream_chat_turn(
         yield _sse(_transport_error_event(request.execution_id or "", exc))
         return
     if run is None:
-        yield _sse(_transport_error_event(request.execution_id or "", LookupError("execution not found")))
+        yield _sse(
+            _transport_error_event(
+                request.execution_id or "", LookupError("execution not found")
+            )
+        )
         return
     async for event in run.events(
         after=request.after_sequence,
@@ -57,29 +71,47 @@ async def stream_chat_turn(
 
 @dataclass(slots=True)
 class ActiveChatRun:
-    runtime_service: Any
-    manager: Any
-    request: ChatTurnRequest
-    run_ref: CaseRunRef
-    registry: ChatRunRegistry
-    done: bool = False
-    status: str = "running"
-    task: asyncio.Task[None] | None = None
-    execution_handle: Any | None = None
-    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    """SSE-facing view over a transport-independent managed session turn."""
+
+    turn: ManagedSessionTurn
     subscribers: int = 0
-    startup_error: BaseException | None = None
-    recovery_execution_id: str | None = None
-    owns_runtime: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def execution_id(self) -> str | None:
-        return None if self.execution_handle is None else self.execution_handle.execution_id
+        return self.turn.execution_id
 
-    async def start(self) -> None:
-        self.task = asyncio.create_task(self._run_turn(), name=f"chat-run:{self.run_ref.case_run_id}")
-        await self.ready.wait()
+    @property
+    def execution_handle(self) -> Any | None:
+        return self.turn.execution_handle
+
+    @property
+    def run_ref(self) -> CaseRunRef | None:
+        return self.turn.run_ref
+
+    @property
+    def manager(self) -> Any:
+        return self.turn.manager
+
+    @property
+    def runtime_service(self) -> Any:
+        return self.turn.runtime_service
+
+    @property
+    def task(self) -> asyncio.Task[None] | None:
+        return self.turn.task
+
+    @property
+    def done(self) -> bool:
+        return self.turn.done
+
+    @property
+    def status(self) -> str:
+        return self.turn.status
+
+    @property
+    def startup_error(self) -> BaseException | None:
+        return self.turn.startup_error
 
     async def events(
         self,
@@ -108,6 +140,9 @@ class ActiveChatRun:
         handle = self.execution_handle
         if handle is None:
             return
+        run_ref = self.run_ref
+        if run_ref is None:  # pragma: no cover - ready implies case-run creation
+            raise RuntimeError("chat execution has no case run")
         async with self.lock:
             self.subscribers += 1
         try:
@@ -130,15 +165,15 @@ class ActiveChatRun:
                             break
                         pending_event = None
                         event = _execution_event(raw)
-                        if event.kind in _TERMINAL_EVENTS and self.task is not None:
+                        if event.kind in _TERMINAL_EVENTS:
                             # Publish completion only after run metadata and history
                             # are durable, so the client's immediate reload is final.
-                            await asyncio.shield(self.task)
-                        event = _with_run_timing(event, self.manager, self.run_ref)
+                            await asyncio.shield(self.turn.wait_finalized())
+                        event = _with_run_timing(event, self.manager, run_ref)
                         if log_model_text_deltas:
                             _append_model_text_delta(
                                 event,
-                                stream_dir=Path(self.run_ref.run_dir),
+                                stream_dir=Path(run_ref.run_dir),
                             )
                         yield event
                 finally:
@@ -146,60 +181,18 @@ class ActiveChatRun:
                         pending_event.cancel()
                         await asyncio.gather(pending_event, return_exceptions=True)
             # Publish final session metadata before the client refreshes its view.
-            if self.task is not None:
-                await asyncio.shield(self.task)
+            await asyncio.shield(self.turn.wait_finalized())
         finally:
             async with self.lock:
                 self.subscribers -= 1
 
-    async def _run_turn(self) -> None:
-        status = "error"
-        try:
-            async with self.registry.session_execution(self.run_ref.session_id):
-                deadline = asyncio.get_running_loop().time() + 30 * 60
-                if self.recovery_execution_id is None:
-                    self.execution_handle = await self.runtime_service.start_turn(
-                        manager=self.manager,
-                        message=self.request.message or "",
-                        run_ref=self.run_ref,
-                        turn_id=(
-                            self.request.turn_id
-                            or f"turn-{self.run_ref.case_run_id[-8:]}"
-                        ),
-                        interactive_approvals=True,
-                        deadline=deadline,
-                    )
-                else:
-                    self.execution_handle = await self.runtime_service.recover_turn(
-                        self.recovery_execution_id,
-                        deadline=deadline,
-                    )
-                await self.registry.attach(self)
-                self.ready.set()
-                execution_handle = self.execution_handle
-                if execution_handle is None:  # pragma: no cover - assignment invariant
-                    raise RuntimeError("chat execution did not start")
-                output, _ = await execution_handle.result()
-                result = plain_object(plain_object(output.data).get("result"))
-                status = str(result.get("status") or "passed")
-        except asyncio.CancelledError:
-            status = "skipped"
-            if self.execution_handle is not None:
-                await self.execution_handle.cancel()
-        except BaseException as exc:
-            self.startup_error = exc
-        finally:
-            self.done = True
-            self.status = status if status in {"passed", "failed", "error", "skipped"} else "error"
-            self.ready.set()
-            self.manager.finish_case_run(self.run_ref, self.status)
-            await self.registry.remove(self)
 
 @dataclass(slots=True)
 class AttachedExecutionRun:
     execution_handle: Any
     run_ref: CaseRunRef | None = None
     manager: Any | None = None
+    lease: Any | None = None
 
     async def events(
         self,
@@ -207,136 +200,107 @@ class AttachedExecutionRun:
         after: int | None,
         log_model_text_deltas: bool = False,
     ) -> AsyncIterator[ExecutionEvent]:
-        async with self.execution_handle.subscribe(after=after) as events:
-            async for raw in events:
-                event = _execution_event(raw)
-                if self.manager is not None and self.run_ref is not None:
-                    event = _with_run_timing(event, self.manager, self.run_ref)
-                if log_model_text_deltas and self.run_ref is not None:
-                    _append_model_text_delta(
-                        event,
-                        stream_dir=Path(self.run_ref.run_dir),
-                    )
-                yield event
+        try:
+            async with self.execution_handle.subscribe(after=after) as events:
+                async for raw in events:
+                    event = _execution_event(raw)
+                    if self.manager is not None and self.run_ref is not None:
+                        event = _with_run_timing(event, self.manager, self.run_ref)
+                    if log_model_text_deltas and self.run_ref is not None:
+                        _append_model_text_delta(
+                            event,
+                            stream_dir=Path(self.run_ref.run_dir),
+                        )
+                    yield event
+        finally:
+            if self.lease is not None:
+                await self.lease.release()
 
 
 class ChatRunRegistry:
-    def __init__(self) -> None:
-        self._runs: dict[str, ActiveChatRun] = {}
-        self._case_runs: dict[str, ActiveChatRun] = {}
-        self._retired_runtimes: set[Any] = set()
-        self._session_gates: dict[str, _SessionGate] = {}
-        self._lock = asyncio.Lock()
+    """HTTP-facing adapter over the application execution coordinator."""
 
-    @contextlib.asynccontextmanager
-    async def session_execution(self, session_id: str) -> AsyncIterator[None]:
-        async with self._lock:
-            gate = self._session_gates.setdefault(session_id, _SessionGate())
-            gate.users += 1
-        try:
-            async with gate.lock:
-                yield
-        finally:
-            async with self._lock:
-                gate.users -= 1
-                if gate.users == 0 and self._session_gates.get(session_id) is gate:
-                    del self._session_gates[session_id]
+    def __init__(self, coordinator: SessionExecutionCoordinator | None = None) -> None:
+        self.coordinator = coordinator or SessionExecutionCoordinator()
 
     async def resolve(
         self, context: ApiContext, request: ChatTurnRequest
     ) -> ActiveChatRun | AttachedExecutionRun | None:
         if request.execution_id:
-            async with self._lock:
-                active = self._runs.get(request.execution_id)
+            active = await self.coordinator.find_execution(request.execution_id)
             if active is not None:
-                return active
-            await context.runtime_service.initialize()
+                await active.wait_ready()
+                return ActiveChatRun(active)
+            service = session_service_for_scope(context, request.scope_id)
+            manager = service.manager
+            run_ref = _request_case_run(manager, request)
+            probe_lease = None
+            if run_ref is None:
+                probe_lease = await context.acquire_runtime(
+                    config=manager.config,
+                    manager=manager,
+                )
+                probe_runtime = probe_lease.runtime.runtime_service
+                try:
+                    run_ref = await probe_runtime.recovery_case_run(
+                        request.execution_id
+                    )
+                finally:
+                    await probe_lease.release()
+            run_config = manager.load_run_config(
+                run_ref,
+                credential_source=manager.config,
+            )
+            lease = await context.acquire_runtime(config=run_config)
+            runtime_service = lease.runtime.runtime_service
             try:
-                handle = await context.runtime_service.runtime.get_execution_handle(
+                handle = await runtime_service.runtime.get_execution_handle(
                     request.execution_id
                 )
             except KeyError:
+                await lease.release()
                 return None
-            snapshot = await handle.snapshot()
+            try:
+                snapshot = await handle.snapshot()
+            except BaseException:
+                await lease.release()
+                raise
             if snapshot.status.terminal:
-                run_ref = await context.runtime_service.recovery_case_run(request.execution_id)
-                return AttachedExecutionRun(handle, run_ref, context.manager)
-            run_ref = await context.runtime_service.recovery_case_run(
-                request.execution_id
-            )
-            recovered = ActiveChatRun(
-                runtime_service=context.runtime_service,
-                manager=context.manager,
-                request=request,
-                run_ref=run_ref,
-                registry=self,
-                recovery_execution_id=request.execution_id,
-            )
-            existing_recovery = None
-            async with self._lock:
-                active = self._runs.get(request.execution_id)
-                if active is not None:
-                    existing_recovery = active
-                else:
-                    self._runs[request.execution_id] = recovered
-                    self._case_runs[run_ref.case_run_id] = recovered
-            if existing_recovery is not None:
-                await existing_recovery.ready.wait()
-                return existing_recovery
-            await recovered.start()
-            return recovered
+                return AttachedExecutionRun(
+                    handle, run_ref, lease.runtime.manager, lease
+                )
+            try:
+                recovered = await self.coordinator.recover_turn(
+                    lease=lease,
+                    run_ref=run_ref,
+                    execution_id=request.execution_id,
+                )
+            except BaseException:
+                await lease.release()
+                raise
+            await recovered.wait_ready()
+            return ActiveChatRun(recovered)
         if not request.message:
             raise ValueError("message is required when execution_id is not provided")
         service = session_service_for_scope(
             context,
             request.scope_id,
-            with_reminders=True,
         )
         manager = service.manager
-        runtime_service = context.runtime_service
-        owns_runtime = False
-        if request.scope_id and manager is not context.manager:
-            from lora.runtime.service import LoraRuntimeService
-
-            Path(manager.config.workspace_root).mkdir(parents=True, exist_ok=True)
-            runtime_service = LoraRuntimeService(manager.config)
-            service.reminders = runtime_service.reminders
-            owns_runtime = True
-        session_id = request.session_id or service.create_session(case_id=request.case_id, mode="chat").session_id
-        service.save_title_from_user_input(session_id, request.message)
-        run_ref = manager.start_case_run(session_id, request.case_id, run_config=manager.config)
-        active = ActiveChatRun(
-            runtime_service=runtime_service,
-            manager=manager,
-            request=request.model_copy(update={"session_id": session_id}),
-            run_ref=run_ref,
-            registry=self,
-            owns_runtime=owns_runtime,
+        turn_service = SessionTurnService(
+            coordinator=self.coordinator,
+            acquire_runtime=context.acquire_runtime,
         )
-        async with self._lock:
-            self._case_runs[run_ref.case_run_id] = active
-        await active.start()
-        return active
-
-    async def attach(self, active: ActiveChatRun) -> None:
-        if active.execution_id is not None:
-            async with self._lock:
-                self._runs[active.execution_id] = active
-
-    async def remove(self, active: ActiveChatRun) -> None:
-        runtime_to_close = active.runtime_service if getattr(active, "owns_runtime", False) else None
-        async with self._lock:
-            if active.execution_id is not None and self._runs.get(active.execution_id) is active:
-                del self._runs[active.execution_id]
-            if self._case_runs.get(active.run_ref.case_run_id) is active:
-                del self._case_runs[active.run_ref.case_run_id]
-            if active.runtime_service in self._retired_runtimes and not self._runtime_in_use_locked(
-                active.runtime_service
-            ):
-                self._retired_runtimes.remove(active.runtime_service)
-                runtime_to_close = active.runtime_service
-        if runtime_to_close is not None:
-            await runtime_to_close.close(cancel=False)
+        turn = await turn_service.submit(
+            config=manager.config,
+            manager=manager,
+            session_id=request.session_id,
+            message=request.message,
+            case_id=request.case_id,
+            turn_id=request.turn_id,
+        )
+        await turn.wait_ready()
+        return ActiveChatRun(turn)
 
     async def deliver_approval(
         self,
@@ -347,51 +311,41 @@ class ChatRunRegistry:
         comment: str,
     ) -> bool:
         case_run_id = approval_id.split(":", 1)[0]
-        async with self._lock:
-            active = self._case_runs.get(case_run_id)
-        runtime = context.runtime_service if active is None else active.runtime_service
-        return await runtime.deliver_approval(
-            approval_id,
-            approved=approved,
-            comment=comment,
-        )
-
-    async def retire_runtime(self, runtime: Any) -> None:
-        async with self._lock:
-            if self._runtime_in_use_locked(runtime):
-                self._retired_runtimes.add(runtime)
-                return
-        await runtime.close(cancel=False)
-
-    def _runtime_in_use_locked(self, runtime: Any) -> bool:
-        return any(not run.done and run.runtime_service is runtime for run in self._case_runs.values())
+        active = await self.coordinator.find_case_run(case_run_id)
+        if active is not None:
+            return await active.runtime_service.deliver_approval(
+                approval_id,
+                approved=approved,
+                comment=comment,
+            )
+        lease = await context.acquire_runtime()
+        try:
+            return await lease.runtime.runtime_service.deliver_approval(
+                approval_id,
+                approved=approved,
+                comment=comment,
+            )
+        finally:
+            await lease.release()
 
     async def close(self) -> None:
-        async with self._lock:
-            runs = tuple(self._case_runs.values())
-            self._runs.clear()
-            self._case_runs.clear()
-            retired_runtimes = tuple(self._retired_runtimes)
-            self._retired_runtimes.clear()
-        for run in runs:
-            if run.task is not None and not run.task.done():
-                run.task.cancel()
-        if runs:
-            await asyncio.gather(
-                *(run.task for run in runs if run.task is not None),
-                return_exceptions=True,
-            )
-        if retired_runtimes:
-            await asyncio.gather(
-                *(runtime.close(cancel=True) for runtime in retired_runtimes),
-                return_exceptions=True,
-            )
+        await self.coordinator.close()
 
 
-@dataclass(slots=True)
-class _SessionGate:
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    users: int = 0
+def _request_case_run(manager: Any, request: ChatTurnRequest) -> CaseRunRef | None:
+    if not request.session_id or not request.execution_id:
+        return None
+    metadata = manager.show(request.session_id)["metadata"]
+    case_run_id = metadata.get("last_case_run_id")
+    if not isinstance(case_run_id, str) or not case_run_id:
+        return None
+    run_ref = manager.find_case_run(request.session_id, case_run_id)
+    run_metadata = read_json(Path(run_ref.run_dir) / "run_metadata.json")
+    return (
+        run_ref
+        if run_metadata.get("runtime_execution_id") == request.execution_id
+        else None
+    )
 
 
 def _execution_event(raw: Any) -> ExecutionEvent:

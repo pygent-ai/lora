@@ -13,6 +13,7 @@ from pygent.runtime import LocalRuntime
 
 from lora.core.io import read_json
 from lora.schema import RunConfig
+from lora.sessions import AgentMessage, SessionCollaborationStore
 
 from .bootstrap import build_initial_snapshot
 from .cli_context import detect_cli_changes
@@ -27,11 +28,18 @@ class ReminderService:
     """Collect runtime context and deliver it through native Pygent projection operations."""
 
     def __init__(
-        self, config: RunConfig, *, store: ReminderStateStore | None = None
+        self,
+        config: RunConfig,
+        *,
+        store: ReminderStateStore | None = None,
+        message_store: SessionCollaborationStore | None = None,
     ) -> None:
         self.config = config
         self.runtime: LocalRuntime | None = None
         self.store = store or ReminderStateStore()
+        self.message_store = message_store or SessionCollaborationStore(
+            config.lora_root
+        )
         self._preparations: dict[str, asyncio.Task[None]] = {}
         self._observations: dict[str, asyncio.Task[ReminderSection | None]] = {}
         self._queued_observations: set[str] = set()
@@ -42,7 +50,9 @@ class ReminderService:
         self, execution_id: str, *, input_id: str, content: str
     ) -> None:
         if self.runtime is None:
-            raise RuntimeError("ReminderService requires its owning runtime for delivery")
+            raise RuntimeError(
+                "ReminderService requires its owning runtime for delivery"
+            )
         handle = await self.runtime.get_execution_handle(execution_id)
         receipt = await handle.send_input(
             input_id=input_id,
@@ -189,6 +199,57 @@ class ReminderService:
     async def collect_pending(self, session_id: str) -> str | None:
         result = self._take_completed_observation(session_id)
         return render_context_body([result]) if result is not None else None
+
+    async def claim_agent_messages(
+        self,
+        session_id: str,
+        *,
+        claim_id: str,
+        lease_seconds: float = 30.0,
+    ) -> tuple[AgentMessage, ...]:
+        messages = await asyncio.to_thread(
+            self.message_store.claim_messages,
+            session_id,
+            claim_id=claim_id,
+            lease_seconds=lease_seconds,
+        )
+        return tuple(messages)
+
+    async def claimed_agent_message(
+        self,
+        message_id: str,
+        *,
+        claim_id: str,
+    ) -> AgentMessage | None:
+        return await asyncio.to_thread(
+            self.message_store.get_claimed_message,
+            message_id,
+            claim_id=claim_id,
+        )
+
+    async def agent_message_status(self, message_id: str) -> AgentMessage:
+        return await asyncio.to_thread(self.message_store.get_message, message_id)
+
+    async def acknowledge_agent_message(
+        self,
+        message_id: str,
+        *,
+        claim_id: str,
+        execution_id: str,
+    ) -> None:
+        await asyncio.to_thread(
+            self.message_store.acknowledge_message,
+            message_id,
+            claim_id=claim_id,
+            execution_id=execution_id,
+        )
+
+    async def release_agent_message(self, message_id: str, *, claim_id: str) -> None:
+        await asyncio.to_thread(
+            self.message_store.release_message,
+            message_id,
+            claim_id=claim_id,
+        )
 
     async def close(self) -> None:
         if self._closed:

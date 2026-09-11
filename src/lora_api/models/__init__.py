@@ -1,2 +1,1 @@
-"""Request, response, and event model placeholders for the local API."""
-
+"""Request, response, and event models for the local API."""

@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
-from pygent.core import ExecutionEvent as PygentExecutionEvent
 from pydantic import ValidationError
+from pygent.core import ExecutionEvent as PygentExecutionEvent
 
 from lora_api.models.requests import ChatTurnRequest, UpdateSettingsRequest
 from lora_api.services.chat_runner import _execution_event, _sse
@@ -50,20 +50,24 @@ def test_execution_event_matches_checked_in_json_schema() -> None:
     schema = json.loads(
         Path("contracts/events/chat-events.schema.json").read_text(encoding="utf-8")
     )
-    model_fields = set(_execution_event({
-        "schema_version": "1",
-        "event_id": "event-1",
-        "execution_id": "exec-1",
-        "attempt_id": "attempt-1",
-        "trace_id": "trace-1",
-        "span_id": "span-1",
-        "parent_span_id": None,
-        "sequence": 1,
-        "timestamp_unix_ns": 1,
-        "module_path": "lora",
-        "kind": "execution.started",
-        "data": {},
-    }).model_dump())
+    model_fields = set(
+        _execution_event(
+            {
+                "schema_version": "1",
+                "event_id": "event-1",
+                "execution_id": "exec-1",
+                "attempt_id": "attempt-1",
+                "trace_id": "trace-1",
+                "span_id": "span-1",
+                "parent_span_id": None,
+                "sequence": 1,
+                "timestamp_unix_ns": 1,
+                "module_path": "lora",
+                "kind": "execution.started",
+                "data": {},
+            }
+        ).model_dump()
+    )
 
     assert set(schema["required"]) == model_fields
     assert set(schema["properties"]) == model_fields

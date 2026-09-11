@@ -7,10 +7,11 @@ import threading
 import pytest
 
 from lora.runtime.reminders import BootstrapStatus, ReminderSection, ReminderService
+from lora.runtime.reminders.agent_messages import render_agent_message
 from lora.runtime.reminders.git_context import adaptive_check_interval
 from lora.runtime.reminders.rendering import render_context_body
 from lora.schema import RunConfig
-from lora.sessions import SessionManager
+from lora.sessions import AgentMessage, AgentMessageState, SessionManager
 
 
 def _create(tmp_path):
@@ -38,12 +39,41 @@ def test_renderer_orders_sources_in_one_envelope() -> None:
     )
 
 
+def test_agent_message_renderer_preserves_nested_runtime_context_and_escapes_values() -> (
+    None
+):
+    content = render_agent_message(
+        AgentMessage(
+            message_id="msg-1",
+            submission_id="submission-1",
+            source_session_id="source-session",
+            source_agent_alias='reviewer<&"',
+            target_session_id="target-session",
+            content="Check <result> & continue.",
+            state=AgentMessageState.CLAIMED,
+            created_at="2026-09-11T00:00:00Z",
+            updated_at="2026-09-11T00:00:00Z",
+        )
+    )
+
+    assert content == (
+        "<runtime-context>\n"
+        '  <agent-message message-id="msg-1" source-session-id="source-session" '
+        'source-agent-alias="reviewer&lt;&amp;&quot;">\n'
+        "    Check &lt;result&gt; &amp; continue.\n"
+        "  </agent-message>\n"
+        "</runtime-context>"
+    )
+
+
 @pytest.mark.asyncio
 async def test_first_turn_waits_for_complete_snapshot_and_consumes_once(
     tmp_path, monkeypatch
 ) -> None:
     # Exercise delivery, not the production best-effort Git timeout.
-    monkeypatch.setattr("lora.runtime.reminders.git_context.GIT_STATUS_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(
+        "lora.runtime.reminders.git_context.GIT_STATUS_TIMEOUT_SECONDS", 5.0
+    )
     config, session = _create(tmp_path)
     service = ReminderService(config)
     gate = asyncio.Event()

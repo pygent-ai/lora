@@ -22,7 +22,11 @@ class PowerShellSession:
         self.initial_cwd = cwd
         self.cwd = cwd
         self._lock = threading.Lock()
-        self.executable = shutil.which("powershell.exe") or shutil.which("pwsh") or shutil.which("powershell")
+        self.executable = (
+            shutil.which("powershell.exe")
+            or shutil.which("pwsh")
+            or shutil.which("powershell")
+        )
         if self.executable is None:
             raise RuntimeError("PowerShell is not installed")
 
@@ -31,7 +35,9 @@ class PowerShellSession:
             token = uuid.uuid4().hex
             exit_marker = f"__LORA_EXIT_{token}__"
             cwd_marker = f"__LORA_CWD_{token}__"
-            command_encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+            command_encoded = base64.b64encode(command.encode("utf-16-le")).decode(
+                "ascii"
+            )
             script = (
                 "$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new();"
                 f"Set-Location -LiteralPath '{_powershell_quote(str(self.cwd))}';"
@@ -44,9 +50,18 @@ class PowerShellSession:
                 f"Write-Output ('{cwd_marker}'+(Get-Location).Path)"
             )
             payload = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+            executable = self.executable
+            assert executable is not None
             try:
                 completed = subprocess.run(
-                    [self.executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", payload],
+                    [
+                        executable,
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-EncodedCommand",
+                        payload,
+                    ],
                     cwd=str(self.cwd),
                     capture_output=True,
                     text=True,
@@ -73,13 +88,19 @@ class PowerShellSession:
                     cwd = Path(clean.removeprefix(cwd_marker))
                 else:
                     output.append(line)
-            if completed.stderr and not completed.stderr.lstrip().startswith("#< CLIXML"):
+            if completed.stderr and not completed.stderr.lstrip().startswith(
+                "#< CLIXML"
+            ):
                 output.append(completed.stderr)
             self.cwd = cwd
             rendered = "".join(output)
             if len(rendered) > MAX_TERMINAL_OUTPUT_CHARS:
-                rendered = rendered[:MAX_TERMINAL_OUTPUT_CHARS] + "\n[output truncated]\n"
-            return TerminalCommandResponse(output=rendered, exit_code=exit_code, cwd=str(cwd))
+                rendered = (
+                    rendered[:MAX_TERMINAL_OUTPUT_CHARS] + "\n[output truncated]\n"
+                )
+            return TerminalCommandResponse(
+                output=rendered, exit_code=exit_code, cwd=str(cwd)
+            )
 
     def close(self) -> None:
         return
@@ -90,7 +111,9 @@ class TerminalService:
         self._sessions: dict[str, PowerShellSession] = {}
         self._lock = threading.Lock()
 
-    def execute(self, context: ApiContext, scope_id: str, command: str) -> TerminalCommandResponse:
+    def execute(
+        self, context: ApiContext, scope_id: str, command: str
+    ) -> TerminalCommandResponse:
         root = workspace_root_for_scope(context, scope_id)
         with self._lock:
             session = self._sessions.get(scope_id)

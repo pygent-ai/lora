@@ -8,10 +8,16 @@ from types import SimpleNamespace
 import pytest
 from pygent import AIMessage, Context
 
+from lora.orchestration import ManagedSessionTurn, TurnCommand, TurnState
 from lora.schema import CaseRunRef
 from lora_api.models.requests import ChatTurnRequest
 from lora_api.services import chat_runner
-from lora_api.services.chat_runner import ActiveChatRun, ChatRunRegistry, _sse, stream_chat_turn
+from lora_api.services.chat_runner import (
+    ActiveChatRun,
+    ChatRunRegistry,
+    _sse,
+    stream_chat_turn,
+)
 
 
 class _Runtime:
@@ -33,8 +39,22 @@ class _Runtime:
         return True
 
 
+class _Lease:
+    def __init__(self, manager, runtime_service) -> None:
+        self.runtime = SimpleNamespace(
+            manager=manager,
+            runtime_service=runtime_service,
+        )
+        self.releases = 0
+
+    async def release(self) -> None:
+        self.releases += 1
+
+
 @pytest.mark.asyncio
-async def test_stream_serializes_startup_failures_instead_of_dropping_connection() -> None:
+async def test_stream_serializes_startup_failures_instead_of_dropping_connection() -> (
+    None
+):
     class _FailingRegistry:
         async def resolve(self, context, request):
             del context, request
@@ -88,20 +108,18 @@ async def test_keepalive_preserves_pending_runtime_event(
 
             yield delayed_events()
 
-    run = ActiveChatRun(
-        runtime_service=SimpleNamespace(),
-        manager=SimpleNamespace(),
-        request=ChatTurnRequest(message="hello"),
+    turn = ManagedSessionTurn(
+        lease=_Lease(SimpleNamespace(), SimpleNamespace()),
+        command=TurnCommand(session_id="session-1", message="hello"),
         run_ref=CaseRunRef(
             session_id="session-1",
             case_id="chat",
             case_run_id="run-1",
             run_dir=str((Path.cwd() / ".test-runs" / "run-1").resolve()),
         ),
-        registry=ChatRunRegistry(),
-        done=True,
         execution_handle=_Handle(),
     )
+    run = ActiveChatRun(turn)
     monkeypatch.setattr(chat_runner, "CHAT_KEEPALIVE_SECONDS", 0.01)
 
     events = run.events(after=7)
@@ -123,22 +141,25 @@ async def test_keepalive_preserves_pending_runtime_event(
 
 
 @pytest.mark.asyncio
-async def test_retired_runtime_keeps_active_approval_waiter_alive() -> None:
+async def test_active_approval_uses_the_turn_runtime() -> None:
     registry = ChatRunRegistry()
     old_runtime = _Runtime()
     new_runtime = _Runtime()
-    active = SimpleNamespace(
-        done=False,
-        execution_id="execution-1",
-        runtime_service=old_runtime,
+    active = ManagedSessionTurn(
+        lease=_Lease(SimpleNamespace(), old_runtime),
+        command=TurnCommand(session_id="session-1", message="hello"),
         run_ref=SimpleNamespace(case_run_id="case-1"),
+        execution_handle=SimpleNamespace(execution_id="execution-1"),
+        state=TurnState.RUNNING,
     )
-    registry._runs[active.execution_id] = active
-    registry._case_runs[active.run_ref.case_run_id] = active
+    registry.coordinator._managed_runs[id(active)] = active
+    registry.coordinator._runs[active.execution_id] = active
+    registry.coordinator._case_runs[active.run_ref.case_run_id] = active
 
-    await registry.retire_runtime(old_runtime)
     delivered = await registry.deliver_approval(
-        SimpleNamespace(runtime_service=new_runtime),
+        SimpleNamespace(
+            acquire_runtime=lambda: _async_value(_Lease(SimpleNamespace(), new_runtime))
+        ),
         "case-1:call-1",
         approved=True,
         comment="approved",
@@ -149,14 +170,12 @@ async def test_retired_runtime_keeps_active_approval_waiter_alive() -> None:
     assert old_runtime.approvals == [("case-1:call-1", True, "approved")]
     assert new_runtime.approvals == []
 
-    active.done = True
-    await registry.remove(active)
-
-    assert old_runtime.closed == [False]
-
 
 @pytest.mark.asyncio
-async def test_nonterminal_durable_execution_is_recovered_instead_of_only_attached() -> None:
+async def test_nonterminal_durable_execution_is_recovered_instead_of_only_attached(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     run_ref = CaseRunRef(
         session_id="session-1",
         case_id="chat",
@@ -171,11 +190,11 @@ async def test_nonterminal_durable_execution_is_recovered_instead_of_only_attach
             return SimpleNamespace(status=SimpleNamespace(terminal=False))
 
         async def result(self):
-                return AIMessage(
-                    content="recovered",
-                    kind="lora.chat.result",
-                    data={"result": {"status": "passed"}},
-                ), Context()
+            return AIMessage(
+                content="recovered",
+                kind="lora.chat.result",
+                data={"result": {"status": "passed"}},
+            ), Context()
 
     class _ManagedRuntime:
         async def get_execution_handle(self, execution_id: str):
@@ -201,14 +220,31 @@ async def test_nonterminal_durable_execution_is_recovered_instead_of_only_attach
 
     class _Manager:
         def __init__(self) -> None:
+            self.sessions_root = tmp_path / "sessions"
+            self.config = SimpleNamespace()
             self.finished: list[tuple[CaseRunRef, str]] = []
+
+        def load_run_config(self, ref: CaseRunRef, *, credential_source):
+            assert ref is run_ref
+            assert credential_source is self.config
+            return self.config
 
         def finish_case_run(self, ref: CaseRunRef, status: str) -> None:
             self.finished.append((ref, status))
 
     service = _RecoveryService()
     manager = _Manager()
-    context = SimpleNamespace(runtime_service=service, manager=manager)
+
+    class _Context:
+        async def acquire_runtime(self, **_kwargs):
+            return _Lease(manager, service)
+
+    monkeypatch.setattr(
+        chat_runner,
+        "session_service_for_scope",
+        lambda _context, _scope_id: SimpleNamespace(manager=manager),
+    )
+    context = _Context()
     registry = ChatRunRegistry()
 
     run = await registry.resolve(
@@ -222,12 +258,96 @@ async def test_nonterminal_durable_execution_is_recovered_instead_of_only_attach
     assert run.startup_error is None
     assert manager.finished == [(run_ref, "passed")]
 
+
+@pytest.mark.asyncio
+async def test_same_session_creates_next_case_run_only_after_finalization(
+    tmp_path: Path,
+) -> None:
+    releases = [asyncio.Event(), asyncio.Event()]
+
+    class _Handle:
+        def __init__(self, index: int) -> None:
+            self.execution_id = f"execution-{index}"
+            self.index = index
+
+        async def result(self):
+            await releases[self.index].wait()
+            return AIMessage(
+                content="done",
+                kind="lora.chat.result",
+                data={"result": {"status": "passed"}},
+            ), Context()
+
+        async def cancel(self) -> bool:
+            releases[self.index].set()
+            return True
+
+    class _RuntimeService:
+        def __init__(self) -> None:
+            self.started = 0
+
+        async def start_turn(self, **_kwargs):
+            index = self.started
+            self.started += 1
+            return _Handle(index)
+
+    class _Manager:
+        def __init__(self) -> None:
+            self.sessions_root = tmp_path / "sessions"
+            self.config = SimpleNamespace()
+            self.started: list[str] = []
+            self.finished: list[str] = []
+
+        def start_case_run(self, session_id, case_id, *, run_config):
+            del run_config
+            run_id = f"run-{len(self.started)}"
+            self.started.append(run_id)
+            return CaseRunRef(
+                session_id=session_id,
+                case_id=case_id,
+                case_run_id=run_id,
+                run_dir=str(tmp_path / run_id),
+            )
+
+        def finish_case_run(self, ref, status):
+            assert status == "passed"
+            self.finished.append(ref.case_run_id)
+
+    coordinator = ChatRunRegistry().coordinator
+    manager = _Manager()
+    runtime = _RuntimeService()
+    first = await coordinator.submit_turn(
+        lease=_Lease(manager, runtime),
+        command=TurnCommand(session_id="session-1", message="first"),
+    )
+    await first.wait_ready()
+    second = await coordinator.submit_turn(
+        lease=_Lease(manager, runtime),
+        command=TurnCommand(session_id="session-1", message="second"),
+    )
+    await asyncio.sleep(0)
+
+    assert manager.started == ["run-0"]
+    assert manager.finished == []
+    assert second.state is TurnState.QUEUED
+
+    releases[0].set()
+    await asyncio.wait_for(second.wait_ready(), 1)
+
+    assert manager.finished == ["run-0"]
+    assert manager.started == ["run-0", "run-1"]
+
+    releases[1].set()
+    await asyncio.gather(first.task, second.task)
+    assert manager.finished == ["run-0", "run-1"]
+
+
 @pytest.mark.asyncio
 async def test_closing_frontend_subscription_does_not_cancel_execution():
     cancelled = []
 
     class Handle:
-        execution_id = 'still-running'
+        execution_id = "still-running"
 
         async def cancel(self):
             cancelled.append(True)
@@ -235,21 +355,33 @@ async def test_closing_frontend_subscription_does_not_cancel_execution():
         @contextlib.asynccontextmanager
         async def subscribe(self, *, after):
             async def events():
-                yield {'schema_version': '1', 'event_id': 'e1', 'execution_id': self.execution_id,
-                       'attempt_id': 'a1', 'trace_id': 't1', 'span_id': 's1', 'parent_span_id': None,
-                       'timestamp_unix_ns': 1, 'module_path': 'root',
-                       'kind': 'model.text.delta', 'data': {'text': 'working'}, 'sequence': 1}
+                yield {
+                    "schema_version": "1",
+                    "event_id": "e1",
+                    "execution_id": self.execution_id,
+                    "attempt_id": "a1",
+                    "trace_id": "t1",
+                    "span_id": "s1",
+                    "parent_span_id": None,
+                    "timestamp_unix_ns": 1,
+                    "module_path": "root",
+                    "kind": "model.text.delta",
+                    "data": {"text": "working"},
+                    "sequence": 1,
+                }
                 await asyncio.Event().wait()
+
             yield events()
 
-    run = ActiveChatRun(
-        runtime_service=SimpleNamespace(config=SimpleNamespace(runtime_approvals=SimpleNamespace(timeout_seconds=0))),
-        manager=SimpleNamespace(),
-        request=ChatTurnRequest(message='work'),
-        run_ref=CaseRunRef(session_id='s1', case_id='chat', case_run_id='r1', run_dir=str(Path.cwd())),
-        registry=SimpleNamespace(disconnect_grace_seconds=0),
+    turn = ManagedSessionTurn(
+        lease=_Lease(SimpleNamespace(), SimpleNamespace()),
+        command=TurnCommand(session_id="s1", message="work"),
+        run_ref=CaseRunRef(
+            session_id="s1", case_id="chat", case_run_id="r1", run_dir=str(Path.cwd())
+        ),
         execution_handle=Handle(),
     )
+    run = ActiveChatRun(turn)
     stream = run.events(after=None)
     await anext(stream)
     await stream.aclose()
@@ -257,3 +389,7 @@ async def test_closing_frontend_subscription_does_not_cancel_execution():
     assert run.subscribers == 0
     assert cancelled == []
     assert not run.done
+
+
+async def _async_value(value):
+    return value
