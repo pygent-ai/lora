@@ -6,6 +6,7 @@ import {
   ArrowUp,
   ChevronRight,
   Check,
+  CalendarClock,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -23,6 +24,7 @@ import { DEFAULT_PANEL_WIDTHS, PANEL_LIMITS, normalizePanelWidths, fitPanelWidth
 import { projectPathKey } from "../features/projects/projectPaths.js";
 import { FileExplorer } from "../features/workspace/FileExplorer.jsx";
 import { PowerShellPanel } from "../features/workspace/PowerShellPanel.jsx";
+import { ScheduledPage } from "../features/automations/ScheduledPage.jsx";
 import { activityHeaderText, runTimingFields } from "./runTiming.js";
 import {
   adaptLayoutToCompactViewport,
@@ -98,6 +100,7 @@ export function App() {
   const [runningSessionIds, setRunningSessionIds] = useState({});
   const [approvals, setApprovals] = useState([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeView, setActiveView] = useState("chat");
   const projectChooserBusyRef = useRef(false);
   const activeSessionIdRef = useRef("");
   const messagesRef = useRef([]);
@@ -364,6 +367,7 @@ export function App() {
 
   const handleSelectSession = useCallback(
     async (session, scope) => {
+      setActiveView("chat");
       const sessionId = typeof session === "string" ? session : session?.session_id;
       if (!sessionId) {
         return;
@@ -648,11 +652,19 @@ export function App() {
         onSelectSession={handleSelectSession}
         onChooseProject={handleChooseProject}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenScheduled={() => setActiveView("scheduled")}
+        scheduledActive={activeView === "scheduled"}
         onToggle={() =>
           setLayout((current) => toggleHistory(current, { compact: current.compact }))
         }
       />
-      <ChatPane
+      {activeView === "scheduled" ? <ScheduledPage
+        api={api}
+        projects={projects}
+        activeSession={activeSession}
+        settings={settings}
+        onOpenSession={(sessionId, workspaceRoot) => handleSelectSession(sessionId, { workspace_root: workspaceRoot })}
+      /> : <ChatPane
         activeSession={activeSession}
         messages={messages}
         activityCollapseToken={activityCollapseToken}
@@ -670,8 +682,8 @@ export function App() {
           const nextSettings = await api.updateSettings({ approvalsEnabled });
           setSettings(nextSettings);
         }}
-      />
-      <TracePanel
+      />}
+      {activeView === "chat" ? <TracePanel
         api={api}
         activeSession={activeSession}
         collapsed={layout.traceCollapsed}
@@ -681,7 +693,7 @@ export function App() {
         onToggle={() =>
           setLayout((current) => toggleTrace(current, { compact: current.compact }))
         }
-      />
+      /> : <aside className="trace automation-aside"><CalendarClock size={26} /><strong>后台运行</strong><p>Lora Desktop 保持运行时，任务会在计划时间自动开始。</p></aside>}
       {(error || notice) && (
         <div className={error ? "toast error" : "toast"} role="status">
           {error || notice}
@@ -755,6 +767,8 @@ export function SessionSidebar({
   onSelectSession,
   onChooseProject,
   onOpenSettings,
+  onOpenScheduled,
+  scheduledActive,
   onToggle,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState({});
@@ -796,8 +810,10 @@ export function SessionSidebar({
 
         {!collapsed && <>
           <button className="new-task-button" type="button" onClick={() => onCreateSession()}><Plus size={18} aria-hidden="true" />新建任务</button>
+          <button className={scheduledActive ? "scheduled-nav active" : "scheduled-nav"} type="button" onClick={onOpenScheduled}><CalendarClock size={17} aria-hidden="true" />定时任务</button>
           <label className="session-search"><Search size={16} aria-hidden="true" /><input aria-label="搜索任务" placeholder="搜索任务或项目" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
         </>}
+        {collapsed && <button className={scheduledActive ? "icon-button scheduled-rail active" : "icon-button scheduled-rail"} title="定时任务" type="button" onClick={onOpenScheduled}><CalendarClock aria-hidden="true" /></button>}
         <div className="section-label">项目与任务</div>
         <div className="session-groups">
           {sessionGroups.length === 0 && <div className="empty-state">No chats yet</div>}
@@ -1127,8 +1143,9 @@ function MessageRow({ message, activityCollapseToken, api }) {
 
   return (
     <article className={`message ${message.role}`}>
-      {message.role !== "user" && <div className="avatar">L</div>}
+      {message.role !== "user" && <div className="avatar">{message.role === "automation" ? <CalendarClock size={15} /> : "L"}</div>}
       <div className="bubble">
+        {message.role === "automation" && <span className="automation-message-label">定时任务触发</span>}
         {message.role === "assistant" ? (
           <>
             {hasAssistantActivity && (
@@ -2151,7 +2168,7 @@ export function messagesForRecovery(detail, assistantId) {
   const user = history.slice(start).find((message) => message.role === "user");
   return [
     ...historyToMessages(history.slice(0, start)),
-    ...(user ? [{ id: `${assistantId}-user`, role: "user", content: cleanContent(String(user.content || "")) }] : []),
+    ...(user ? [{ id: `${assistantId}-user`, role: messageDisplayRole(user), content: displayMessageContent(user) }] : []),
     { id: assistantId, role: "assistant", content: "", sections: [], ...runTimingFields(user?.run_timing), status: "running" },
   ];
 }
@@ -2167,9 +2184,9 @@ export function historyToMessages(history) {
       index += 1;
       continue;
     }
-    const content = cleanContent(String(message.content || ""));
+    const content = displayMessageContent(message);
     if (content) {
-      rendered.push({ id: `history-${index}`, role: "user", content });
+      rendered.push({ id: `history-${index}`, role: messageDisplayRole(message), content });
     }
     const segment = [];
     index += 1;
@@ -2850,6 +2867,20 @@ function compressionTriggerLabel(contextWindow, triggerRatio) {
 function cleanContent(content) {
   const match = content.match(/<user-message>([\s\S]*?)<\/user-message>/);
   return (match ? match[1] : content).trim();
+}
+
+function messageDisplayRole(message) {
+  return message?.kind === "lora.automation.trigger" || message?.data?.origin === "automation" ? "automation" : "user";
+}
+
+function displayMessageContent(message) {
+  if (messageDisplayRole(message) === "automation") {
+    const raw = message?.data?.raw_content;
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+    const match = String(message?.content || "").match(/<instructions>\s*([\s\S]*?)\s*<\/instructions>/);
+    return (match ? match[1] : message?.content || "").trim();
+  }
+  return cleanContent(String(message?.content || ""));
 }
 
 function cleanSessionTitle(title) {

@@ -12,6 +12,7 @@ from lora.sessions import SessionManager
 from .project_state import GuiProjectState, SessionScope
 
 if TYPE_CHECKING:
+    from lora.automations import AutomationScheduler, AutomationService, AutomationStore
     from lora.runtime.reminders import ReminderService
     from lora.runtime.service import LoraRuntimeService
 
@@ -32,6 +33,9 @@ class ApiContext:
     _reminders: ReminderService | None = None
     _chat_registry: Any | None = None
     _terminal_service: Any | None = None
+    _automation_store: AutomationStore | None = None
+    _automation_service: AutomationService | None = None
+    _automation_scheduler: AutomationScheduler | None = None
     _lock: RLock = field(default_factory=RLock)
 
     @property
@@ -93,6 +97,51 @@ class ApiContext:
                 self._terminal_service = TerminalService()
             return self._terminal_service
 
+    @property
+    def automation_store(self) -> AutomationStore:
+        with self._lock:
+            if self._automation_store is None:
+                from lora.automations import AutomationStore
+
+                self._automation_store = AutomationStore(
+                    Path(self.config.user_lora_root) / "automations-v1.sqlite3"
+                )
+            return self._automation_store
+
+    @property
+    def automation_service(self) -> AutomationService:
+        with self._lock:
+            if self._automation_service is None:
+                from lora.automations import AutomationService
+
+                self._automation_service = AutomationService(self.automation_store)
+            return self._automation_service
+
+    @property
+    def automation_scheduler(self) -> AutomationScheduler:
+        with self._lock:
+            if self._automation_scheduler is None:
+                from lora.automations import AutomationScheduler
+
+                self._automation_scheduler = AutomationScheduler(
+                    store=self.automation_store,
+                    coordinator=self.session_coordinator,
+                    acquire_runtime=self.acquire_runtime,
+                    config_factory=self._automation_config,
+                )
+            return self._automation_scheduler
+
+    def start_automation_scheduler(self) -> None:
+        self.automation_scheduler.start()
+
+    def _automation_config(self, workspace_root: str) -> RunConfig:
+        return load_run_config(
+            workspace_root=workspace_root,
+            agent_alias=self.agent_alias,
+            max_steps=self.max_steps,
+            context_window=self.context_window,
+        )
+
     def attach_chat_registry(self, registry: Any) -> None:
         with self._lock:
             if self._chat_registry is not None:
@@ -101,6 +150,8 @@ class ApiContext:
 
     async def aclose(self) -> None:
         with self._lock:
+            automation_scheduler = self._automation_scheduler
+            self._automation_scheduler = None
             runtime = self._runtime_service
             self._runtime_service = None
             reminders = self._reminders
@@ -109,6 +160,8 @@ class ApiContext:
             self._chat_registry = None
             terminal_service = self._terminal_service
             self._terminal_service = None
+        if automation_scheduler is not None:
+            await automation_scheduler.close()
         if terminal_service is not None:
             terminal_service.close()
         if registry is not None:

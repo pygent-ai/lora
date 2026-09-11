@@ -102,7 +102,12 @@ def _initial_lora_context(
 
 def _latest_user_input_hash(history: list[dict[str, Any]]) -> str | None:
     for message in reversed(history):
-        if message.get("role") == "user":
+        data = message.get("data")
+        is_automation = (
+            message.get("kind") == "lora.automation.trigger"
+            or isinstance(data, dict) and data.get("origin") == "automation"
+        )
+        if message.get("role") == "user" and not is_automation:
             return _hash_text(str(message.get("content", "")))
     return None
 

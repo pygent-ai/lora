@@ -412,6 +412,11 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 "max_steps": self.config.max_steps,
                 "history_message_count": replacement_count,
                 "latest_user_input": raw_content,
+                "input_origin": (
+                    message_data.get("origin", "user")
+                    if isinstance(message_data, dict)
+                    else "user"
+                ),
             },
             turn_id=turn_id,
         )

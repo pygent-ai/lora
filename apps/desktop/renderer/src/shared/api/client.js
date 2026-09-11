@@ -38,6 +38,33 @@ export function createApiClient(options = {}) {
         body: settingsPayload(settings),
       }),
     listProjects: (options = {}) => jsonRequest("/projects", options),
+    listAutomations: (status = "", options = {}) =>
+      jsonRequest(`/automations${status ? `?status=${encodeURIComponent(status)}` : ""}`, options),
+    createAutomation: (request, options = {}) => jsonRequest("/automations", {
+      ...options, method: "POST", body: request,
+    }),
+    updateAutomation: (automationId, request, options = {}) =>
+      jsonRequest(`/automations/${encodeURIComponent(automationId)}`, {
+        ...options, method: "PATCH", body: request,
+      }),
+    deleteAutomation: (automationId, options = {}) =>
+      jsonRequest(`/automations/${encodeURIComponent(automationId)}`, {
+        ...options, method: "DELETE",
+      }),
+    pauseAutomation: (automationId, options = {}) =>
+      jsonRequest(`/automations/${encodeURIComponent(automationId)}/pause`, {
+        ...options, method: "POST",
+      }),
+    resumeAutomation: (automationId, options = {}) =>
+      jsonRequest(`/automations/${encodeURIComponent(automationId)}/resume`, {
+        ...options, method: "POST",
+      }),
+    runAutomation: (automationId, options = {}) =>
+      jsonRequest(`/automations/${encodeURIComponent(automationId)}/run`, {
+        ...options, method: "POST",
+      }),
+    listAutomationRuns: (automationId, options = {}) =>
+      jsonRequest(`/automations/${encodeURIComponent(automationId)}/runs`, options),
     removeProject: (scopeId, options = {}) =>
       jsonRequest(`/projects?scope_id=${encodeURIComponent(scopeId)}`, {
         ...options,

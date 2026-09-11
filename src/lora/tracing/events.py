@@ -15,6 +15,7 @@ DESIGN_EVENT_TYPES = frozenset(
     {
         "case.started",
         "case.finished",
+        "conversation.automation_trigger",
         "conversation.user_message",
         "conversation.assistant_message",
         "conversation.tool_message",

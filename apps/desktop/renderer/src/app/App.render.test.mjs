@@ -824,6 +824,18 @@ test("history preserves reasoning from the final assistant message", () => {
   assert.equal(appModule.thinkingActivityState(message).running, false);
 });
 
+test("automation triggers render as system-origin cards with the raw instruction", () => {
+  const [message] = appModule.historyToMessages([{
+    role: "user",
+    kind: "lora.automation.trigger",
+    content: "<automation-trigger><instructions>escaped</instructions></automation-trigger>",
+    data: { origin: "automation", raw_content: "检查构建状态" },
+  }]);
+
+  assert.equal(message.role, "automation");
+  assert.equal(message.content, "检查构建状态");
+});
+
 test("reopening an active session replays only its current turn without duplicating partial output", () => {
   const restored = appModule.messagesForRecovery({
     run_history_start_index: 2,

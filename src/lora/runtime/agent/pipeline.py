@@ -195,6 +195,10 @@ async def checkpoint_conversation_message(
                 "assistant": "conversation.assistant_message",
                 "tool": "conversation.tool_message",
             }.get(message.role, "conversation.user_message")
+            event_actor = message.role
+            if message.kind == "lora.automation.trigger":
+                event_type = "conversation.automation_trigger"
+                event_actor = "system"
             event_payload = {
                 **payload,
                 "checkpoint_id": checkpoint_id,
@@ -214,12 +218,17 @@ async def checkpoint_conversation_message(
                             else message.content
                         ),
                         "user_identity": config.user_identity,
-                        "wrapped": True,
+                        "wrapped": message.kind != "lora.automation.trigger",
+                        "origin": (
+                            "automation"
+                            if message.kind == "lora.automation.trigger"
+                            else "user"
+                        ),
                     }
                 )
             store.append(
                 event_type,
-                actor=message.role,
+                actor=event_actor,
                 payload=event_payload,
                 turn_id=context.turn_id,
             )

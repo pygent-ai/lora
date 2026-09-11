@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from lora_api.container import ApiContext
+from lora_api.routers import automations
 from lora_api.routers import chat, health, projects, runtime, sessions, settings, terminal, tool_results, traces, workspace
 from lora_api.services.chat_runner import ChatRunRegistry
 
@@ -28,6 +29,7 @@ def create_app(
     async def lifespan(_: FastAPI):
         try:
             await context.runtime_service.initialize()
+            context.start_automation_scheduler()
             yield
         finally:
             await context.aclose()
@@ -42,6 +44,7 @@ def create_app(
     )
     app.state.api_context = context
     app.include_router(health.router)
+    app.include_router(automations.router)
     app.include_router(projects.router)
     app.include_router(sessions.router)
     app.include_router(chat.router)

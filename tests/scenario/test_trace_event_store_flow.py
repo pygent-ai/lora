@@ -23,6 +23,7 @@ class TraceEventStoreScenarioTests(unittest.TestCase):
             expected_types = [
                 "case.started",
                 "conversation.user_message",
+                "conversation.automation_trigger",
                 "model.request",
                 "context.projection_created",
                 "prompt.rendered",
@@ -59,7 +60,7 @@ class TraceEventStoreScenarioTests(unittest.TestCase):
             replayed = store.list_by_run(session.session_id, run.case_run_id)
             self.assertEqual([event.type for event in replayed], expected_types)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "events.jsonl"))), len(expected_types))
-            self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "messages.jsonl"))), 3)
+            self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "messages.jsonl"))), 4)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_calls.jsonl"))), 1)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "tool_results.jsonl"))), 1)
             self.assertEqual(len(list(EventStore.iter_jsonl(Path(run.run_dir) / "file_events.jsonl"))), 4)
@@ -97,6 +98,13 @@ def _actor_for(event_type: str) -> str:
 def _payload_for(event_type: str) -> dict[str, object]:
     if event_type == "conversation.user_message":
         return {"role": "user", "content": "read README"}
+    if event_type == "conversation.automation_trigger":
+        return {
+            "role": "user",
+            "kind": "lora.automation.trigger",
+            "content": "run the scheduled check",
+            "origin": "automation",
+        }
     if event_type == "conversation.assistant_message":
         return {"role": "assistant", "content": "done"}
     if event_type == "prompt.rendered":

@@ -757,6 +757,8 @@ class LoraRuntimeService:
         run_ref: CaseRunRef,
         turn_id: str,
         interactive_approvals: bool,
+        message_kind: str = "lora.chat.turn",
+        message_data: dict[str, object] | None = None,
         deadline: float | None = None,
     ) -> Any:
         from pygent.runtime import ExecutionOptions
@@ -769,6 +771,8 @@ class LoraRuntimeService:
             message=message,
             config=self.config,
             turn_id=turn_id,
+            message_kind=message_kind,
+            message_data=message_data,
         )
         bound = await self.bind(agent, agent)
         try:
@@ -962,6 +966,8 @@ class LoraRuntimeService:
         turn_id: str,
         session: AgentSession | None = None,
         carry_context: bool = True,
+        message_kind: str = "lora.chat.turn",
+        message_data: dict[str, object] | None = None,
     ) -> tuple[UserMessage, LoraContext]:
         if session is None:
             session = manager.load(run_ref.session_id)
@@ -983,14 +989,17 @@ class LoraRuntimeService:
                 Path(session.session_dir) / "raw-history" / "events.jsonl"
             ),
         )
-        wrapped = "\n".join(
-            (
-                "<user-context>",
-                f"  <user-identity>{escape(config.user_identity or 'default', quote=False)}</user-identity>",
-                f"  <user-message>{escape(message, quote=False)}</user-message>",
-                "</user-context>",
+        if message_kind == "lora.automation.trigger":
+            wrapped = message
+        else:
+            wrapped = "\n".join(
+                (
+                    "<user-context>",
+                    f"  <user-identity>{escape(config.user_identity or 'default', quote=False)}</user-identity>",
+                    f"  <user-message>{escape(message, quote=False)}</user-message>",
+                    "</user-context>",
+                )
             )
-        )
         reminder = await self.reminders.claim_initial(session.session_id, turn_id)
         dynamic_reminder = await self.reminders.collect_pending(session.session_id)
         if dynamic_reminder:
@@ -1006,8 +1015,10 @@ class LoraRuntimeService:
         )
         current = UserMessage(
             content=wrapped,
-            kind="lora.chat.turn",
-            data={"raw_content": message},
+            kind=message_kind,
+            data=freeze_json_object(
+                {"raw_content": message, **dict(message_data or {})}
+            ),
         )
         metadata: dict[str, Any] = {
             "session_id": run_ref.session_id,

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from lora.evaluation import FailureAnalyzer
+from lora.cli.automations import register_automation_parser
 from lora.cli.credentials import register_credentials_parser
 from lora.evaluation import CaseManager
 from lora.config import load_run_config
@@ -69,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     resume = session_sub.add_parser("resume", help="Validate that a session can be resumed")
     resume.add_argument("session_id")
     resume.set_defaults(handler=_session_show)
+
+    register_automation_parser(sub)
 
     case = sub.add_parser("case", help="Run or inspect cases")
     case_sub = case.add_subparsers(dest="case_command", required=True)
