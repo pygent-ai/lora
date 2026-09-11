@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import viteConfig from "../../vite.config.mjs";
+
 const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
 const rootPackageJson = JSON.parse(await readFile(new URL("../../../../package.json", import.meta.url), "utf8"));
 const electronMain = await readFile(new URL("./main.mjs", import.meta.url), "utf8");
@@ -35,6 +37,10 @@ test("Choose Project uses the native directory picker", () => {
 
 test("desktop window does not show the default Electron menu", () => {
   assert.match(electronMain, /mainWindow\.removeMenu\(\)/);
+});
+
+test("production assets use file-compatible relative URLs", () => {
+  assert.equal(viteConfig.base, "./");
 });
 
 test("electron-builder bundles the PyInstaller lora-api output", () => {
