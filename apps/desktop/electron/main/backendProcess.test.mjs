@@ -121,6 +121,33 @@ test("waitForBackend rejects when the spawned backend exits behind a stale healt
   await assert.rejects(waiting, /lora-api exited before becoming ready/);
 });
 
+test("backend spawn errors fail immediately and clean up readiness listeners", async () => {
+  const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null });
+  const waiting = waitForBackend({
+    baseUrl: "http://127.0.0.1:8765", child,
+    fetchImpl: async () => ({ ok: false, status: 503 }),
+  });
+  setImmediate(() => child.emit("error", new Error("ENOENT")));
+  await assert.rejects(waiting, /Unable to start lora-api: ENOENT/);
+  assert.equal(child.listenerCount("exit"), 0);
+  assert.equal(child.listenerCount("error"), 0);
+});
+
+test("a stalled health request cannot exceed the startup deadline", async () => {
+  // Keep the event loop alive while AbortSignal.timeout's unref'ed timer runs.
+  const keepAlive = setInterval(() => {}, 50);
+  try {
+    await assert.rejects(waitForBackend({
+      baseUrl: "http://127.0.0.1:8765", timeoutMs: 30, retryDelayMs: 1,
+      fetchImpl: (_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    }), /timeout|aborted/i);
+  } finally {
+    clearInterval(keepAlive);
+  }
+});
+
 test("stopBackendProcess terminates the whole backend process tree on Windows", () => {
   const calls = [];
   const child = {

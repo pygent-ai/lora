@@ -103,9 +103,16 @@ export async function waitForBackend({
   const deadline = Date.now() + timeoutMs;
   let lastError;
   let exitListener;
+  let errorListener;
   const childExit = child
     ? new Promise((_, reject) => {
         exitListener = (code, signal) => reject(backendExitError(code, signal));
+        errorListener = (cause) => {
+          const error = new Error(`Unable to start lora-api: ${cause.message}`);
+          error.code = "LORA_BACKEND_EXITED";
+          reject(error);
+        };
+        child.once("error", errorListener);
         if (child.exitCode !== null || child.signalCode) {
           exitListener(child.exitCode, child.signalCode);
         } else {
@@ -117,7 +124,9 @@ export async function waitForBackend({
   try {
     while (Date.now() < deadline) {
       try {
-        const response = await raceChildExit(fetchImpl(`${baseUrl}/health`), childExit);
+        const response = await raceChildExit(fetchImpl(`${baseUrl}/health`, {
+          signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))),
+        }), childExit);
         if (response.ok) {
           const actualInstanceId = response.headers?.get?.("x-lora-backend-instance") || "";
           if (!expectedInstanceId || actualInstanceId === expectedInstanceId) {
@@ -140,6 +149,7 @@ export async function waitForBackend({
   } finally {
     if (child && exitListener) {
       child.off("exit", exitListener);
+      child.off("error", errorListener);
     }
   }
 

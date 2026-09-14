@@ -4,9 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lora Desktop</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #f1f0ec; color: #303238; }
+      .startup { min-height: 100vh; display: grid; place-content: center; gap: 16px; padding: 32px; box-sizing: border-box; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+      .startup h1 { margin: 0; font-size: 30px; letter-spacing: -1px; }
+      .startup p { margin: 0; max-width: 520px; color: #626469; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+      .startup progress { width: 180px; height: 4px; accent-color: #2f7de1; }
+      .startup button { justify-self: start; padding: 8px 16px; border: 1px solid #d2cfc7; border-radius: 6px; background: #faf9f6; color: inherit; font: inherit; cursor: pointer; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="startup" aria-live="polite">
+        <h1>Lora</h1>
+        <p id="startup-message">正在启动本地服务，准备你的工作区…</p>
+        <progress id="startup-progress" aria-label="正在启动"></progress>
+        <button id="startup-retry" type="button" hidden>重试连接</button>
+      </main>
+    </div>
     <script type="module" src="/renderer/src/main.jsx"></script>
   </body>
 </html>

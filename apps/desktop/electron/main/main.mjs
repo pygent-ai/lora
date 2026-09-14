@@ -14,6 +14,7 @@ import {
   waitForBackend,
 } from "./backendProcess.mjs";
 import { registerSingleInstance } from "./singleInstance.mjs";
+import { launchDesktop } from "./startup.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -71,19 +72,20 @@ async function startBackend() {
     }
   });
 
-  try {
-    await waitForBackend({ baseUrl, child: backendProcess, expectedInstanceId: instanceId });
-    backendStatus = { state: "ready", error: null, port };
-  } catch (err) {
-    stopBackendProcess(backendProcess);
-    backendStatus = {
-      state: "error",
-      error: err instanceof Error ? err.message : String(err),
-      port,
-    };
-  }
+  const ready = waitForBackend({ baseUrl, child: backendProcess, expectedInstanceId: instanceId })
+    .then(() => {
+      if (!quitting) backendStatus = { state: "ready", error: null, port };
+    })
+    .catch((err) => {
+      stopBackendProcess(backendProcess);
+      if (!quitting) backendStatus = {
+        state: "error",
+        error: err instanceof Error ? err.message : String(err),
+        port,
+      };
+    });
 
-  return baseUrl;
+  return { baseUrl, ready };
 }
 
 async function createWindow() {
@@ -93,6 +95,7 @@ async function createWindow() {
     minWidth: 1040,
     minHeight: 720,
     show: false,
+    backgroundColor: "#f1f0ec",
     title: "Lora Desktop",
     webPreferences: {
       contextIsolation: true,
@@ -135,17 +138,17 @@ if (ownsSingleInstance) {
   });
 
   app.whenReady().then(async () => {
-    await startBackend();
-    if (quitting) {
-      return;
-    }
-    await createWindow();
-
     app.on("activate", async () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         await createWindow();
       }
     });
+    try {
+      await launchDesktop({ prepareBackend: startBackend, createWindow, isQuitting: () => quitting });
+    } catch (err) {
+      backendStatus = { state: "error", error: err instanceof Error ? err.message : String(err) };
+      if (!quitting && !mainWindow) await createWindow();
+    }
   });
 
   app.on("window-all-closed", () => {

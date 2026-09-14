@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Folder,
   FolderCode,
@@ -24,9 +24,6 @@ import { refreshActiveSession } from "./activeSessionSync.js";
 import { loadWorkbenchPreferences, saveWorkbenchPreferences } from "./workbenchPreferences.js";
 import { DEFAULT_PANEL_WIDTHS, PANEL_LIMITS, normalizePanelWidths, fitPanelWidths } from "./panelWidths.js";
 import { projectPathKey } from "../features/projects/projectPaths.js";
-import { FileExplorer } from "../features/workspace/FileExplorer.jsx";
-import { PowerShellPanel } from "../features/workspace/PowerShellPanel.jsx";
-import { ScheduledPage } from "../features/automations/ScheduledPage.jsx";
 import { activityHeaderText, runTimingFields } from "./runTiming.js";
 import {
   adaptLayoutToCompactViewport,
@@ -41,6 +38,19 @@ import {
   loadAcknowledgedSessionStatuses,
   sessionStatusIdentity,
 } from "./sessionStatusState.js";
+
+function deferredPanel(load, exportName) {
+  const Component = lazy(() => load().then((module) => ({ default: module[exportName] })));
+  return function DeferredPanel(props) {
+    return <Suspense fallback={<div className="empty-state" role="status">正在加载…</div>}>
+      <Component {...props} />
+    </Suspense>;
+  };
+}
+
+const FileExplorer = deferredPanel(() => import("../features/workspace/FileExplorer.jsx"), "FileExplorer");
+const PowerShellPanel = deferredPanel(() => import("../features/workspace/PowerShellPanel.jsx"), "PowerShellPanel");
+const ScheduledPage = deferredPanel(() => import("../features/automations/ScheduledPage.jsx"), "ScheduledPage");
 
 const EMPTY_SETTINGS = {
   workspace_root: "",
