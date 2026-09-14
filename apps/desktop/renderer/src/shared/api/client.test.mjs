@@ -3,6 +3,21 @@ import assert from "node:assert/strict";
 
 import { createApiClient, parseSseEvents, settingsPayload } from "./client.js";
 
+test("steering targets one execution and preserves the idempotent input identity", async () => {
+  const calls = [];
+  const client = createApiClient({ fetchImpl: async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body), method: init.method });
+    return new Response(JSON.stringify({ status: "accepted", input_id: "same-id" }));
+  } });
+  const request = { sessionId: "session-1", inputId: "same-id", message: "focus on tests" };
+  await client.steerChat("exec/1", request);
+  await client.steerChat("exec/1", request);
+  assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0].url, "http://127.0.0.1:8765/chat/executions/exec%2F1/steering");
+  assert.deepEqual(calls[0].body, { session_id: "session-1", input_id: "same-id", message: "focus on tests" });
+  assert.equal(calls[0].method, "POST");
+});
+
 test("permission settings preserve false and omit unspecified modes", () => {
   assert.equal(settingsPayload({ approvalsEnabled: false }).approvals_enabled, false);
   assert.equal(settingsPayload({ approvalsEnabled: true }).approvals_enabled, true);

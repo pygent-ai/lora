@@ -1,4 +1,4 @@
-r"""Pygent 0.3.3 ReAct demo using an OpenAI-compatible DeepSeek endpoint.
+r"""Pygent 0.3.12 ReAct demo using an OpenAI-compatible DeepSeek endpoint.
 
 Run from the repository root::
 
@@ -18,12 +18,13 @@ from pathlib import Path
 
 from pygent import (
     AIMessage,
+    CapabilityPresetCatalog,
     Context,
-    FallbackPolicy,
     GenerationConfig,
     ModelCallLayer,
-    ModelGroupConfig,
-    ModelRoute,
+    ModelEntry,
+    ModelGroup,
+    ModelSpec,
     Module,
     ReActLayer,
     RetryPolicy,
@@ -34,7 +35,6 @@ from pygent import (
 from pygent.llm import (
     DefaultModelInvoker,
     ModelEventKind,
-    ModelProviderCapabilities,
     OpenAICompatibleAdapter,
     OpenAICompatibleClient,
 )
@@ -73,21 +73,28 @@ class DeepSeekAgent(Module[UserMessage, AIMessage]):
 def build_agent(workspace_root: Path, api_key: str, model_name: str) -> tuple[DeepSeekAgent, object]:
     toolkit = StandardTools(workspace_root=workspace_root).toolkit
     invoker = DefaultModelInvoker(
-        adapters={"openai": OpenAICompatibleAdapter()},
+        adapters={"openai_chat_completions": OpenAICompatibleAdapter()},
         clients={
             "primary": OpenAICompatibleClient(
                 base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                 api_key=api_key,
             )
         },
-        capabilities={"primary": ModelProviderCapabilities(streaming=True)},
     )
     model = ModelCallLayer(
-        model_group=ModelGroupConfig(
+        model_group=ModelGroup(
             name="deepseek-demo",
-            routes=(ModelRoute("primary", "openai", model_name),),
-            fallback=FallbackPolicy(("primary",)),
-            max_concurrency=2,
+            models=(ModelEntry(
+                "primary",
+                ModelSpec(
+                    provider="deepseek",
+                    model_id=model_name,
+                    protocol="openai_chat_completions",
+                    capabilities=CapabilityPresetCatalog.builtin().presets[
+                        "text_tools_structured_reasoning"
+                    ].materialize(context_tokens=128_000, max_output_tokens=8192),
+                ),
+            ),),
         ),
         retry_policy=RetryPolicy(attempt_idle_timeout_seconds=60.0),
         generation=GenerationConfig(temperature=0.1, max_output_tokens=1000, tool_choice="auto"),

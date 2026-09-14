@@ -256,7 +256,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         return ModelCallLayer(
             model_group=group,
             retry_policy=RetryPolicy(
-                max_attempts_per_route=retry.max_attempts_per_route,
+                max_attempts_per_model=retry.max_attempts_per_route,
                 retry_on=MODEL_RETRYABLE_ERROR_KINDS,
                 attempt_idle_timeout_seconds=retry.attempt_idle_timeout_seconds,
                 backoff=ExponentialBackoff(

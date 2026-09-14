@@ -1,8 +1,10 @@
 # Lora
 
-Lora 是基于 Pygent 0.3.10 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
+Lora 是基于 Pygent 0.3.12 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
 
 Runtime journal 直接使用当前 PyPI Pygent 管理的 SQLite schema 和配置路径。
+
+模型部署使用 `model-deployments-v2.sqlite3`，按当前配置重新建立，不读取或迁移旧 `model-deployments-v1.sqlite3`。聊天记录和 execution journal 保留；旧模型部署绑定的未完成 execution 不支持跨版本恢复。
 
 ## 安装
 
@@ -147,4 +149,6 @@ npm --prefix apps/desktop run build
 
 更多说明见 [CLI](docs/cli/lora-session.md)、[本地 API](docs/api/local-service.md) 和[开发指南](docs/guides/development-guide.md)。
 
-运行时依赖通过 PyPI 安装锁定的官方 `pygent-ai` 版本；仓库不使用本地 Pygent 源码覆盖。
+运行时依赖锁定为官方 PyPI 发布的 `pygent-ai==0.3.12`（对应 [官方 v0.3.12](https://github.com/pygent-ai/pygent/releases/tag/v0.3.12)），`uv.lock` 记录下载地址和校验值，不使用 `../pygent` 本地源码覆盖。已有环境运行 `uv sync --locked` 即可切换到官方发行包。
+
+用户配置中的 `retry.max_attempts_per_route` 保持兼容，由适配层传给 Pygent 0.3.12 的 `RetryPolicy.max_attempts_per_model`；`routes` 和 `fallback` 的配置格式不变。

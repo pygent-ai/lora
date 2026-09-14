@@ -23,6 +23,8 @@ async def test_reasoning_is_scoped_to_each_call_and_reset_on_retry(monkeypatch):
                     content=label,
                     metadata={'route_id': 'primary'},
                     continuation=ModelContinuation(
+                        model_key='primary',
+                        model_id='deepseek-chat',
                         provider='deepseek',
                         protocol='openai_chat_completions',
                         data={
@@ -45,6 +47,8 @@ async def test_reasoning_is_scoped_to_each_call_and_reset_on_retry(monkeypatch):
         ]
         assert [response.message.continuation for response in responses] == [
             ModelContinuation(
+                model_key='primary',
+                model_id='deepseek-chat',
                 provider='deepseek',
                 protocol='openai_chat_completions',
                 data={
@@ -53,6 +57,8 @@ async def test_reasoning_is_scoped_to_each_call_and_reset_on_retry(monkeypatch):
                 },
             ),
             ModelContinuation(
+                model_key='primary',
+                model_id='deepseek-chat',
                 provider='deepseek',
                 protocol='openai_chat_completions',
                 data={

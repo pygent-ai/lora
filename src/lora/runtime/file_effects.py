@@ -16,7 +16,7 @@ from .file_effect_models import (
     DeferredFileEffectJob,
     FileSnapshot,
 )
-from .tools import FileEffectTracker
+from .tools import FileEffectTracker, SnapshotBudgetExceeded
 
 class FileEffectBaselineStore:
     def __init__(self, session_dir: str | Path | None):
@@ -36,13 +36,19 @@ class FileEffectBaselineStore:
             if isinstance(snapshot, dict)
         }
 
-    def save(self, snapshots: dict[str, Any]) -> None:
+    def is_complete(self) -> bool:
+        if self.path is None:
+            return False
+        return bool(read_json(self.path, default={}).get("complete", True))
+
+    def save(self, snapshots: dict[str, Any], *, complete: bool = True) -> None:
         if self.path is None:
             return
         write_json_atomic(
             self.path,
             {
                 "updated_at": utc_now(),
+                "complete": complete,
                 "snapshots": {path: asdict(snapshot) for path, snapshot in snapshots.items()},
             },
         )
@@ -96,7 +102,33 @@ def process_file_effect_batch(batch: DeferredFileEffectBatch) -> None:
         tracker.append_effects(declared, turn_id=batch.turn_id)
         return
     baseline = baseline_store.load()
-    current = tracker.snapshot_workspace()
+    # Known write/edit targets do not require a whole-workspace scan.
+    targeted = all(job.tool_name in {"write", "edit"} for job in batch.jobs if job.requires_snapshot)
+    targets = {effect.path for job in batch.jobs for effect in job.declared} if targeted else None
+    if targeted and not targets:
+        targeted = False
+        targets = None
+    try:
+        current = tracker.snapshot_workspace(
+            paths=[Path(path) for path in targets] if targets is not None else None
+        )
+    except SnapshotBudgetExceeded as exc:
+        tracker.append_effects(declared, turn_id=batch.turn_id)
+        tracker.store.append(
+            "runtime.file_scan.incomplete", actor="system",
+            payload={"batch_id": batch.batch_id, "reason": str(exc)},
+            turn_id=batch.turn_id,
+        )
+        return  # Never persist a partial scan or infer deletions from it.
+    stored_baseline = baseline or {}
+    was_complete = baseline is not None and baseline_store.is_complete()
+    if not targeted and not was_complete:
+        baseline = None  # A target-only baseline cannot describe the whole workspace.
+    if baseline is not None:
+        baseline = {
+            path: snapshot for path, snapshot in baseline.items()
+            if (path in targets if targets is not None else not tracker._is_ignored(Path(path)))
+        }
     if baseline is None:
         tracker.append_effects(declared, turn_id=batch.turn_id)
     else:
@@ -109,7 +141,13 @@ def process_file_effect_batch(batch: DeferredFileEffectBatch) -> None:
             tool_call_id=owner.tool_call_id if owner is not None else batch.batch_id,
         )
         tracker.append_effects(tracker.merge_effects(declared, observed), turn_id=batch.turn_id)
-    baseline_store.save(current)
+    if targeted:
+        # Preserve unrelated entries for later full scans.
+        merged = {path: snapshot for path, snapshot in stored_baseline.items() if path not in targets}
+        merged.update(current)
+        baseline_store.save(merged, complete=was_complete)
+    else:
+        baseline_store.save(current)
 __all__ = [
     "DeferredFileEffectBatch",
     "DeferredFileEffectJob",

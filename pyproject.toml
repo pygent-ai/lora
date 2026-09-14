@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115.0",
-    "pygent-ai==0.3.10",
+    "pygent-ai==0.3.12",
     "python-dateutil>=2.9.0",
     "tzdata>=2025.2",
     "tzlocal>=5.2",
@@ -37,6 +37,3 @@ packages = ["src/lora", "src/lora_api"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[tool.uv.sources]
-pygent-ai = { path = "../pygent", editable = true }

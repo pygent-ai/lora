@@ -61,3 +61,20 @@ SessionManager history. Once a snapshot is available, native replacement deliver
 that snapshot plus every uncovered message. The suffix starts at a user-turn
 boundary to retain matching tool calls and results; a fully covered history keeps
 its latest exchange for follow-up references. Stored history is not removed.
+
+## File-effect scan limits
+
+Lora observes file effects after tool execution. Explicit write/edit jobs snapshot
+only their declared targets. Shell write detection ignores quoted text, comments,
+and heredoc bodies; it remains a heuristic, not a complete shell interpreter.
+Full scans prune dependency, build, temporary, and runtime directories before
+traversal, including `.tmp`, `node_modules`, and `.venv-*`. Explicit targets inside
+excluded directories remain observable.
+
+Scans check a 5-second deadline cooperatively between directory/file operations
+and hash chunks, with limits of 20,000 files and 64 MiB of reads. This is not a hard
+OS I/O timeout: an individual blocked filesystem call cannot be interrupted by
+these checks. An incomplete scan emits `runtime.file_scan.incomplete`, preserves
+the prior baseline, and returns without blocking the next model step on more scan
+work. Partial scans never infer deletions. Target-only baselines carry
+`complete: false` until a successful full scan seeds the workspace baseline.

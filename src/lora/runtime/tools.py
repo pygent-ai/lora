@@ -4,6 +4,8 @@ import hashlib
 import os
 import re
 import shlex
+import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -22,9 +24,15 @@ BASH_RESULT_PREVIEW_CHARS = 12_000
 SPOOLED_TEXT_TOOL_NAMES = frozenset({"bash", "grep"})
 
 
+class SnapshotBudgetExceeded(RuntimeError):
+    """The scan stopped cooperatively; no partial baseline may be committed."""
+
+
 class FileEffectTracker:
     IGNORED_DIRS = frozenset(
-        {".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions"}
+        {".git", ".lora", ".venv", "__pycache__", ".pytest_cache", "sessions",
+         ".tmp", "node_modules", ".npm-cache", ".ruff_cache", ".vite",
+         "build", "dist"}
     )
     PATH_ARG_NAMES = ("file_path",)
     WRITE_TYPES = frozenset({"file.write", "file.edit", "file.delete"})
@@ -41,34 +49,84 @@ class FileEffectTracker:
         self.allow_read_outside_workspace = allow_read_outside_workspace
         self._appended_keys: set[tuple[Any, ...]] = set()
 
-    def snapshot_workspace(self) -> dict[str, FileSnapshot]:
+    SNAPSHOT_MAX_SECONDS = 5.0
+    SNAPSHOT_MAX_FILES = 20_000
+    SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024
+
+    def _workspace_files(self, deadline: float) -> Iterable[Path]:
+        # Prune before descending: filtering rglob results still traverses caches.
+        def on_error(error: OSError) -> None:
+            raise SnapshotBudgetExceeded("directory unavailable during scan") from error
+
+        for root, directories, files in os.walk(self.workspace_root, followlinks=False, onerror=on_error):
+            if time.monotonic() >= deadline:
+                raise SnapshotBudgetExceeded("time budget exceeded")
+            directories[:] = [
+                name for name in directories
+                if not self._is_ignored(Path(root) / name)
+                and not (Path(root) / name).is_symlink()
+                and not (Path(root) / name).is_junction()
+            ]
+            for name in files:
+                yield Path(root) / name
+
+    def snapshot_workspace(
+        self, paths: Iterable[Path] | None = None,
+    ) -> dict[str, FileSnapshot]:
         snapshots: dict[str, FileSnapshot] = {}
-        if not self.workspace_root.exists():
-            return snapshots
-        for path in sorted(self.workspace_root.rglob("*"), key=lambda item: str(item)):
-            if self._is_ignored(path):
+        deadline = time.monotonic() + self.SNAPSHOT_MAX_SECONDS
+        remaining = self.SNAPSHOT_MAX_BYTES
+        count = 0
+
+        def check_budget() -> None:
+            if time.monotonic() >= deadline:
+                raise SnapshotBudgetExceeded("time budget exceeded")
+
+        candidates = self._workspace_files(deadline) if paths is None else paths
+        for path in candidates:
+            check_budget()
+            if paths is None and self._is_ignored(path):
+                continue
+            if path.is_symlink():
                 continue
             try:
                 stat = path.stat()
-            except OSError:
-                continue
-            if not path.is_file():
-                continue
+                if not path.is_file():
+                    continue
+                count += 1
+                if count > self.SNAPSHOT_MAX_FILES:
+                    raise SnapshotBudgetExceeded("file count budget exceeded")
+                if stat.st_size > remaining:
+                    raise SnapshotBudgetExceeded("byte budget exceeded")
+                digest = hashlib.sha256()
+                with path.open("rb") as handle:
+                    while True:
+                        check_budget()
+                        chunk = handle.read(min(1024 * 1024, remaining + 1))
+                        remaining -= len(chunk)
+                        if remaining < 0:
+                            raise SnapshotBudgetExceeded("byte budget exceeded")
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                check_budget()
+                # Content capture performs another read, so reserve its bytes too.
+                if stat.st_size > remaining:
+                    raise SnapshotBudgetExceeded("byte budget exceeded")
+                remaining -= stat.st_size
+                content = read_snapshot_content(path)
+                check_budget()
+            except FileNotFoundError as exc:
+                if paths is not None:
+                    continue
+                raise SnapshotBudgetExceeded("file disappeared during scan") from exc
+            except OSError as exc:
+                raise SnapshotBudgetExceeded("file unavailable during scan") from exc
             normalized = str(path.resolve())
-            try:
-                content_hash = _hash_file(path)
-            except OSError:
-                continue
-            content = read_snapshot_content(path)
             snapshots[normalized] = FileSnapshot(
-                path=normalized,
-                exists=True,
-                kind="file",
-                size=stat.st_size,
-                mtime_ns=stat.st_mtime_ns,
-                content_hash=content_hash,
-                content=content.content,
-                content_available=content.available,
+                path=normalized, exists=True, kind="file", size=stat.st_size,
+                mtime_ns=stat.st_mtime_ns, content_hash=digest.hexdigest(),
+                content=content.content, content_available=content.available,
                 content_unavailable_reason=content.reason,
             )
         return snapshots
@@ -317,7 +375,7 @@ class FileEffectTracker:
             relative = path.relative_to(self.workspace_root)
         except ValueError:
             return True
-        return any(part in self.IGNORED_DIRS for part in relative.parts)
+        return any(part in self.IGNORED_DIRS or part.startswith(".venv-") for part in relative.parts)
 
     def _bash_read_effects(
         self, args: dict[str, Any], tool_call_id: str
@@ -560,9 +618,46 @@ def _tool_requires_deferred_snapshot(tool_name: str, args: dict[str, Any]) -> bo
     return isinstance(command, str) and _bash_command_may_write(command)
 
 
+def _shell_syntax(command: str) -> str:
+    """Keep shell syntax, masking quoted strings, comments and heredoc bodies.
+
+    This is an observation heuristic, not a shell security boundary.
+    """
+    lines: list[str] = []
+    delimiters: list[tuple[str, bool]] = []
+    for line in command.splitlines(keepends=True):
+        if delimiters:
+            delimiter, strip_tabs = delimiters[0]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            if candidate.rstrip("\r\n") == delimiter:
+                delimiters.pop(0)
+            continue
+        # Preserve the command line (including real output redirects).
+        lines.append(line)
+        for match in re.finditer(
+            r"'(?:[^']*)'|\"(?:\\.|[^\"\\])*\"|\\.|#[^\n]*|"
+            r"<<(-?)[ \t]*(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z_][\w]*))", line
+        ):
+            if match[1] is None:
+                continue
+            delimiters.append((next(x for x in match.groups()[1:] if x is not None), bool(match[1])))
+    text = "".join(lines)
+    return re.sub(r"'(?:[^']*)'|\"(?:\\.|[^\"\\])*\"|\\.|#[^\n]*", " ", text)
+
+
 def _bash_command_may_write(command: str) -> bool:
+    # Quoted shell programs are executable code, unlike quoted echo/print data.
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = []
+    for index, word in enumerate(words[:-2]):
+        if word.rsplit("/", 1)[-1] in {"sh", "bash", "zsh"} and words[index + 1] == "-c":
+            if _bash_command_may_write(words[index + 2]):
+                return True
+    command = _shell_syntax(command)
     lowered = command.lower()
-    if re.search(r"(^|[^0-9])>{1,2}(?!&)", command):
+    if re.search(r"(?<!>)>{1,2}(?![>&])", command):
         return True
     if re.search(
         r"\b(cat\s+>|tee|touch|mkdir|rm|rmdir|del|move|mv|copy|cp)\b", lowered

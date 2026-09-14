@@ -251,7 +251,7 @@ def test_model_retry_policy_retries_incomplete_provider_responses() -> None:
 
     retry_policy = model_agent.new_model_layer().retry_policy
 
-    assert retry_policy.max_attempts_per_route == 5
+    assert retry_policy.max_attempts_per_model == 5
     assert retry_policy.retry_on == MODEL_RETRYABLE_ERROR_KINDS
     assert ModelErrorKind.INVALID_RESPONSE in retry_policy.retry_on
     assert ModelErrorKind.AUTHENTICATION not in retry_policy.retry_on

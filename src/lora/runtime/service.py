@@ -255,7 +255,7 @@ class LoraRuntimeService:
         )
         history_path = Path(config.runtime_durability.history_path)
         self.history_path = history_path
-        model_path = history_path.with_name("model-deployments-v1.sqlite3")
+        model_path = history_path.with_name("model-deployments-v2.sqlite3")
         self.model_path = model_path
         self.history = SQLiteHistoryStore(history_path)
         self.model_store = SQLiteModelDeploymentStore(model_path)
@@ -818,6 +818,22 @@ class LoraRuntimeService:
         )
         self._record_execution_id(run_ref, handle.execution_id)
         return handle
+
+    async def send_steering(
+        self, execution_id: str, *, input_id: str, message: str, case_run_id: str,
+    ) -> Any:
+        from pygent.agent import StandaloneUserMessage
+
+        handle = await self.runtime.get_execution_handle(execution_id)
+        return await handle.send_input(
+            input_id=input_id,
+            kind=REACT_PROJECTION_OPERATION_KIND,
+            value=encode_react_projection_operation(StandaloneUserMessage(UserMessage(
+                content=message,
+                kind="lora.user.steering",
+                data={"input_id": input_id, "case_run_id": case_run_id},
+            ))),
+        )
 
     async def recover_turn(
         self,

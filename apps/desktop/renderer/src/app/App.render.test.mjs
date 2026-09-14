@@ -7,6 +7,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { activityHeaderText } from "./runTiming.js";
+import { settingsPayload } from "../shared/api/client.js";
 
 const desktopRoot = fileURLToPath(new URL("../../../", import.meta.url));
 let appModule;
@@ -43,6 +44,41 @@ before(async () => {
 
 after(async () => {
   await vite?.close();
+});
+
+test("running chat allows editing and offers steering", () => {
+  const html = renderToStaticMarkup(React.createElement(appModule.ChatPane, {
+    activeSession: { session_id: "session-1", scope_id: "conversation" },
+    messages: [{ id: "user-1", role: "user", content: "hello" }],
+    settings: {}, status: "Running", running: true, steeringReady: true, approvals: [],
+  }));
+  const textarea = html.match(/<textarea[^>]*>/)[0];
+  assert.doesNotMatch(textarea, /disabled/);
+  assert.match(html, /aria-label="追加指令"/);
+  assert.match(html, /下一处理边界生效/);
+});
+
+test("reconnecting sessions allow drafting but cannot steer until connected", () => {
+  const html = renderToStaticMarkup(React.createElement(appModule.ChatPane, {
+    activeSession: { session_id: "old-session", scope_id: "conversation" },
+    messages: [{ id: "user-1", role: "user", content: "old task" }],
+    settings: {}, status: "Reconnecting", running: true, steeringReady: false, approvals: [],
+  }));
+  assert.doesNotMatch(html.match(/<textarea[^>]*>/)[0], /disabled/);
+  assert.match(html, /aria-label="正在连接"[^>]*disabled/);
+  assert.doesNotMatch(html, /aria-label="追加指令"/);
+});
+
+test("steering projection deduplicates receipts and restored history", () => {
+  const original = [{ id: "assistant-1", role: "assistant", content: "working" }];
+  const updated = appModule.insertSteeringMessage(original, "assistant-1", "input-1", "focus on tests");
+  assert.equal(updated[0].content, "focus on tests");
+  assert.equal(updated[1], original[0]);
+  assert.equal(appModule.insertSteeringMessage(updated, "assistant-1", "input-1", "focus on tests"), updated);
+  const restored = appModule.historyToMessages([
+    { role: "user", content: "focus on tests", kind: "lora.user.steering", data: { input_id: "input-1" } },
+  ]);
+  assert.equal(appModule.insertSteeringMessage(restored, "assistant-1", "input-1", "focus on tests"), restored);
 });
 
 test("settings displays the saved tool permission mode", () => {
@@ -339,6 +375,40 @@ test("new chat stays enabled while another session is running", () => {
 
   assert.match(html, /class="icon-button header-action"[^>]*title="New chat"/);
   assert.doesNotMatch(html, /title="New chat"[^>]*disabled/);
+});
+
+test("live tool calls appear before results and update the same inspector row", () => {
+  const call = { type: "model.tool_call.completed", payload: { call_id: "live-1", name: "bash", arguments: { command: "long-command" } } };
+  const started = { type: "tool.started", payload: { call_id: "live-1" } };
+  const [pending] = appModule.traceToolEvents([call, started]);
+  assert.equal(pending.payload.status, "running");
+  assert.equal(pending.payload.has_result, false);
+  assert.equal(pending.payload.tool_name, "bash");
+  assert.match(pending.payload.arguments, /long-command/);
+  const result = { type: "lora.runtime.message", payload: { role: "tool", tool_call_id: "live-1", content: "command output" } };
+  const done = { type: "tool.completed", payload: { call_id: "live-1" } };
+  const tools = appModule.traceToolEvents([call, started, result, done]);
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].id, pending.id);
+  assert.equal(tools[0].payload.status, "success");
+  assert.match(tools[0].payload.result, /command output/);
+  const replayed = appModule.traceToolEvents([call, result, done, call, started]);
+  assert.equal(replayed.length, 1);
+  assert.equal(replayed[0].payload.status, "success");
+});
+
+test("live tools report failure and cancellation while parallel calls remain running", () => {
+  for (const type of ["tool.failed", "tool.cancelled"]) {
+    const tools = appModule.traceToolEvents([
+      { type: "tool.started", payload: { call_id: "a", name: "read" } },
+      { type: "model.tool_call.completed", payload: { call_id: "b", name: "bash", arguments: {} } },
+      { type, payload: { call_id: "a", error_kind: "Stopped" } },
+    ]);
+    assert.equal(tools.length, 2);
+    assert.equal(tools[0].payload.status, "error");
+    assert.equal(tools[0].payload.result, "Stopped");
+    assert.equal(tools[1].payload.status, "running");
+  }
 });
 
 test("legacy model tool IDs pair calls with their results", () => {
@@ -676,6 +746,36 @@ test("a tool failure stays local when the agent execution recovers", () => {
   assert.equal(completed.status, "success");
 });
 
+test("chat tool cards appear on tool start and retain results through completion and replay", () => {
+  const start = { kind: "tool.started", data: { call_id: "slow", name: "bash", arguments: { command: "slow-command" } } };
+  const initial = { role: "assistant", content: "", status: "running", sections: [] };
+  const pending = appModule.projectLiveAssistantEvent(initial, start);
+  assert.equal(pending.sections[0].calls[0].status, "running");
+  assert.equal(pending.sections[0].calls[0].name, "bash");
+  const result = appModule.projectLiveAssistantEvent(pending, {
+    kind: "lora.runtime.message", data: { role: "tool", tool_call_id: "slow", content: "finished output" },
+  });
+  const completed = appModule.projectLiveAssistantEvent(result, { kind: "tool.completed", data: { call_id: "slow" } });
+  const replayed = appModule.projectLiveAssistantEvent(completed, start);
+  assert.equal(replayed.sections[0].calls.length, 1);
+  assert.equal(replayed.sections[0].calls[0].status, "success");
+  assert.equal(replayed.sections[0].calls[0].result, "finished output");
+});
+
+test("assistant runtime calls create chat cards before tool results without model deltas", () => {
+  const projected = appModule.projectLiveAssistantEvent({ content: "", sections: [] }, {
+    kind: "lora.runtime.message", data: { role: "assistant", tool_calls: [
+      { id: "one", function: { name: "read", arguments: { path: "a" } } },
+      { id: "two", function: { name: "read", arguments: { path: "b" } } },
+    ] },
+  });
+  assert.equal(projected.sections[0].calls.length, 2);
+  assert.ok(projected.sections[0].calls.every((call) => call.status === "running"));
+  const failed = appModule.projectLiveAssistantEvent(projected, { kind: "tool.failed", data: { call_id: "one", error_kind: "timeout" } });
+  assert.equal(failed.sections[0].calls[0].status, "error");
+  assert.equal(failed.sections[0].calls[1].status, "running");
+});
+
 test("only an execution failure marks the whole assistant turn as failed", () => {
   const initial = { role: "assistant", content: "", status: "running", sections: [] };
   const failed = appModule.projectLiveAssistantEvent(
@@ -822,6 +922,31 @@ test("history preserves reasoning from the final assistant message", () => {
   assert.equal(message.content, "Answer");
   assert.equal(appModule.thinkingActivityState(message).content, "Full final reasoning");
   assert.equal(appModule.thinkingActivityState(message).running, false);
+});
+
+test("model-name changes remain saveable with an existing credential", () => {
+  const route = {
+    id: "primary", provider: "openai", model_name: "pool_0021",
+    base_url: "https://example.test/v1", api_key_env: "MODEL_API_KEY",
+    api_key_source: "user-file", api_key: "",
+  };
+  const settings = { profile: "default", routes: [route], fallback: ["primary"] };
+  for (const saving of [false, true]) {
+    const html = renderToStaticMarkup(React.createElement(appModule.SettingsPanel, {
+      settings, disabled: saving, onClose() {}, onSave() {},
+    }));
+    const save = html.match(/<button[^>]*aria-label="Save and Reload"[^>]*>/)[0];
+    assert.equal(save.includes("disabled"), saving);
+    assert.equal(html.includes("正在保存…"), saving);
+  }
+  const draft = { profile: "default", modelRoutes: [route], fallback: ["primary"] };
+  assert.equal(appModule.modelGroupValidationError(draft), "");
+  const payload = settingsPayload(draft);
+  assert.equal(payload.model_group.routes[0].model_name, "pool_0021");
+  assert.equal(Object.hasOwn(payload.model_group.routes[0], "api_key"), false);
+  assert.notEqual(appModule.modelGroupValidationError({
+    ...draft, modelRoutes: [{ ...route, model_name: "" }],
+  }), "");
 });
 
 test("automation triggers render as system-origin cards with the raw instruction", () => {

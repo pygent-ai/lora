@@ -328,6 +328,17 @@ class ChatRunRegistry:
         finally:
             await lease.release()
 
+    async def deliver_steering(
+        self, execution_id: str, *, session_id: str, input_id: str, message: str,
+    ) -> Any:
+        active = await self.coordinator.find_execution(execution_id)
+        if active is None or active.run_ref is None or active.run_ref.session_id != session_id:
+            raise LookupError("当前会话没有对应的运行中执行，请等待连接恢复后重试。")
+        return await active.runtime_service.send_steering(
+            execution_id, input_id=input_id, message=message,
+            case_run_id=active.run_ref.case_run_id,
+        )
+
     async def close(self) -> None:
         await self.coordinator.close()
 

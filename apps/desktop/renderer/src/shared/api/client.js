@@ -118,6 +118,11 @@ export function createApiClient(options = {}) {
         method: "POST",
         body: { approved, comment },
       }),
+    steerChat: (executionId, { sessionId, inputId, message }, options = {}) =>
+      jsonRequest(`/chat/executions/${encodeURIComponent(executionId)}/steering`, {
+        ...options, method: "POST",
+        body: { session_id: sessionId, input_id: inputId, message },
+      }),
     streamChat: (request, handlers = {}) =>
       streamChatTurn({
         baseUrl,

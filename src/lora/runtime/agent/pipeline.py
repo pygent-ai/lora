@@ -557,6 +557,18 @@ class ConversationCheckpointModelModule(Module[PygentMessage, AIMessage]):
     async def forward(
         self, message: PygentMessage, context: LoraContext
     ) -> tuple[AIMessage, LoraContext]:
+        # Pygent can consume several queued user inputs at one ReAct boundary.
+        # Persist each consumed input, including those now in context.messages.
+        for candidate in (*context.messages, message):
+            if candidate.kind != "lora.user.steering":
+                continue
+            data = plain_data(candidate.data)
+            if data.get("case_run_id") != context.case_run_id:
+                continue
+            await checkpoint_conversation_message(
+                self.config, context, candidate,
+                boundary=f"steering-{data['input_id']}",
+            )
         answer, next_context = await self.inner(message, context)
         await checkpoint_conversation_message(
             self.config,

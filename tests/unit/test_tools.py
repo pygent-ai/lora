@@ -813,7 +813,7 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
                 [],
             )
 
-    def test_file_effect_tracker_tracks_node_modules_files(self) -> None:
+    def test_file_effect_tracker_excludes_node_modules_from_full_scan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             FileEffectTracker = _file_effect_tracker_class()
             workspace = Path(tmp) / "workspace"
@@ -837,9 +837,9 @@ class FileEffectTrackerSpecTests(unittest.IsolatedAsyncioTestCase):
                 before, after, tool_name="bash", tool_call_id="evt_tool"
             )
 
-            self.assertEqual(len(effects), 1)
-            self.assertEqual(effects[0].type, "file.write")
-            self.assertEqual(effects[0].path, str(package_file.resolve()))
+            self.assertEqual(effects, [])
+            targeted = tracker.snapshot_workspace(paths=[package_file])
+            self.assertIn(str(package_file.resolve()), targeted)
 
     def test_file_effect_tracker_records_declared_writes_outside_workspace(
         self,

@@ -29,6 +29,13 @@ class ChatTurnRequest(BaseModel):
         return self
 
 
+class ChatSteeringRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    session_id: str = Field(min_length=1)
+    input_id: str = Field(min_length=1, max_length=128)
+    message: str = Field(min_length=1)
+
+
 class ModelRouteSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     id: str = Field(min_length=1)

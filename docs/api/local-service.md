@@ -37,6 +37,10 @@ data: {"execution_id":"exec-...","sequence":13,"kind":"model.text.delta","module
 
 客户端应按 `kind` 消费 Pygent 与 Lora Module 发出的事件，并保存最新 `execution_id/sequence` 用于重连。
 
+运行中追加用户指令使用 `POST /chat/executions/{execution_id}/steering`，请求体为 `{"session_id":"...","input_id":"客户端生成的唯一 ID","message":"追加指令"}`。网络重试必须复用同一 `input_id`；响应 `status` 为 `accepted` 或 `duplicate`。会话不匹配或执行不可用返回 404，execution 输入窗口已经关闭返回 409，空消息返回 422。
+
+该接口向 Pygent `send_input` 投递 `StandaloneUserMessage`，在 ReAct 下一处理边界生效，不中断当前模型或工具调用。接收后的指令通过 conversation checkpoint 保存到会话历史。前端在运行中使用原输入框追加指令；失败时保留草稿。
+
 ## 审批与后台任务
 
 ```http

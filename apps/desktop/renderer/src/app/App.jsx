@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 
 import { createApiClient } from "../shared/api/client.js";
+import { createSessionGroupSync, startBackgroundRefresh } from "./sessionGroupSync.js";
+import { refreshActiveSession } from "./activeSessionSync.js";
 import { loadWorkbenchPreferences, saveWorkbenchPreferences } from "./workbenchPreferences.js";
 import { DEFAULT_PANEL_WIDTHS, PANEL_LIMITS, normalizePanelWidths, fitPanelWidths } from "./panelWidths.js";
 import { projectPathKey } from "../features/projects/projectPaths.js";
@@ -87,6 +89,10 @@ export function App() {
   }, [layout]);
   const [projects, setProjects] = useState([]);
   const [sessionGroups, setSessionGroups] = useState([]);
+  const sessionGroupSync = useMemo(() => createSessionGroupSync(api, (groups) => {
+    setSessionGroups((current) => JSON.stringify(current) === JSON.stringify(groups) ? current : groups);
+  }), [api]);
+  useEffect(() => sessionGroupSync.start({ window, document }), [sessionGroupSync]);
   const [activeScopeId, setActiveScopeId] = useState("");
   const [activeSession, setActiveSession] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -98,8 +104,11 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [runningSessionIds, setRunningSessionIds] = useState({});
+  const [steeringSessionIds, setSteeringSessionIds] = useState({});
   const [approvals, setApprovals] = useState([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const settingsSaveBusyRef = useRef(false);
   const [activeView, setActiveView] = useState("chat");
   const projectChooserBusyRef = useRef(false);
   const activeSessionIdRef = useRef("");
@@ -107,13 +116,13 @@ export function App() {
   const runningSessionIdsRef = useRef({});
   const pendingSessionMessagesRef = useRef(new Map());
   const sessionLiveEventsRef = useRef(new Map());
+  const activeExecutionsRef = useRef(new Map());
   const sessionLoadTokenRef = useRef(0);
   const resumeSessionRef = useRef(null);
   const traceLoadTokenRef = useRef(0);
 
   const activeSessionId = activeSession?.session_id || "";
   const running = Boolean(activeSessionId && runningSessionIds[activeSessionId]);
-  const hasRunningSessions = Object.keys(runningSessionIds).length > 0;
   const visibleSessionGroups = useMemo(
     () => applyRunningSessionStatus(sessionGroups, runningSessionIds),
     [sessionGroups, runningSessionIds],
@@ -177,7 +186,7 @@ export function App() {
   );
 
   const loadSession = useCallback(
-    async (sessionId, previewSession = null) => {
+    async (sessionId, previewSession = null, { resumeExecution = true } = {}) => {
       const sessionToken = sessionLoadTokenRef.current + 1;
       sessionLoadTokenRef.current = sessionToken;
       traceLoadTokenRef.current += 1;
@@ -231,8 +240,8 @@ export function App() {
       messagesRef.current = resolvedMessages;
       setMessages(resolvedMessages);
       setActivityCollapseToken((value) => value + 1);
-      setStatus("Ready");
-      if (detail.runtime_execution_id && !runningSessionIdsRef.current[sessionId]) {
+      setStatus(runningSessionIdsRef.current[sessionId] ? "Running" : "Ready");
+      if (resumeExecution && detail.runtime_execution_id && !runningSessionIdsRef.current[sessionId]) {
         resumeSessionRef.current?.(detail);
       }
       window.setTimeout(() => {
@@ -247,26 +256,25 @@ export function App() {
   );
 
   const refreshWorkbench = useCallback(
-    async ({ selectSessionId, selectFirst = false, preserveSessionId = "" } = {}) => {
+    async ({ selectSessionId, selectFirst = false, preserveSessionId = "", resumeExecution = true } = {}) => {
       setError("");
       const [nextSettings, nextProjects, nextSessionGroups] = await Promise.all([
         api.getSettings(),
         api.listProjects(),
-        api.listSessionGroups(),
+        sessionGroupSync.refresh(),
       ]);
       const groups = nextSessionGroups.groups || [];
       const sessionList = flattenSessionGroups(groups);
       const activeScopeId = nextSessionGroups.active_scope_id || scopeIdFromWorkspace(nextSettings.workspace_root);
       setSettings(nextSettings);
       setProjects(nextProjects.projects || []);
-      setSessionGroups(groups);
       const targetSessionId =
         selectSessionId ||
         (selectFirst ? firstSessionIdInScope(groups, activeScopeId) : preserveSessionId);
       const targetSession = sessionList.find((session) => session.session_id === targetSessionId);
       setActiveScopeId(targetSession?.scope_id || activeScopeId);
       if (targetSessionId && targetSession) {
-        await loadSession(targetSessionId, targetSession);
+        await loadSession(targetSessionId, targetSession, { resumeExecution });
       } else {
         sessionLoadTokenRef.current += 1;
         traceLoadTokenRef.current += 1;
@@ -278,9 +286,9 @@ export function App() {
         setLiveEvents([]);
         setContextSnapshots([]);
       }
-      setStatus("Ready");
+      if (!runningSessionIdsRef.current[activeSessionIdRef.current]) setStatus("Ready");
     },
-    [api, loadSession],
+    [api, loadSession, sessionGroupSync],
   );
 
   useEffect(() => {
@@ -396,7 +404,7 @@ export function App() {
       if (initialSessionId) {
         setSessionRunning(initialSessionId, true);
       }
-      setStatus("Running");
+      setStatus(recovery ? "Reconnecting" : "Running");
       setError("");
       setNotice("");
       setTraceEvents([]);
@@ -410,6 +418,7 @@ export function App() {
       let streamEvents = [];
       const startedWithoutSession = !streamSessionId;
       let finalStatus = "Ready";
+      let streamError = "";
 
       const isStreamSessionVisible = () => {
         const currentSessionId = activeSessionIdRef.current;
@@ -465,6 +474,9 @@ export function App() {
           },
           {
             onConnectionState: (state) => {
+              if (state === "reconnecting" && streamSessionId) {
+                setSteeringSessionIds((items) => omitKey(items, streamSessionId));
+              }
               if (isStreamSessionVisible()) setStatus(state === "reconnecting" ? "Reconnecting" : "Running");
             },
             onEvent: ({ data }) => {
@@ -475,6 +487,18 @@ export function App() {
                 streamSessionId = eventSessionId;
                 setSessionRunning(eventSessionId, true);
                 pendingSessionMessagesRef.current.set(eventSessionId, streamMessages);
+                if (isStreamSessionVisible()) {
+                  activeSessionIdRef.current = eventSessionId;
+                  setActiveSession((current) => current || { session_id: eventSessionId, scope_id: eventData.scope_id || activeSession?.scope_id });
+                }
+              }
+              const terminalEvent = ["execution.completed", "execution.failed", "execution.deadline_exceeded", "execution.cancelled", "lora.transport.error"].includes(eventKind);
+              if (streamSessionId && data.execution_id && !terminalEvent) {
+                activeExecutionsRef.current.set(streamSessionId, { executionId: data.execution_id, assistantId });
+                setSteeringSessionIds((items) => items[streamSessionId] ? items : { ...items, [streamSessionId]: true });
+              } else if (streamSessionId && terminalEvent) {
+                activeExecutionsRef.current.delete(streamSessionId);
+                setSteeringSessionIds((items) => omitKey(items, streamSessionId));
               }
               streamEvents = appendSessionLiveTraceEvent(
                 sessionLiveEventsRef.current,
@@ -501,6 +525,7 @@ export function App() {
                 }
               } else if (eventKind === "lora.transport.error" || eventKind === "execution.failed" || eventKind === "execution.deadline_exceeded") {
                 finalStatus = "Error";
+                streamError = eventData.error ? readableError(eventData.error) : "执行未能恢复或已经失败，可保留历史并发送新消息。";
                 if (isStreamSessionVisible()) {
                   setActivityCollapseToken((value) => value + 1);
                 }
@@ -518,17 +543,18 @@ export function App() {
         );
         const currentSessionId = activeSessionIdRef.current;
         if (streamSessionId) {
-          setSessionRunning(streamSessionId, false);
           pendingSessionMessagesRef.current.delete(streamSessionId);
           await refreshWorkbench({
+            resumeExecution: false,
             selectSessionId: currentSessionId === streamSessionId || !currentSessionId ? streamSessionId : "",
             preserveSessionId: currentSessionId && currentSessionId !== streamSessionId ? currentSessionId : "",
           });
         } else {
-          await refreshWorkbench({ selectFirst: true });
+          await refreshWorkbench({ selectFirst: true, resumeExecution: false });
         }
         if (isStreamSessionVisible()) {
           setStatus(finalStatus);
+          if (streamError) setError(streamError);
         }
       } catch (err) {
         if (isStreamSessionVisible()) {
@@ -545,6 +571,8 @@ export function App() {
       } finally {
         const completedSessionId = streamSessionId || initialSessionId;
         if (completedSessionId) {
+          activeExecutionsRef.current.delete(completedSessionId);
+          setSteeringSessionIds((items) => omitKey(items, completedSessionId));
           setSessionRunning(completedSessionId, false);
         }
       }
@@ -553,26 +581,78 @@ export function App() {
   );
   resumeSessionRef.current = (detail) => handleSendMessage("", detail);
 
+  useEffect(() => {
+    if (!activeSessionId) return undefined;
+    return startBackgroundRefresh(async ({ signal }) => {
+      const token = sessionLoadTokenRef.current;
+      const traceToken = traceLoadTokenRef.current;
+      const isCurrent = () => activeSessionIdRef.current === activeSessionId
+        && sessionLoadTokenRef.current === token
+        && traceLoadTokenRef.current === traceToken
+        && !runningSessionIdsRef.current[activeSessionId];
+      await refreshActiveSession({
+        api, sessionId: activeSessionId, scopeId: activeSession?.scope_id, signal, isCurrent,
+        onResume: (detail) => {
+          traceLoadTokenRef.current += 1;
+          setActiveSession(detail.session);
+          resumeSessionRef.current?.(detail);
+        },
+        onSnapshot: (detail, trace) => {
+          traceLoadTokenRef.current += 1;
+          setActiveSession((current) => JSON.stringify(current) === JSON.stringify(detail.session) ? current : detail.session);
+          setTraceEvents((current) => JSON.stringify(current) === JSON.stringify(trace.events || []) ? current : trace.events || []);
+          setContextSnapshots((current) => JSON.stringify(current) === JSON.stringify(trace.context_snapshots || []) ? current : trace.context_snapshots || []);
+          sessionLiveEventsRef.current.delete(activeSessionId);
+          setLiveEvents((current) => current.length ? [] : current);
+          const nextMessages = historyToMessages(detail.history || []);
+          if (JSON.stringify(messagesRef.current) !== JSON.stringify(nextMessages)) {
+            messagesRef.current = nextMessages;
+            setMessages(nextMessages);
+          }
+        },
+      });
+    }, { window, document });
+  }, [api, activeSessionId, activeSession?.scope_id]);
+
+  const handleSteering = useCallback(async (message, inputId) => {
+    const sessionId = activeSessionIdRef.current;
+    const execution = activeExecutionsRef.current.get(sessionId);
+    if (!execution || !runningSessionIdsRef.current[sessionId]) {
+      throw new Error("执行尚未连接或已经结束，请稍后重试。");
+    }
+    await api.steerChat(execution.executionId, { sessionId, inputId, message });
+    const update = (items) => insertSteeringMessage(items, execution.assistantId, inputId, message);
+    const cached = pendingSessionMessagesRef.current.get(sessionId);
+    if (cached) pendingSessionMessagesRef.current.set(sessionId, update(cached));
+    if (activeSessionIdRef.current === sessionId) {
+      setMessages(update);
+      setNotice("指令已送达，将在下一处理边界生效。");
+    }
+  }, [api]);
+
   const handleSaveSettings = useCallback(
     async (draft) => {
+      if (settingsSaveBusyRef.current) return;
+      settingsSaveBusyRef.current = true;
+      setSavingSettings(true);
       try {
         setError("");
         setStatus("Reloading");
         const nextSettings = await api.updateSettings(settingsForSave(draft, settings));
         setSettings(nextSettings);
         setSettingsOpen(false);
-        setActiveSession(null);
-        setMessages([]);
-        setTraceEvents([]);
-        setLiveEvents([]);
-        setContextSnapshots([]);
-        pendingSessionMessagesRef.current.clear();
-        sessionLiveEventsRef.current.clear();
-        await refreshWorkbench({ selectFirst: true });
-        setNotice("Settings saved and runtime reloaded");
+        const workspaceChanged = projectPathKey(nextSettings.workspace_root) !== projectPathKey(settings.workspace_root);
+        await refreshWorkbench({
+          selectFirst: workspaceChanged,
+          preserveSessionId: workspaceChanged ? "" : activeSessionIdRef.current,
+        });
+        setNotice("设置已保存，新运行将使用新配置；正在运行的任务继续使用原配置。");
       } catch (err) {
         setStatus("Error");
         setError(readableError(err));
+      } finally {
+        settingsSaveBusyRef.current = false;
+        setSavingSettings(false);
       }
     },
     [api, refreshWorkbench, settings],
@@ -665,15 +745,18 @@ export function App() {
         settings={settings}
         onOpenSession={(sessionId, workspaceRoot) => handleSelectSession(sessionId, { workspace_root: workspaceRoot })}
       /> : <ChatPane
+        key={activeSessionId || "new-chat"}
         activeSession={activeSession}
         messages={messages}
         activityCollapseToken={activityCollapseToken}
         settings={settings}
         status={status}
         running={running}
+        steeringReady={Boolean(steeringSessionIds[activeSessionId])}
         approvals={approvals.filter((item) => item.session_id === activeSessionId)}
         api={api}
         onSendMessage={handleSendMessage}
+        onSteering={handleSteering}
         onApproval={handleApproval}
         projects={projects}
         onSelectProject={handleCreateSession}
@@ -702,7 +785,7 @@ export function App() {
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
-          disabled={hasRunningSessions}
+          disabled={savingSettings}
           onClose={() => setSettingsOpen(false)}
           onSave={handleSaveSettings}
         />
@@ -951,10 +1034,13 @@ function SessionRow({
   );
 }
 
-function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, approvals, api, onSendMessage, onApproval, projects = [], onSelectProject, onChooseProject, onChangePermissions }) {
+export function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, steeringReady = false, approvals, api, onSendMessage, onSteering, onApproval, projects = [], onSelectProject, onChooseProject, onChangePermissions }) {
   const [draft, setDraft] = useState("");
   const [configuring, setConfiguring] = useState(false);
   const [configError, setConfigError] = useState("");
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const pendingSteeringRef = useRef(null);
   const empty = messages.length === 0;
   const selectedScope = activeSession?.scope_id || scopeIdFromWorkspace(settings.workspace_root);
   async function configure(action) {
@@ -982,9 +1068,30 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
     if (input) { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 200)}px`; }
   }, [draft]);
 
-  function submit() {
+  async function submit() {
     const text = draft.trim();
-    if (!text || running || configuring) {
+    if (!text || sendingRef.current || configuring) {
+      return;
+    }
+    setConfigError("");
+    if (running) {
+      if (!steeringReady) return;
+      sendingRef.current = true;
+      setSending(true);
+      if (pendingSteeringRef.current?.text !== text) {
+        pendingSteeringRef.current = { text, inputId: crypto.randomUUID() };
+      }
+      try {
+        await onSteering(text, pendingSteeringRef.current.inputId);
+        setDraft("");
+        pendingSteeringRef.current = null;
+        followTranscriptRef.current = true;
+      } catch (err) {
+        setConfigError(readableError(err));
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
       return;
     }
     setDraft("");
@@ -1045,8 +1152,8 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
           <textarea
             ref={composerRef}
             aria-label="任务内容"
-            disabled={running || configuring}
-            placeholder={running ? "Lora 正在执行任务…" : "描述任务，或继续追问…"}
+            disabled={sending || configuring}
+            placeholder={running ? (steeringReady ? "追加指令，调整当前任务方向…" : "正在连接执行，可以先输入指令…") : "描述任务，或继续追问…"}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -1073,8 +1180,8 @@ function ChatPane({ activeSession, messages, activityCollapseToken, settings, st
           <ComposerMenu label="任务权限（全局）" title="全局权限设置，对后续新运行生效" value={settings.approvals_enabled === false ? "full" : "ask"} disabled={running || configuring} onChange={(value) => void configure(() => onChangePermissions(value === "ask"))}
             options={[{ value:"ask", label:"逐次审批" }, { value:"full", label:"完全访问" }]} />
           <div className="composer-send-actions">
-            <span className="composer-hint">Enter 发送 · Shift + Enter 换行</span>
-            <button className="send" aria-label={running ? "执行中" : "发送"} title={running ? "执行中" : "发送"} disabled={running || configuring || !draft.trim()} type="button" onClick={submit}>
+            <span className="composer-hint">{running ? (steeringReady ? "Enter 追加指令 · 下一处理边界生效" : "正在连接执行，连接后可追加指令") : "Enter 发送 · Shift + Enter 换行"}</span>
+            <button className="send" aria-label={running ? (steeringReady ? "追加指令" : "正在连接") : "发送"} title={running ? (steeringReady ? "追加指令" : "正在连接") : "发送"} disabled={(running && !steeringReady) || sending || configuring || !draft.trim()} type="button" onClick={submit}>
               <ArrowUp aria-hidden="true" />
             </button>
           </div>
@@ -2132,7 +2239,7 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
             取消
           </button>
           <button className="send" aria-label="Save and Reload" disabled={disabled || Boolean(validationError)} type="button" onClick={() => onSave(draft)}>
-            保存并应用
+            {disabled ? "正在保存…" : "保存并应用"}
           </button>
         </footer>
       </section>
@@ -2186,7 +2293,9 @@ export function historyToMessages(history) {
     }
     const content = displayMessageContent(message);
     if (content) {
-      rendered.push({ id: `history-${index}`, role: messageDisplayRole(message), content });
+      rendered.push({ id: `history-${index}`, role: messageDisplayRole(message), content,
+        ...(message.kind === "lora.user.steering" ? { steeringInputId: message.data?.input_id } : {}),
+      });
     }
     const segment = [];
     index += 1;
@@ -2286,6 +2395,14 @@ function tracePreviewPayload(payload) {
   return preview;
 }
 
+export function insertSteeringMessage(items, assistantId, inputId, content) {
+  const id = `steering-${inputId}`;
+  if (items.some((item) => item.id === id || item.steeringInputId === inputId)) return items;
+  const user = { id, role: "user", content, steeringInputId: inputId };
+  const index = items.findIndex((item) => item.id === assistantId);
+  return index < 0 ? [...items, user] : [...items.slice(0, index), user, ...items.slice(index)];
+}
+
 function projectLiveExecutionEvent(setMessages, assistantId, event) {
   setMessages((items) => {
     let changed = false;
@@ -2317,17 +2434,20 @@ export function projectLiveAssistantEvent(message, event, now = Date.now()) {
     return { ...message, content: `${message.content || ""}${String(payload.text || "")}` };
   }
 
-  if (kind === "model.tool_call.completed") {
+  if (kind === "model.tool_call.completed" || kind === "tool.started"
+      || (kind === "lora.runtime.message" && payload.role === "assistant" && toolCallsFromMessage(payload).length)) {
     let sections = Array.isArray(message.sections) ? message.sections : [];
     if (String(message.content || "").trim()) {
       sections = appendTextSection(sections, "Assistant content", message.content);
     }
-    const call = toolCallState({
-      id: payload.call_id,
-      name: payload.name,
-      arguments: payload.arguments,
-    });
-    return { ...message, content: "", sections: appendToolCallsSection(sections, [call]) };
+    const calls = kind === "lora.runtime.message" ? toolCallsFromMessage(payload) : [{
+      id: payload.call_id || payload.tool_call_id,
+      name: payload.name || payload.tool_name,
+      arguments: payload.arguments ?? payload.args,
+    }];
+    const knownIds = new Set(sections.flatMap((section) => (section.calls || []).map((call) => call.id)));
+    const newCalls = calls.map(toolCallState).filter((call) => !knownIds.has(call.id));
+    return { ...message, content: "", sections: appendToolCallsSection(sections, newCalls) };
   }
 
   if (kind === "lora.runtime.message" && payload.role === "tool") {
@@ -2340,9 +2460,14 @@ export function projectLiveAssistantEvent(message, event, now = Date.now()) {
 
   if (kind === "tool.completed" || kind === "tool.failed" || kind === "tool.cancelled") {
     const failed = kind !== "tool.completed";
+    const callId = String(payload.call_id || "");
+    const existing = (message.sections || []).flatMap((section) => section.calls || []).find((call) => call.id === callId);
     const result = {
-      toolCallId: String(payload.call_id || ""),
-      content: failed ? String(payload.error_kind || kind.replace("tool.", "")) : "",
+      toolCallId: callId,
+      content: failed ? String(payload.error || payload.error_kind || kind.replace("tool.", "")) : existing?.result || "",
+      resultRef: existing?.resultRef,
+      resultSize: existing?.resultSize,
+      truncated: existing?.truncated,
       status: failed ? "error" : "success",
     };
     return {
@@ -2529,6 +2654,9 @@ function applyToolResultToSections(sections, result) {
     if (section.type !== "tools") {
       continue;
     }
+    if (result.toolCallId && !(section.calls || []).some((call) => call.id === result.toolCallId)) {
+      continue;
+    }
     const calls = applyToolResult(section.calls || [], result);
     if (calls !== section.calls) {
       nextSections[index] = {
@@ -2600,6 +2728,10 @@ export function traceToolEvents(events) {
         byCallId.set(callId, item);
       }
     }
+    // Replayed call records can arrive after a live result; never regress to running.
+    if (patch.status === "running" && item.payload.status !== "running") {
+      patch = { ...patch, status: item.payload.status };
+    }
     item.payload = { ...item.payload, ...patch };
     return item;
   }
@@ -2608,16 +2740,33 @@ export function traceToolEvents(events) {
     const type = String(event.type || "");
     const payload = event.payload || {};
 
-    if (type === "tool.call") {
-      const callId = String(payload.model_tool_call_id || payload.tool_call_id || payload.id || event.id || "");
+    if (type === "tool.call" || type === "model.tool_call.completed" || type === "tool.started") {
+      const callId = String(payload.model_tool_call_id || payload.tool_call_id || payload.call_id || payload.id || event.id || "");
+      const previous = byCallId.get(callId)?.payload;
       upsert(callId, {
         tool_call_id: callId,
-        tool_name: String(payload.tool_name || payload.name || "tool"),
-        arguments: stringifyToolArgs(payload.args),
+        tool_name: String(payload.tool_name || payload.name || previous?.tool_name || "tool"),
+        arguments: payload.args !== undefined || payload.arguments !== undefined
+          ? stringifyToolArgs(payload.args ?? payload.arguments) : previous?.arguments || "",
         call_event: event,
         has_call: true,
         status: "running",
       });
+      continue;
+    }
+
+    if (["tool.completed", "tool.failed", "tool.cancelled"].includes(type)) {
+      const callId = String(payload.call_id || payload.tool_call_id || "");
+      const failed = type !== "tool.completed";
+      const patch = {
+        result_event: event,
+        status: failed ? "error" : "success",
+      };
+      if (failed) {
+        patch.has_result = true;
+        patch.result = stringifyDetail(payload.error || payload.error_kind || type);
+      }
+      upsert(callId, patch);
       continue;
     }
 
@@ -2641,7 +2790,7 @@ export function traceToolEvents(events) {
       continue;
     }
 
-    if (type === "runtime.message") {
+    if (type === "runtime.message" || type === "lora.runtime.message") {
       if (payload.role === "assistant") {
         for (const call of toolCallsFromMessage(payload)) {
           const state = toolCallState(call);
@@ -2963,7 +3112,7 @@ function applyToolResult(current, result) {
     merged[index] = { ...merged[index], ...patch };
     return merged;
   }
-  const fallbackIndex = findLastRunningToolCallIndex(merged);
+  const fallbackIndex = result.toolCallId ? -1 : findLastRunningToolCallIndex(merged);
   if (fallbackIndex >= 0) {
     merged[fallbackIndex] = { ...merged[fallbackIndex], ...patch };
     return merged;

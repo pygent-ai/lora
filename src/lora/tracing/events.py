@@ -47,6 +47,7 @@ LORA_EVENT_TYPES = DESIGN_EVENT_TYPES | frozenset(
         "chat.started",
         "chat.finished",
         "runtime.error",
+        "runtime.file_scan.incomplete",
         "runtime.cancelled",
         "error",
     }
