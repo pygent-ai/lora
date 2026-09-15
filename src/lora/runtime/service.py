@@ -69,6 +69,7 @@ from pygent.tool.mcp import (
 
 from lora.config import load_run_config
 from lora.core.io import aclose_if_supported, plain_object, read_json, write_json
+from lora.runtime.bash_tasks import BashTaskObservations
 from lora.runtime.reminders import ReminderService
 from lora.schema import AgentSession, CaseRunRef, RunConfig
 from lora.sessions import AgentMessage, CollaborationOperation, SessionManager
@@ -278,8 +279,11 @@ class LoraRuntimeService:
         standard = StandardTools(
             workspace_root=config.workspace_root, restrict_to_workspace=False
         )
+        self._standard_tools = standard
         ToolKit(
             standard.bash.bash,
+            standard.bash.tool_task_get,
+            standard.bash.tool_task_stop,
             standard.files.read,
             standard.files.write,
             standard.files.edit,
@@ -311,6 +315,9 @@ class LoraRuntimeService:
             self.runtime.register_tool(spec, collaboration_executor)
         self.task_manager = DurableToolTaskManager(self.history, self.executor_registry)
         self.runtime.attach_tool_task_manager(self.task_manager)
+        self.bash_tasks = BashTaskObservations(
+            config, self.runtime, history_path.with_suffix(".bash-observations"),
+        )
         self.model_resolver = LoraModelResourceResolver()
         self.runtime.register_model_resource_resolver(self.model_resolver)
         scope = (
@@ -364,6 +371,7 @@ class LoraRuntimeService:
             managed_model=True,
             memory_harness=self.memory_harness,
             reminders=self.reminders,
+            bash_tasks=self.bash_tasks,
         )
         self._agent_definitions: dict[tuple[int, bool], LoraAgent] = (
             {(id(config), False): template} if config.resolved_agent is not None else {}
@@ -636,6 +644,7 @@ class LoraRuntimeService:
                 self.warnings.append(message)
                 warnings.warn(message, RuntimeWarning, stacklevel=2)
         self.external_tools = tuple(discovered)
+        await self.bash_tasks.restore()
         self._initialized = True
 
     def _mcp_transport(self, server: Any) -> Any:
@@ -678,6 +687,7 @@ class LoraRuntimeService:
             model_invoker=invoker,
             memory_harness=self.memory_harness,
             reminders=self.reminders,
+            bash_tasks=self.bash_tasks,
         )
         if resolved is not None and agent.llm is not None:
             self._model_invokers.setdefault(resolved.alias, agent.llm)
@@ -1217,6 +1227,12 @@ class LoraRuntimeService:
     async def get_task(self, task_id: str) -> Any:
         return await self.runtime.get_tool_task(task_id)
 
+    async def get_task_output(self, task_id: str) -> Any:
+        return await self.runtime.get_tool_output(task_id)
+
+    async def get_task_result(self, task_id: str) -> Any:
+        return await self.runtime.get_tool_result(task_id)
+
     async def cancel_task(self, task_id: str) -> bool:
         return await self.runtime.cancel_tool_task(task_id)
 
@@ -1226,6 +1242,10 @@ class LoraRuntimeService:
         self._closed = True
         await self.memory_harness.close()
         await self.runtime.close(cancel=cancel)
+        await self.bash_tasks.close()
+        await self._standard_tools.aclose()
+        for agent in self._agent_definitions.values():
+            await aclose_if_supported(agent._standard_tools)
         for invoker in {
             id(value): value for value in self._model_invokers.values()
         }.values():

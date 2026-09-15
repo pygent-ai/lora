@@ -611,6 +611,7 @@ class CliScenarioTests(unittest.TestCase):
             self.assertNotIn("# Runtime Context", static_prompt)
             self.assertNotIn("__SYSTEM_PROMPT_REQUEST_BOUNDARY__", rendered_prompt)
             self.assertNotIn("# Runtime Context", rendered_prompt)
+            self.assertIn("# Lora Control Plane", rendered_prompt)
             self.assertIn("# Available Tools", rendered_prompt)
             self.assertIn("# Tool Result Handling", rendered_prompt)
             self.assertIn("# Context Budget", rendered_prompt)
@@ -620,6 +621,10 @@ class CliScenarioTests(unittest.TestCase):
             )
             self.assertIn(
                 "system.coding_rules", prompt_event["payload"]["static_module_ids"]
+            )
+            self.assertIn(
+                "system.lora_control_plane",
+                prompt_event["payload"]["request_system_module_ids"],
             )
             self.assertIn(
                 "tool.available", prompt_event["payload"]["request_system_module_ids"]

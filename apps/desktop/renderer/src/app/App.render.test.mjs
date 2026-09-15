@@ -397,6 +397,64 @@ test("live tool calls appear before results and update the same inspector row", 
   assert.equal(replayed[0].payload.status, "success");
 });
 
+test("detached trace results retain running state, task ID and partial output until a final result", () => {
+  const events = [
+    { id: "call-bg", type: "tool.call", payload: { tool_call_id: "bg", tool_name: "bash" } },
+    { id: "result-bg", type: "tool.result", payload: {
+      tool_call_id: "bg", status: "running", framework_status: "detached",
+      task: { task_id: "task-bg" }, result: "partial stdout", next_action: "query task",
+    } },
+  ];
+  const [running] = appModule.traceToolEvents(events);
+  assert.equal(running.payload.status, "running");
+  assert.match(running.payload.result, /task-bg/);
+  assert.match(running.payload.result, /partial stdout/);
+  for (const status of ["success", "error"]) {
+    const tools = appModule.traceToolEvents([...events, {
+      id: "final-bg", type: "tool.result", payload: { tool_call_id: "bg", status, result: "final output" },
+    }]);
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0].payload.status, status);
+    assert.equal(tools[0].payload.result, "final output");
+  }
+});
+
+test("background chat results remain running through turn completion and history replay", () => {
+  const payload = {
+    tool_call_id: "bg", status: "running", framework_status: "detached",
+    task: { task_id: "task-bg" }, result: "partial stdout", next_action: "query task",
+  };
+  const toolMessage = { role: "tool", tool_call_id: "bg", content: JSON.stringify(payload) };
+  const initial = { role: "assistant", content: "", status: "running", sections: [] };
+  const live = appModule.projectLiveAssistantEvent(initial, { kind: "tool.result", data: payload });
+  const runtime = appModule.projectLiveAssistantEvent(initial, { kind: "lora.runtime.message", data: toolMessage });
+  const [, replay] = appModule.historyToMessages([
+    { role: "user", content: "Start background work" },
+    { role: "assistant", content: "", tool_calls: [{ id: "bg", function: { name: "bash", arguments: "{}" } }] },
+    toolMessage,
+    { role: "assistant", content: "Task started" },
+  ]);
+  for (const message of [live, runtime, replay]) {
+    const completed = appModule.projectLiveAssistantEvent(message, { kind: "execution.completed", data: {} });
+    assert.equal(completed.sections[0].status, "running");
+    const call = completed.sections[0].calls[0];
+    assert.equal(call.status, "running");
+    assert.match(call.result, /task-bg/);
+    assert.match(call.result, /partial stdout/);
+    for (const status of ["success", "error"]) {
+      const final = appModule.projectLiveAssistantEvent(completed, {
+        kind: "tool.result", data: { tool_call_id: "bg", status, result: "final output" },
+      });
+      assert.equal(final.sections[0].calls.length, 1);
+      assert.equal(final.sections[0].calls[0].status, status);
+      assert.equal(final.sections[0].calls[0].result, "final output");
+      assert.equal(final.sections[0].status, "done");
+    }
+  }
+  const [trace] = appModule.traceToolEvents([{ type: "lora.runtime.message", payload: toolMessage }]);
+  assert.equal(trace.payload.status, "running");
+});
+
 test("live tools report failure and cancellation while parallel calls remain running", () => {
   for (const type of ["tool.failed", "tool.cancelled"]) {
     const tools = appModule.traceToolEvents([

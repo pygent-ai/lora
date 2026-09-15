@@ -2460,8 +2460,8 @@ export function projectLiveAssistantEvent(message, event, now = Date.now()) {
     return { ...message, content: "", sections: appendToolCallsSection(sections, newCalls) };
   }
 
-  if (kind === "lora.runtime.message" && payload.role === "tool") {
-    const result = toolResultActivity(payload);
+  if (kind === "tool.result" || (kind === "lora.runtime.message" && payload.role === "tool")) {
+    const result = kind === "tool.result" ? toolResultActivity(payload, payload) : toolResultActivity(payload);
     return {
       ...message,
       sections: applyToolResultToSections(message.sections || [], result),
@@ -2686,10 +2686,11 @@ function finalizeToolSections(sections) {
       return section;
     }
     const calls = (section.calls || []).map((call) =>
-      call.status === "running" ? { ...call, status: "success" } : call,
+      call.status === "running" && !call.backgroundRunning ? { ...call, status: "success" } : call,
     );
     const hasError = calls.some((call) => call.status === "error");
-    return { ...section, calls, status: hasError ? "error" : "done" };
+    const hasRunning = calls.some((call) => call.status === "running");
+    return { ...section, calls, status: hasRunning ? "running" : hasError ? "error" : "done" };
   });
 }
 
@@ -2782,16 +2783,16 @@ export function traceToolEvents(events) {
 
     if (type === "tool.result") {
       const callId = String(payload.model_tool_call_id || payload.tool_call_id || "");
-      const status = String(payload.status || "success") === "error" || payload.error ? "error" : "success";
+      const result = toolResultActivity(payload, payload);
       const patch = {
         tool_call_id: callId,
         result_event: event,
         has_result: true,
-        result: stringifyDetail(payload.error || payload.preview || payload.result || payload.content || ""),
+        result: result.content,
         result_ref: payload.result_ref || "",
         result_size: payload.result_size || 0,
         truncated: Boolean(payload.truncated),
-        status,
+        status: result.status,
       };
       if (payload.tool_name) {
         patch.tool_name = String(payload.tool_name);
@@ -2821,7 +2822,7 @@ export function traceToolEvents(events) {
             result_event: event,
             has_result: true,
             result: result.content,
-            status: result.status === "error" ? "error" : "success",
+            status: result.status,
           });
         }
       }
@@ -3052,21 +3053,28 @@ function toolCallsFromMessage(message) {
   return Array.isArray(rawToolCalls) ? rawToolCalls.filter((toolCall) => toolCall && typeof toolCall === "object") : [];
 }
 
-function toolResultActivity(message) {
+function toolResultActivity(message, parsed = parseJsonObject(message?.content)) {
   const payload = message?.payload && typeof message.payload === "object" ? message.payload : {};
-  const parsed = parseJsonObject(message?.content);
-  const status = String(parsed.status || "result");
-  const toolCallId = String(message?.tool_call_id || payload.tool_call_id || parsed.tool_call_id || "tool");
-  let detail = Object.prototype.hasOwnProperty.call(parsed, "result") ? parsed.result : message?.content || "";
+  const status = String(parsed.status || parsed.framework_status || "result");
+  const toolCallId = String(message?.model_tool_call_id || message?.tool_call_id || payload.tool_call_id || parsed.tool_call_id || "tool");
+  let detail = parsed.preview || (Object.prototype.hasOwnProperty.call(parsed, "result") ? parsed.result : message?.content || "");
   if (parsed.error) {
     detail = parsed.error;
   }
-  const tone = status === "error" || parsed.error ? "error" : "success";
+  const tone = ["error", "failed", "cancelled", "rejected"].includes(status) || parsed.error
+    ? "error" : ["running", "detached"].includes(status) || parsed.framework_status === "detached" ? "running" : "success";
+  const taskId = parsed.task?.task_id;
+  const content = stringifyDetail(detail);
   return {
     title: `Tool result: ${toolCallId}`,
     toolCallId,
-    content: stringifyDetail(detail),
+    content: tone === "running" && taskId ? `${content}${content ? "\n" : ""}Task: ${taskId}` : content,
     status: tone,
+    backgroundRunning: tone === "running",
+    toolName: parsed.tool_name,
+    resultRef: parsed.result_ref,
+    resultSize: parsed.result_size,
+    truncated: parsed.truncated,
   };
 }
 
@@ -3114,6 +3122,7 @@ function applyToolResult(current, result) {
     resultSize: result.resultSize || 0,
     truncated: Boolean(result.truncated),
     status: result.status,
+    backgroundRunning: Boolean(result.backgroundRunning),
   };
   if (result.toolName) {
     patch.name = result.toolName;

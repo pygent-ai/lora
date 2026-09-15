@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pygent import ToolResult as PygentToolResult
+from pygent.runtime.codec import tool_task_to_dict
 
 from lora.core.io import plain_data
 from lora.core.redaction import redact_secrets
@@ -477,10 +478,11 @@ class ToolObserver:
         result: PygentToolResult,
         *,
         available_tools: tuple[str, ...] = (),
+        audit_call_id: str | None = None,
     ) -> tuple[dict[str, Any], DeferredFileEffectJob | None]:
         """Persist Lora audit facts after Pygent has executed a tool."""
 
-        call_id = self.store.append(
+        call_id = audit_call_id or self.store.append(
             "tool.call",
             actor="assistant",
             payload={
@@ -496,7 +498,7 @@ class ToolObserver:
             else []
         )
         deferred_job: DeferredFileEffectJob | None = None
-        if self.defer_file_effects:
+        if self.defer_file_effects and result.status != "detached":
             requires_snapshot = _tool_requires_deferred_snapshot(name, args)
             if (
                 result.status == "succeeded"
@@ -515,16 +517,17 @@ class ToolObserver:
                     include_declared=result.status == "succeeded",
                 )
 
-        if result.status == "succeeded":
-            value = plain_data(result.output)
-            value = _spool_large_tool_result(
-                tool_name=name,
-                args=args,
-                result=value,
-                tool_call_id=call_id,
-                run_dir=self.store.run_dir,
-                bash_full_output_allowlist=self.bash_full_output_allowlist,
-            )
+        if result.status == "detached":
+            payload = {
+                "tool_call_id": call_id,
+                "status": "running",
+                "framework_status": "detached",
+                "result": self._spool_output(name, args, result.output, call_id),
+                "task": tool_task_to_dict(result.task),
+                "next_action": "Use tool_task_get(task_id) to read output or tool_task_stop(task_id) to request cancellation.",
+            }
+        elif result.status == "succeeded":
+            value = self._spool_output(name, args, result.output, call_id)
             payload = {"tool_call_id": call_id, "status": "success", "result": value}
         else:
             payload = {
@@ -541,8 +544,35 @@ class ToolObserver:
                 },
             }
         payload["model_tool_call_id"] = result.call_id
+        if result.status not in {"succeeded", "detached"} and result.output is not None:
+            payload["result"] = self._spool_output(name, args, result.output, call_id)
+        if audit_call_id is not None:
+            payload["task"] = tool_task_to_dict(result.task)
+            payload["framework_status"] = result.status
         self.store.append("tool.result", actor="tool", payload=payload, turn_id=turn_id)
         return payload, deferred_job
+
+    def _spool_output(self, name: str, args: dict[str, Any], output: Any, call_id: str) -> Any:
+        def spool(value: Any, suffix: str = "") -> Any:
+            return _spool_large_tool_result(
+                tool_name="bash" if name in {"tool_task_get", "tool_task_stop"} else name,
+                args=args, result=value, tool_call_id=f"{call_id}{suffix}",
+                run_dir=self.store.run_dir,
+                bash_full_output_allowlist=self.bash_full_output_allowlist,
+            )
+
+        value = plain_data(output)
+        if name in {"tool_task_get", "tool_task_stop"} and isinstance(value, dict):
+            value = dict(value)
+            if "output" in value:
+                value["output"] = spool(value["output"], "-snapshot")
+            if isinstance(value.get("result"), dict):
+                final = dict(value["result"])
+                if "output" in final:
+                    final["output"] = spool(final["output"], "-final")
+                value["result"] = final
+            return value
+        return spool(value)
 
     def _deferred_file_effect_job(
         self,

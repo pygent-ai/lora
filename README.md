@@ -1,6 +1,6 @@
 # Lora
 
-Lora 是基于 Pygent 0.3.12 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
+Lora 是基于 Pygent 0.3.15 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
 
 Runtime journal 直接使用当前 PyPI Pygent 管理的 SQLite schema 和配置路径。
 
@@ -149,6 +149,14 @@ npm --prefix apps/desktop run build
 
 更多说明见 [CLI](docs/cli/lora-session.md)、[本地 API](docs/api/local-service.md) 和[开发指南](docs/guides/development-guide.md)。
 
-运行时依赖锁定为官方 PyPI 发布的 `pygent-ai==0.3.12`（对应 [官方 v0.3.12](https://github.com/pygent-ai/pygent/releases/tag/v0.3.12)），`uv.lock` 记录下载地址和校验值，不使用 `../pygent` 本地源码覆盖。已有环境运行 `uv sync --locked` 即可切换到官方发行包。
+运行时依赖锁定为官方 PyPI 发布的 `pygent-ai==0.3.15`（对应 [官方 v0.3.15](https://github.com/pygent-ai/pygent/releases/tag/v0.3.15)），`uv.lock` 记录下载地址和校验值，不使用 `../pygent` 本地源码覆盖。已有环境运行 `uv sync --locked` 即可切换到官方发行包。
 
-用户配置中的 `retry.max_attempts_per_route` 保持兼容，由适配层传给 Pygent 0.3.12 的 `RetryPolicy.max_attempts_per_model`；`routes` 和 `fallback` 的配置格式不变。
+用户配置中的 `retry.max_attempts_per_route` 保持兼容，由适配层传给 Pygent 0.3.15 的 `RetryPolicy.max_attempts_per_model`；`routes` 和 `fallback` 的配置格式不变。
+
+### Bash 后台任务
+
+`bash` 的调用参数 `timeout` 现在以**秒**为单位，表示前台等待时间，默认 600 秒。等待到期返回任务引用，原命令继续运行；`timeout=0` 或 `is_background=true` 立即返回。命令仍遵守 Lora 的工具审批策略。Agent 可用 `tool_task_get(task_id)` 查询输出与最终结果，用 `tool_task_stop(task_id)` 请求停止。
+
+前台回合结束后，后台 Bash 由 Pygent Runtime 持有。Lora 在任务终态补记审计和工作区文件差异；运行时关闭会取消并清理后台命令。输出使用既有截断与落盘机制。任务引用也可通过 `/runtime/tasks/{task_id}` 查询或取消。重启只能读取已保存结果；未确认完成的任务在原 owner 租约失效后成为 `unknown`，不自动重跑或接管旧进程。
+
+升级前请先结束旧版本的活动执行。Bash 工具契约已变为 `standard.shell.bash@3.1.0`，旧版未完成执行的 ExecutionPlan 不保证兼容，不能把继续已有会话等同于恢复旧执行。

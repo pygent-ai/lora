@@ -43,6 +43,12 @@ data: {"execution_id":"exec-...","sequence":13,"kind":"model.text.delta","module
 
 ## 审批与后台任务
 
+`GET /runtime/tasks/{task_id}` 保留任务的 `task_id`、`state` 等字段，并返回当前 `output` 与可空的最终 `result`。终态结果存在时优先使用其任务快照和输出；取消结果没有输出时保留已捕获输出。
+
+`DELETE /runtime/tasks/{task_id}` 返回 `cancel_requested`、兼容字段 `cancelled` 和实际 `task` 快照。取消请求获接收不等于进程清理已确认，须检查任务状态；任务已结束时返回 `false` 和终态快照，任务不存在时返回 404。
+
+Bash 前台等待到期后，任务仍运行，原回合的事件流不会追加后台终态。客户端可按任务 ID 查询，或重新读取会话审计。普通回合完成不会将后台任务改为成功。
+
 ```http
 POST /chat/approvals/{approval_id}
 {"approved":true,"comment":"approved"}

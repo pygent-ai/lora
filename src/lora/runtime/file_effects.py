@@ -8,7 +8,7 @@ from typing import Any
 from pygent import IdempotencyPolicy, ToolDefinition, ToolSideEffect, ToolSpec
 from pygent.tool.executors import SandboxExecutorSupport, ToolExecutionContext
 
-from lora.core.io import plain_object, read_json, utc_now, write_json_atomic
+from lora.core.io import jsonl_path_lock, plain_object, read_json, utc_now, write_json_atomic
 from lora.tracing.events import EventStore
 
 from .file_effect_models import (
@@ -94,6 +94,14 @@ class FileEffectToolExecutor:
 def process_file_effect_batch(batch: DeferredFileEffectBatch) -> None:
     """Execute one idempotently admitted diff batch; scheduling belongs to Pygent."""
 
+    store = EventStore(batch.case_run_ref)
+    path = FileEffectBaselineStore(store.session_dir).path or store.run_dir / "file-effects.lock"
+    with jsonl_path_lock(path):
+        _process_file_effect_batch(batch)
+
+
+def _process_file_effect_batch(batch: DeferredFileEffectBatch) -> None:
+
     session_dir = EventStore(batch.case_run_ref).session_dir
     baseline_store = FileEffectBaselineStore(session_dir)
     tracker = FileEffectTracker(workspace_root=batch.workspace_root, store=EventStore(batch.case_run_ref))
@@ -143,7 +151,7 @@ def process_file_effect_batch(batch: DeferredFileEffectBatch) -> None:
         tracker.append_effects(tracker.merge_effects(declared, observed), turn_id=batch.turn_id)
     if targeted:
         # Preserve unrelated entries for later full scans.
-        merged = {path: snapshot for path, snapshot in stored_baseline.items() if path not in targets}
+        merged = {path: snapshot for path, snapshot in stored_baseline.items() if targets is not None and path not in targets}
         merged.update(current)
         baseline_store.save(merged, complete=was_complete)
     else:

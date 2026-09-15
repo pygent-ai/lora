@@ -126,6 +126,19 @@ def _render_system_output_style_prompt(ctx: PromptRenderContext) -> str | None:
     )
 
 
+def _render_system_lora_control_plane_prompt(ctx: PromptRenderContext) -> str:
+    return "\n".join(
+        [
+            "# Lora Control Plane",
+            "",
+            "- For capabilities managed by Lora, use the corresponding `uv run lora ...` CLI.",
+            "- Treat an unqualified scheduled or recurring task request as a Lora automation.",
+            "- Do not substitute schtasks, cron, systemd timers, or background loops unless the user explicitly requests an operating-system scheduler.",
+            "- Do not claim that a Lora resource was created or changed until the command succeeds and its list or show command confirms the persisted state.",
+        ]
+    )
+
+
 def _render_available_tools_prompt(ctx: PromptRenderContext) -> str:
     tools = ", ".join(ctx.tool_names) if ctx.tool_names else "none"
     lines = [

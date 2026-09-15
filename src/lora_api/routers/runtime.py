@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pygent.runtime.codec import tool_result_to_dict
 
 from lora.core.io import plain_data
 from lora_api.dependencies import ApiContext, get_api_context
@@ -17,12 +18,25 @@ async def get_task(
 ) -> dict[str, Any]:
     lease = await context.acquire_runtime()
     try:
-        task = await lease.runtime.runtime_service.get_task(task_id)
+        runtime = lease.runtime.runtime_service
+        task = await runtime.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="runtime task not found")
+        output = await runtime.get_task_output(task_id)
+        result = await runtime.get_task_result(task_id)
+        if result is not None:
+            # Completion can occur between queries; prefer its final observation.
+            if result.task is not None:
+                task = result.task
+            if result.output is not None:
+                output = result.output
+        return {
+            **_task_payload(task),
+            "output": plain_data(output),
+            "result": None if result is None else plain_data(tool_result_to_dict(result)),
+        }
     finally:
         await lease.release()
-    if task is None:
-        raise HTTPException(status_code=404, detail="runtime task not found")
-    return _task_payload(task)
 
 
 @router.delete("/tasks/{task_id}")
@@ -33,15 +47,18 @@ async def cancel_task(
     lease = await context.acquire_runtime()
     try:
         runtime = lease.runtime.runtime_service
-        cancelled = await runtime.cancel_task(task_id)
-        if not cancelled:
-            raise HTTPException(
-                status_code=404, detail="runtime task not found or already terminal"
-            )
+        cancel_requested = await runtime.cancel_task(task_id)
         task = await runtime.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="runtime task not found")
+        return {
+            # Retain the historical acknowledgement; the snapshot reports actual state.
+            "cancelled": cancel_requested,
+            "cancel_requested": cancel_requested,
+            "task": _task_payload(task),
+        }
     finally:
         await lease.release()
-    return {"cancelled": True, "task": None if task is None else _task_payload(task)}
 
 
 def _task_payload(task: Any) -> dict[str, Any]:

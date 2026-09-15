@@ -34,6 +34,7 @@ from .prompt_sources import (
     _render_system_coding_rules_prompt,
     _render_system_identity_prompt,
     _render_system_injection_guard_prompt,
+    _render_system_lora_control_plane_prompt,
     _render_system_output_style_prompt,
     _render_system_path_policy_prompt,
     _render_system_tool_policy_prompt,
@@ -102,6 +103,15 @@ class PromptRegistry:
                 cache_scope="session",
                 order=50,
                 render=_render_system_output_style_prompt,
+            ),
+            PromptModule(
+                id="system.lora_control_plane",
+                phase="request_system",
+                type="policy",
+                cache_scope="request",
+                order=110,
+                render=_render_system_lora_control_plane_prompt,
+                required=True,
             ),
             PromptModule(
                 id="tool.available",

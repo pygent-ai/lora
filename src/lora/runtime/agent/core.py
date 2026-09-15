@@ -35,6 +35,7 @@ from pygent.tool import StandardTools, ToolSpec
 
 from lora.core.io import aclose_if_supported, plain_data
 from lora.runtime.context import LORA_CONTEXT_CODECS, LoraContext
+from lora.runtime.bash_tasks import BashTaskObservations
 from lora.runtime.context_compression import COMPRESSION_REQUEST_PROMPT
 from lora.runtime.eternal_conversation import EternalConversationHarness
 from lora.runtime.file_effects import FILE_EFFECT_TOOL_SPEC
@@ -150,6 +151,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         "_external_tools",
         "memory_harness",
         "reminders",
+        "bash_tasks",
     )
 
     def __init__(
@@ -163,6 +165,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         model_invoker: Any | None = None,
         memory_harness: EternalConversationHarness | None = None,
         reminders: ReminderService | None = None,
+        bash_tasks: BashTaskObservations | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -185,6 +188,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         self._toolkit: ToolKit | None = None
         self._external_tools = external_tools
         self.memory_harness = memory_harness
+        self.bash_tasks = bash_tasks
         self.reminders = reminders or ReminderService(config)
         self._owns_reminders = reminders is None
         self._register_default_tools()
@@ -283,6 +287,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 preauthorized_tools=self.config.runtime_approvals.preauthorized_tools,
                 interactive=self.interactive_approvals,
                 scope_key="lora",
+                detached_tools=("bash",),
             ),
             max_concurrency=max_concurrency,
         )
@@ -311,7 +316,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 RepeatedToolCallGuardModule(
                     PreparedToolModule(
                         tools=self.new_tool_layer(),
-                        audit=ToolAuditModule(self.config),
+                        audit=ToolAuditModule(self.config, bash_tasks=self.bash_tasks),
                         reminders=RuntimeReminderModule(self.reminders),
                         persisted_diff=PersistedDiffModule(
                             self.workspace_root, diff_tasks
@@ -535,6 +540,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             )
 
     async def aclose(self) -> None:
+        await aclose_if_supported(self._standard_tools)
         if self._owns_reminders:
             await self.reminders.close()
         await aclose_if_supported(self.llm)
@@ -545,6 +551,8 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         )
         self._toolkit = ToolKit(
             self._standard_tools.bash.bash,
+            self._standard_tools.bash.tool_task_get,
+            self._standard_tools.bash.tool_task_stop,
             self._standard_tools.files.read,
             self._standard_tools.files.write,
             self._standard_tools.files.edit,

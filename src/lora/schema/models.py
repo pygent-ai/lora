@@ -248,10 +248,10 @@ def default_cli_bash_presets() -> list[BashCliPreset]:
             name="lora-automation",
             command="uv run lora automation --help",
             description=(
-                "Scheduled task CLI. When the user asks to create or change a schedule, "
-                "use `uv run lora automation create|update|pause|resume|delete`. Use "
-                "`--session` with the current session ID for a heartbeat, or `--standalone` "
-                "for a new session per run. Do not invent a session ID or RRULE."
+                "Manage Lora scheduled Agent tasks with "
+                "`create|list|show|update|pause|resume|delete|run|runs`. Use `--session` with "
+                "the current session ID for a heartbeat, or `--standalone` for a new "
+                "session per run. Run `uv run lora automation --help` for complete syntax."
             ),
         ),
     ]

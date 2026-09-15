@@ -51,12 +51,17 @@ def test_session_run_is_the_only_noninteractive_chat_entry() -> None:
 
 
 def test_default_cli_context_exposes_only_current_session_commands() -> None:
-    presets = {preset.name: preset.command for preset in default_cli_bash_presets()}
+    presets = {preset.name: preset for preset in default_cli_bash_presets()}
 
-    assert presets["lora-session"] == "uv run lora session --help"
-    assert presets["lora-automation"] == "uv run lora automation --help"
+    assert presets["lora-session"].command == "uv run lora session --help"
+    assert presets["lora-automation"].command == "uv run lora automation --help"
+    assert "create|list|show|update|pause|resume|delete|run|runs" in presets[
+        "lora-automation"
+    ].description
+    assert "--session" in presets["lora-automation"].description
+    assert "--standalone" in presets["lora-automation"].description
     assert "lora-chat" not in presets
-    assert all("lora chat" not in command for command in presets.values())
+    assert all("lora chat" not in preset.command for preset in presets.values())
 
 
 def test_session_collaboration_commands_are_registered() -> None:

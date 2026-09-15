@@ -47,6 +47,7 @@ from pygent.tool import ToolSideEffect
 
 from lora.core.io import plain_data, plain_object
 from lora.runtime.context import LoraContext
+from lora.runtime.bash_tasks import BashTaskObservations
 from lora.runtime.context_snapshots import ContextSnapshotStore
 from lora.runtime.eternal_conversation import render_memory_access_instruction
 from lora.runtime.file_effect_models import DeferredFileEffectJob
@@ -586,11 +587,12 @@ class ConversationCheckpointModelModule(Module[PygentMessage, AIMessage]):
 
 class ToolAuditModule(Module[ToolMessage, ToolMessage]):
     execution_requirements = MANAGED_EFFECT_RECOVERY
-    trusted_live_resource_attributes = ("config",)
+    trusted_live_resource_attributes = ("config", "bash_tasks")
 
-    def __init__(self, config: RunConfig) -> None:
+    def __init__(self, config: RunConfig, *, bash_tasks: BashTaskObservations | None = None) -> None:
         super().__init__()
         self.config = config
+        self.bash_tasks = bash_tasks
 
     async def forward(
         self, message: ToolMessage, context: LoraContext
@@ -632,6 +634,8 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
                 )
                 if deferred_job is not None:
                     next_context = next_context.append_file_effects(deferred_job)
+                if result.name == "bash" and result.status == "detached" and self.bash_tasks is not None:
+                    self.bash_tasks.track(context, result, payload, arguments)
                 await self.emit(
                     kind="lora.runtime.message",
                     data={
@@ -952,6 +956,8 @@ class PreparedToolModule(Module[AIMessage, ToolMessage]):
     async def forward(
         self, message: AIMessage, context: LoraContext
     ) -> tuple[ToolMessage, LoraContext]:
+        if self.audit.bash_tasks is not None and any(call.name == "bash" for call in message.tool_calls):
+            await self.audit.bash_tasks.prepare(context)
         tool_message, tool_context = await self.tools(message, context)
         projection_context = tool_context + message
         tool_message, projection_context = await self.audit(

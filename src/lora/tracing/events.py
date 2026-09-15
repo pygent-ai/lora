@@ -332,6 +332,9 @@ def _tool_result_record(event: ContextEvent) -> dict[str, Any]:
         record["details"] = event.payload.get("details")
     if event.payload.get("model_tool_call_id") is not None:
         record["model_tool_call_id"] = event.payload.get("model_tool_call_id")
+    for key in ("task", "framework_status", "next_action"):
+        if key in event.payload:
+            record[key] = event.payload[key]
     return record
 
 

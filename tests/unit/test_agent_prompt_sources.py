@@ -139,6 +139,23 @@ def test_dynamic_tools_and_context_rules_are_capability_aware(tmp_path) -> None:
     assert "without narrating private deliberation" in output_prompt
 
 
+def test_lora_control_plane_routes_scheduled_tasks_through_lora(tmp_path) -> None:
+    context = _context(tmp_path)
+    prompt, _ = PromptComposer().compose_request_system(context)
+
+    assert "unqualified scheduled or recurring task" in prompt
+    assert "Lora automation" in prompt
+    assert "schtasks, cron, systemd timers, or background loops" in prompt
+    assert "explicitly requests an operating-system scheduler" in prompt
+    assert "list or show command" in prompt
+
+    modules = PromptRegistry().resolve(phase="request_system")
+    assert "system.lora_control_plane" in [item.id for item in modules]
+    module = next(item for item in modules if item.id == "system.lora_control_plane")
+    assert module.type == "policy"
+    assert module.cache_scope == "request"
+
+
 def test_agent_collaboration_prompt_explains_list_and_wait_any(tmp_path) -> None:
     prompt = _render_available_tools_prompt(
         _context(tmp_path, tool_names=["agent_start", "agent_list", "agent_wait"])
