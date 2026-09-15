@@ -10,10 +10,10 @@ import pytest
 from pygent import AIMessage, Context, Module, ToolCall, UserMessage, thaw_json
 from pygent.agent import ReplaceMessageProjection, decode_react_projection_operation
 from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
+from pygent.llm import ModelConfig
 from pygent.runtime import ExecutionOptions
 from pygent.tool import AgentToolExecutor
 
-from lora.config import load_run_config
 from lora.runtime.agent.prompt_models import PromptRenderContext
 from lora.runtime.agent.prompt_sources import _render_available_tools_prompt
 from lora.runtime.context import LoraContext
@@ -24,6 +24,17 @@ from lora.runtime.service import (
 )
 from lora.schema import RunConfig
 from lora.sessions import SessionManager
+from tests.unit.test_session_manager import native_run_config
+
+
+def load_run_config(*, workspace_root: Path) -> RunConfig:
+    config = native_run_config(workspace_root)
+    mapping = config.model_config_mapping
+    assert mapping is not None
+    for model in mapping["models"].values():
+        model["connection"]["credential"] = {"none": True}
+    config.model_config = ModelConfig.from_mapping(mapping)
+    return config
 
 
 class _DurableEcho(Module[UserMessage, AIMessage]):
@@ -333,9 +344,6 @@ async def test_complete_lora_graph_is_eligible_for_pygent_module_boundary_recove
     with tempfile.TemporaryDirectory() as tmp:
         config = load_run_config(workspace_root=Path(tmp))
         assert config.resolved_agent is not None
-        for route in config.resolved_agent.routes:
-            route.api_key = "durability-test"
-            route.api_key_source = "test"
         service = LoraRuntimeService(config)
         try:
             agent = service.new_agent(interactive_approvals=True)

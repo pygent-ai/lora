@@ -341,15 +341,18 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
         _require_known_keys(
             request, allowed_request_fields, f"agents[{index}].model_request"
         )
+        retry_fields = {
+            "max_attempts_per_model",
+            "attempt_idle_timeout_seconds",
+            "backoff_initial",
+            "backoff_maximum",
+            "backoff_multiplier",
+        }
+        if {"profile", "routes", "fallback"} & set(request):
+            retry_fields.add("max_attempts_per_route")
         _validate_mapping(
             request.get("retry"),
-            {
-                "max_attempts_per_model",
-                "attempt_idle_timeout_seconds",
-                "backoff_initial",
-                "backoff_maximum",
-                "backoff_multiplier",
-            },
+            retry_fields,
             f"agents[{index}].model_request.retry",
         )
 

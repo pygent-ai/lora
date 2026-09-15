@@ -98,6 +98,7 @@ from .eternal_conversation import (
     render_memory_snapshot,
 )
 from .file_effects import FILE_EFFECT_TOOL_SPEC, FileEffectToolExecutor
+from .model_configuration import preferred_models, preferred_profile_name
 
 if TYPE_CHECKING:
     from lora.orchestration.session_collaboration import SessionCollaborationService
@@ -365,20 +366,33 @@ class LoraRuntimeService:
             config.eternal_conversation,
             run_agent=self._run_memory_agent,
         )
-        template = LoraAgent(
-            config,
-            external_tools=self.external_tools,
-            managed_model=True,
-            memory_harness=self.memory_harness,
-            reminders=self.reminders,
-            bash_tasks=self.bash_tasks,
+        template = (
+            LoraAgent(
+                config,
+                external_tools=self.external_tools,
+                managed_model=True,
+                model_group_name=config.resolved_agent.default_model_group,
+                memory_harness=self.memory_harness,
+                reminders=self.reminders,
+                bash_tasks=self.bash_tasks,
+            )
+            if config.resolved_agent is not None and config.model_config is not None
+            else None
         )
-        self._agent_definitions: dict[tuple[int, bool], LoraAgent] = (
-            {(id(config), False): template} if config.resolved_agent is not None else {}
+        self._agent_definitions: dict[tuple[int, bool, str], LoraAgent] = (
+            {
+                (
+                    id(config),
+                    False,
+                    config.resolved_agent.default_model_group,
+                ): template
+            }
+            if template is not None and config.resolved_agent is not None
+            else {}
         )
         self._model_invokers: dict[str, Any] = (
             {config.resolved_agent.alias: template.llm}
-            if config.resolved_agent is not None and template.llm is not None
+            if template is not None and config.resolved_agent is not None
             else {}
         )
 
@@ -665,13 +679,15 @@ class LoraRuntimeService:
         self,
         *,
         interactive_approvals: bool,
+        model_group_name: str | None = None,
         config: RunConfig | None = None,
     ) -> LoraAgent:
         effective_config = config or self.config
         resolved = effective_config.resolved_agent
         if resolved is None:
             raise ValueError("resolved agent configuration is required")
-        key = (id(effective_config), interactive_approvals)
+        selected_group = model_group_name or resolved.default_model_group
+        key = (id(effective_config), interactive_approvals, selected_group)
         existing = self._agent_definitions.get(key)
         if existing is not None:
             return existing
@@ -683,6 +699,7 @@ class LoraRuntimeService:
             resolved_agent=effective_config.resolved_agent,
             external_tools=self.external_tools,
             managed_model=True,
+            model_group_name=selected_group,
             interactive_approvals=interactive_approvals,
             model_invoker=invoker,
             memory_harness=self.memory_harness,
@@ -700,45 +717,42 @@ class LoraRuntimeService:
         if agent.llm is not None and (
             module is agent or getattr(module, "agent", None) is agent
         ):
-            requirement = ModelGroup.deferred(
-                name=f"lora:{agent.resolved_agent.alias}"
-            )
+            requirement = ModelGroup.deferred(name=f"lora:{agent.model_group_name}")
             handle = bound.model_groups.get(requirement)
-            routes = agent._resolved_routes()
-            models = agent._model_entries()
+            native = agent.config.model_config
+            if native is None:
+                raise RuntimeError("model_configuration_required")
+            group = native.model_groups[agent.model_group_name]
             revision = hashlib.sha256(
                 repr(
                     (
-                        agent.resolved_agent.profile,
-                        models,
+                        agent.model_group_name,
+                        group.models,
                         tuple(
-                            (
-                                route.id,
-                                route.provider,
-                                route.model_name,
-                                route.base_url,
-                                route.api_key_env,
-                            )
-                            for route in routes
+                            (key, native.connections[key])
+                            for key in native.models
                         ),
                     )
                 ).encode("utf-8")
             ).hexdigest()
             self.model_resolver.register(revision, agent.llm)
-            await handle.ensure_profile(
-                profile=agent.resolved_agent.profile,
-                models=models,
-                invoker=agent.llm,
-                resource_ref=ModelResourceRef(
-                    resolver_id=self.model_resolver.resolver_id,
-                    resource_id=f"lora:{agent.resolved_agent.alias}",
-                    revision=revision,
-                    capacity_owner_id=f"lora:{Path(self.config.workspace_root).resolve()}",
-                    coordinator_domain=str(Path(self.config.workspace_root).resolve()),
-                ),
-                make_default=True,
-                deadline=time.monotonic() + 60,
-            )
+            for index, entry in enumerate(group.models):
+                await handle.ensure_profile(
+                    profile=preferred_profile_name(entry.name),
+                    models=preferred_models(
+                        native, agent.model_group_name, entry.name
+                    ),
+                    invoker=agent.llm,
+                    resource_ref=ModelResourceRef(
+                        resolver_id=self.model_resolver.resolver_id,
+                        resource_id=f"lora:{agent.model_group_name}",
+                        revision=revision,
+                        capacity_owner_id=f"lora:{Path(self.config.workspace_root).resolve()}",
+                        coordinator_domain=str(Path(self.config.workspace_root).resolve()),
+                    ),
+                    make_default=index == 0,
+                    deadline=time.monotonic() + 60,
+                )
         return bound
 
     @staticmethod
@@ -795,7 +809,11 @@ class LoraRuntimeService:
         from pygent.runtime import ExecutionOptions
 
         await self.initialize()
-        agent = self.new_agent(interactive_approvals=interactive_approvals)
+        group_name, selected_model_key = manager.model_selection(run_ref.session_id)
+        agent = self.new_agent(
+            interactive_approvals=interactive_approvals,
+            model_group_name=group_name,
+        )
         turn_message, turn_context = await self._prepare_turn(
             manager=manager,
             run_ref=run_ref,
@@ -815,6 +833,11 @@ class LoraRuntimeService:
                     request_id=run_ref.case_run_id,
                     idempotency_key=run_ref.case_run_id,
                     identity=run_ref.session_id,
+                    model_calls={
+                        f"lora:{group_name}": {
+                            "profile": preferred_profile_name(selected_model_key)
+                        }
+                    },
                     deadline=deadline
                     if deadline is not None
                     else time.monotonic() + 30 * 60,
@@ -854,7 +877,22 @@ class LoraRuntimeService:
         """Claim and resume one non-terminal durable Pygent execution."""
 
         await self.initialize()
-        agent = self.new_agent(interactive_approvals=True)
+        stored = await self.history.get_execution(execution_id)
+        if stored is None:
+            raise KeyError(f"unknown durable execution {execution_id!r}")
+        _, recovered_context = invocation_from_dict(
+            stored.input,
+            registry=self.runtime.context_codec_registry,
+        )
+        if not isinstance(recovered_context, LoraContext):
+            raise TypeError("durable execution context is not a LoraContext")
+        group_name, _ = SessionManager(self.config).model_selection(
+            recovered_context.session_id
+        )
+        agent = self.new_agent(
+            interactive_approvals=True,
+            model_group_name=group_name,
+        )
         bound = await self.bind(agent, agent)
         await self.runtime.recover_tool_jobs(bound)
         lease_wait_deadline = min(
@@ -955,7 +993,11 @@ class LoraRuntimeService:
                 session.history.append(message_to_dict(prior_message))
         if carry_context and messages[:-1]:
             session = manager.load(run_ref.session_id)
-        agent = self.new_agent(interactive_approvals=False)
+        group_name, selected_model_key = manager.model_selection(run_ref.session_id)
+        agent = self.new_agent(
+            interactive_approvals=False,
+            model_group_name=group_name,
+        )
         turn_message, turn_context = await self._prepare_turn(
             manager=manager,
             run_ref=run_ref,
@@ -975,6 +1017,11 @@ class LoraRuntimeService:
                     request_id=run_ref.case_run_id,
                     idempotency_key=run_ref.case_run_id,
                     identity=run_ref.session_id,
+                    model_calls={
+                        f"lora:{group_name}": {
+                            "profile": preferred_profile_name(selected_model_key)
+                        }
+                    },
                     deadline=time.monotonic() + 30 * 60,
                 ),
             )
@@ -1067,6 +1114,8 @@ class LoraRuntimeService:
             "session_id": run_ref.session_id,
             "case_run_id": run_ref.case_run_id,
             "persist_conversation_history": carry_context,
+            "model_group_name": session.model_group_name,
+            "selected_model_key": session.selected_model_key,
         }
         if (
             config.eternal_conversation.enabled
@@ -1137,7 +1186,13 @@ class LoraRuntimeService:
             workspace_root=self.config.workspace_root,
             agent_alias=alias,
         )
-        agent = LoraAgent(child_config, managed_model=False)
+        if child_config.resolved_agent is None:
+            raise RuntimeError(f"background memory Agent {alias!r} is unconfigured")
+        agent = LoraAgent(
+            child_config,
+            managed_model=False,
+            model_group_name=child_config.resolved_agent.default_model_group,
+        )
         try:
             layer = agent.new_model_layer()
             if agent.llm is None:

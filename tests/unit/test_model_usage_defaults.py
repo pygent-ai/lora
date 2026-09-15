@@ -10,19 +10,27 @@ from pygent.llm._adapter_contracts import ModelProviderStreamPart
 from pygent.llm._stream_accumulator import ModelStreamAccumulator
 from pygent.llm.layer import _message_effect_value, _message_from_effect
 
-from lora.config import load_run_config
 from lora.runtime.agent.core import LoraAgent
 from lora.runtime.agent.pipeline import checkpoint_conversation_message
 from lora.runtime.context import LoraContext
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import SessionManager
+from lora.schema import ResolvedAgentConfig, RunConfig
+from tests.unit.test_model_configuration import native_mapping
 
 
 def model_agent(tmp_path):
-    config = load_run_config(workspace_root=tmp_path)
-    for route in config.resolved_agent.routes:
-        route.base_url = "http://113.46.219.251:8080/v1"
-        route.api_key = "test-only"
+    mapping = native_mapping(group=("main", "backup"))
+    for model in mapping["models"].values():
+        model["connection"]["credential"] = {"none": True}
+    config = RunConfig(
+        workspace_root=tmp_path,
+        lora_root=tmp_path / ".lora",
+        model_config_mapping=mapping,
+        resolved_agent=ResolvedAgentConfig(
+            alias="default", default_model_group="coding"
+        ),
+    )
     return LoraAgent(config)
 
 
@@ -42,12 +50,8 @@ def test_all_model_entries_enable_streaming_and_leave_usage_to_client(tmp_path):
         assert "stream_options" not in OpenAICompatibleAdapter().build_request(
             request
         ).to_dict()
-    official_route = agent.resolved_agent.routes[0]
-    official_route.base_url = "https://api.deepseek.com"
     entries_by_name = {entry.name: entry for entry in agent._model_entries()}
-    assert entries_by_name[official_route.id].spec.provider_options.to_dict() == {
-        "thinking": {"type": "disabled"}
-    }
+    assert entries_by_name["main"].spec.provider_options.to_dict() == {}
 
 
 @pytest.mark.asyncio
@@ -64,14 +68,69 @@ async def test_managed_binding_uses_same_usage_routes(tmp_path):
         config=agent.config,
     )
     await LoraRuntimeService.bind(service, agent, agent)
-    models = handle.ensure_profile.call_args.kwargs["models"]
-    assert models == agent._model_entries()
-    assert all(model.spec.capabilities.streaming.output == ("text",) for model in models)
+    assert handle.ensure_profile.await_count == 2
+    calls = handle.ensure_profile.await_args_list
+    assert [call.kwargs["profile"] for call in calls] == [
+        "preferred:main",
+        "preferred:backup",
+    ]
+    assert [entry.name for entry in calls[1].kwargs["models"]] == [
+        "backup",
+        "main",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_turn_admits_persisted_session_preference(tmp_path):
+    config = model_agent(tmp_path).config
+    manager = SessionManager(config)
+    session = manager.create(case_id="chat", mode="agent")
+    manager.set_selected_model(session.session_id, "backup")
+    run = manager.start_case_run(session.session_id, "chat", run_config=config)
+    agent = object()
+    handle = SimpleNamespace(execution_id="execution-1")
+    service = LoraRuntimeService.__new__(LoraRuntimeService)
+    service.config = config
+    service.initialize = AsyncMock()
+    service.new_agent = Mock(return_value=agent)
+    service._prepare_turn = AsyncMock(
+        return_value=(
+            UserMessage(content="hello"),
+            LoraContext(
+                session_id=session.session_id,
+                case_id="chat",
+                case_run_id=run.case_run_id,
+                run_dir=run.run_dir,
+                turn_id="turn-1",
+            ),
+        )
+    )
+    service.bind = AsyncMock(return_value=object())
+    service._start_agent_execution = AsyncMock(return_value=handle)
+    service.reminders = SimpleNamespace(
+        acknowledge_initial=AsyncMock(),
+        release_initial=AsyncMock(),
+    )
+    service._record_execution_id = Mock()
+
+    returned = await service.start_turn(
+        manager=manager,
+        message="hello",
+        run_ref=run,
+        turn_id="turn-1",
+        interactive_approvals=True,
+    )
+
+    options = service._start_agent_execution.await_args.kwargs["execution"]
+    assert returned is handle
+    assert options.model_calls.to_dict() == {
+        "lora:coding": {"profile": "preferred:backup"}
+    }
 
 
 @pytest.mark.asyncio
 async def test_usage_after_finish_survives_native_session_storage(tmp_path):
-    config = load_run_config(workspace_root=tmp_path)
+    config = model_agent(tmp_path).config
     manager = SessionManager(config)
     session = manager.create(case_id="chat", mode="agent")
     run = manager.start_case_run(session.session_id, "chat", run_config=config)

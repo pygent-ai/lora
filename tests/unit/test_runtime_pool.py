@@ -5,7 +5,8 @@ import asyncio
 import pytest
 
 from lora.orchestration import RuntimeScopeKey, WorkspaceRuntimePool
-from lora.schema import ModelRouteConfig, ResolvedAgentConfig, RunConfig
+from lora.schema import ResolvedAgentConfig, RunConfig
+from tests.unit.test_model_configuration import native_mapping
 
 
 class _Runtime:
@@ -112,23 +113,21 @@ async def test_pool_rejects_new_leases_after_stop(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_credential_change_creates_a_new_generation_without_exposing_key(
+async def test_credential_reference_change_creates_a_new_generation_without_secrets(
     tmp_path,
 ) -> None:
     created: list[_Runtime] = []
 
-    def configured(secret: str) -> RunConfig:
-        route = ModelRouteConfig(
-            id="primary",
-            provider="openai",
-            model_name="model",
-            base_url="https://example.invalid",
-            api_key_env="MODEL_API_KEY",
-            api_key=secret,
-            api_key_source="config",
-        )
+    def configured(env_name: str) -> RunConfig:
+        mapping = native_mapping()
+        mapping["models"]["a"]["connection"]["credential"] = {"env": env_name}
         config = _config(tmp_path)
-        config.resolved_agent = ResolvedAgentConfig(alias="default", routes=(route,))
+        config.model_config_mapping = mapping
+        config.model_config = None
+        config.resolved_agent = ResolvedAgentConfig(
+            alias="default", default_model_group="coding"
+        )
+        config.__post_init__()
         return config
 
     def factory(config, **kwargs):
@@ -137,14 +136,14 @@ async def test_credential_change_creates_a_new_generation_without_exposing_key(
         return runtime
 
     pool = WorkspaceRuntimePool(runtime_factory=factory)
-    first = await pool.acquire(config=configured("first-secret"))
+    first = await pool.acquire(config=configured("FIRST_KEY"))
     await first.release()
-    second = await pool.acquire(config=configured("second-secret"))
+    second = await pool.acquire(config=configured("SECOND_KEY"))
 
     assert first.runtime is not second.runtime
     assert len(created) == 2
-    assert "first-secret" not in first.runtime.generation_key.config_fingerprint
-    assert "second-secret" not in second.runtime.generation_key.config_fingerprint
+    assert "FIRST_KEY" not in first.runtime.generation_key.config_fingerprint
+    assert "SECOND_KEY" not in second.runtime.generation_key.config_fingerprint
     await second.release()
     await pool.close(cancel=True)
 

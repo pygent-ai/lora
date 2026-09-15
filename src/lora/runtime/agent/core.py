@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -9,14 +8,11 @@ from typing import Any
 from pygent import (
     Agent,
     AIMessage,
-    CapabilityPresetCatalog,
     ExponentialBackoff,
     GenerationConfig,
     ModelCallLayer,
-    ModelEntry,
     ModelErrorKind,
     ModelGroup,
-    ModelSpec,
     PygentAgent,
     RetryPolicy,
     ToolCallLayer,
@@ -25,11 +21,7 @@ from pygent import (
     UserMessage,
 )
 from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
-from pygent.llm import (
-    DefaultModelInvoker,
-    OpenAICompatibleAdapter,
-    OpenAICompatibleClient,
-)
+from pygent.llm import ModelCallPolicy
 from pygent.runtime.codec import context_to_dict
 from pygent.tool import StandardTools, ToolSpec
 
@@ -40,13 +32,16 @@ from lora.runtime.context_compression import COMPRESSION_REQUEST_PROMPT
 from lora.runtime.eternal_conversation import EternalConversationHarness
 from lora.runtime.file_effects import FILE_EFFECT_TOOL_SPEC
 from lora.runtime.reminders import ReminderService
-from lora.schema import ModelRouteConfig, ResolvedAgentConfig, RunConfig
+from lora.runtime.model_configuration import (
+    CredentialEnvironment,
+    build_model_invoker,
+)
+from lora.schema import ResolvedAgentConfig, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import DIFF_TOOL_SPEC, EventStore
 
 from .common import DEFAULT_REACT_MAX_STEPS
 from .compressor import LoraCompressorModule
-from .model_invoker import LoraModelInvoker
 from .pipeline import (
     ContextSnapshotModelModule,
     ConversationCheckpointModelModule,
@@ -72,58 +67,38 @@ MODEL_RETRYABLE_ERROR_KINDS = (
     ModelErrorKind.UNAVAILABLE,
     ModelErrorKind.INVALID_RESPONSE,
 )
-PYGENT_VERIFY_SSL_ENV = "PYGENT_VERIFY_SSL"
 LORA_PROJECTION_READY_KIND = "lora.react.projection.ready.v1"
 
 
-def _verify_ssl_from_env() -> bool | None:
-    raw_value = os.environ.get(PYGENT_VERIFY_SSL_ENV)
-    if raw_value is None or not raw_value.strip():
-        return None
-    normalized = raw_value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(
-        f"{PYGENT_VERIFY_SSL_ENV} must be one of: 1, 0, true, false, yes, no, on, off"
-    )
-
-
-def _preferred_model_route(config: ResolvedAgentConfig) -> ModelRouteConfig:
-    routes_by_id = {route.id: route for route in config.routes}
-    return routes_by_id[config.fallback[0]]
-
-
-def _model_route_trace_payload(
-    route: ModelRouteConfig | None,
+def _model_trace_payload(
+    config: RunConfig,
+    *,
+    group_name: str,
+    model_key: str | None,
 ) -> dict[str, str | None]:
-    if route is None:
+    native = config.model_config
+    entry = native.models.get(model_key) if native is not None and model_key else None
+    if entry is None:
         return {
-            "model_name": None,
-            "model_route": None,
-            "model_base_url": None,
-            "api_key_source": None,
+            "model_group": group_name,
+            "model_key": model_key,
+            "provider": None,
+            "model_id": None,
         }
     return {
-        "model_name": route.model_name,
-        "model_route": route.id,
-        "model_base_url": route.base_url,
-        "api_key_source": route.api_key_source,
+        "model_group": group_name,
+        "model_key": entry.name,
+        "provider": entry.spec.provider,
+        "model_id": entry.spec.model_id,
     }
 
 
-def _actual_model_route(
-    config: ResolvedAgentConfig,
-    answer: AIMessage | None,
-) -> ModelRouteConfig | None:
+def _actual_model_key(answer: AIMessage | None) -> str | None:
     if answer is None:
         return None
     metadata = dict(answer.metadata)
-    route_id = metadata.get("model_key", metadata.get("route_id"))
-    if not isinstance(route_id, str):
-        return None
-    return next((route for route in config.routes if route.id == route_id), None)
+    model_key = metadata.get("model_key")
+    return model_key if isinstance(model_key, str) else None
 
 
 class LoraForegroundAgent(PygentAgent):
@@ -143,6 +118,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
     trusted_live_resource_attributes = (
         "config",
         "resolved_agent",
+        "model_group_name",
         "prompt_registry",
         "workspace_root",
         "llm",
@@ -161,6 +137,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         prompt_registry: PromptRegistry | None = None,
         external_tools: tuple[ToolSpec, ...] = (),
         managed_model: bool = False,
+        model_group_name: str | None = None,
         interactive_approvals: bool = False,
         model_invoker: Any | None = None,
         memory_harness: EternalConversationHarness | None = None,
@@ -172,17 +149,22 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         resolved = resolved_agent or config.resolved_agent
         if resolved is None:
             raise ValueError(
-                "LoraAgent requires a resolved routes-based agent configuration"
+                "LoraAgent requires a configured native model configuration"
             )
         self.resolved_agent: ResolvedAgentConfig = resolved
+        native = config.model_config
+        if native is None:
+            raise ValueError("LoraAgent requires a configured native model configuration")
+        self.model_group_name = model_group_name or resolved.default_model_group
+        if self.model_group_name not in native.model_groups:
+            raise ValueError(f"unknown model group {self.model_group_name!r}")
         self.prompt_registry = prompt_registry
         self.managed_model = managed_model
         self.interactive_approvals = interactive_approvals
         self.workspace_root = Path(config.workspace_root)
-        self.llm = model_invoker or (
-            self._build_model_invoker()
-            if any(route.api_key for route in self.resolved_agent.routes)
-            else None
+        self.llm = model_invoker or build_model_invoker(
+            native,
+            credential_environ=CredentialEnvironment(config.user_lora_root),
         )
         self._standard_tools: StandardTools | None = None
         self._toolkit: ToolKit | None = None
@@ -203,64 +185,27 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             *(spec.definition for spec in self._external_tools),
         )
 
-    def _build_model_invoker(self) -> DefaultModelInvoker:
-        routes = self._resolved_routes()
-        verify_ssl = _verify_ssl_from_env()
-        return LoraModelInvoker(
-            adapters={"openai_chat_completions": OpenAICompatibleAdapter()},
-            clients={
-                route.id: OpenAICompatibleClient(
-                    base_url=route.base_url,
-                    api_key=route.api_key or "",
-                    verify_ssl=verify_ssl,
-                )
-                for route in routes
-            },
-        )
-
-    def _resolved_routes(self) -> tuple[Any, ...]:
-        return self.resolved_agent.routes
-
-    def _model_entries(self) -> tuple[ModelEntry, ...]:
-        capabilities = CapabilityPresetCatalog.builtin().presets[
-            "text_tools_structured_reasoning"
-        ].materialize(context_tokens=1_000_000, max_output_tokens=384_000)
-        entries = {
-            route.id: ModelEntry(
-                route.id,
-                ModelSpec(
-                    provider=route.provider,
-                    model_id=route.model_name,
-                    protocol="openai_chat_completions",
-                    provider_options=(
-                        {"thinking": {"type": "disabled"}}
-                        if "api.deepseek.com" in route.base_url.lower()
-                        else {}
-                    ),
-                    capabilities=capabilities,
-                ),
-            )
-            for route in self._resolved_routes()
-        }
-        order = self.resolved_agent.fallback or tuple(entries)
-        return tuple(entries[route_id] for route_id in order)
+    def _model_entries(self) -> tuple[Any, ...]:
+        assert self.config.model_config is not None
+        return self.config.model_config.model_groups[self.model_group_name].models
 
     def new_model_layer(self) -> ModelCallLayer:
         if self.llm is None:
             raise RuntimeError("model invoker is not configured")
         group = (
-            ModelGroup.deferred(name=f"lora:{self.resolved_agent.alias}")
+            ModelGroup.deferred(name=f"lora:{self.model_group_name}")
             if self.managed_model
             else ModelGroup(
-                name=f"lora:{self.resolved_agent.alias}",
+                name=f"lora:{self.model_group_name}",
                 models=self._model_entries(),
             )
         )
         retry = self.resolved_agent.retry
         return ModelCallLayer(
             model_group=group,
+            policy=ModelCallPolicy(allow_profile_override=self.managed_model),
             retry_policy=RetryPolicy(
-                max_attempts_per_model=retry.max_attempts_per_route,
+                max_attempts_per_model=retry.max_attempts_per_model,
                 retry_on=MODEL_RETRYABLE_ERROR_KINDS,
                 attempt_idle_timeout_seconds=retry.attempt_idle_timeout_seconds,
                 backoff=ExponentialBackoff(
@@ -403,15 +348,21 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         )
         if not isinstance(replacement_count, int):
             replacement_count = len(context.messages) + 1
-        preferred_route = _preferred_model_route(self.resolved_agent)
+        selected_model_key = context.metadata.get("selected_model_key")
+        if not isinstance(selected_model_key, str):
+            selected_model_key = self._model_entries()[0].name
         store.append(
             "model.request",
             actor="system",
             payload={
                 "agent": type(self).__name__,
                 "agent_alias": self.resolved_agent.alias,
-                **_model_route_trace_payload(preferred_route),
-                "model_fallback": list(self.resolved_agent.fallback),
+                **_model_trace_payload(
+                    self.config,
+                    group_name=self.model_group_name,
+                    model_key=selected_model_key,
+                ),
+                "model_fallback": [entry.name for entry in self._model_entries()],
                 "max_steps": self.config.max_steps,
                 "history_message_count": replacement_count,
                 "latest_user_input": raw_content,
@@ -520,8 +471,10 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                 payload={
                     "agent": type(self).__name__,
                     "agent_alias": self.resolved_agent.alias,
-                    **_model_route_trace_payload(
-                        _actual_model_route(self.resolved_agent, answer)
+                    **_model_trace_payload(
+                        self.config,
+                        group_name=self.model_group_name,
+                        model_key=_actual_model_key(answer),
                     ),
                     "status": status,
                     "error": error,

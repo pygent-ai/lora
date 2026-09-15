@@ -29,14 +29,6 @@ class RuntimeGenerationKey:
     @classmethod
     def from_config(cls, config: RunConfig) -> "RuntimeGenerationKey":
         payload = config.to_dict()
-        if config.resolved_agent is not None:
-            payload["resolved_route_credentials"] = [
-                {
-                    "id": route.id,
-                    "api_key": route.api_key,
-                }
-                for route in config.resolved_agent.routes
-            ]
         encoded = json.dumps(
             payload,
             ensure_ascii=False,
