@@ -8,7 +8,8 @@ Approved direction: replace Lora's route-based model configuration with Pygent's
 
 - Store model definitions and model groups in the exact mapping accepted by `pygent.ModelConfig.from_mapping()`.
 - Let a user work with multiple provider connections and select credential-visible models from each connection.
-- Let an agent select a named Pygent `ModelGroup`; the group's model order is the fallback order.
+- Let a user configure multiple named Pygent `ModelGroup` values and choose one when creating a conversation.
+- Keep a conversation's model group fixed while allowing its preferred child model to change between turns. The preferred model runs first and the remaining group members retain their configured fallback order.
 - Use Pygent's provider, capability, connection, client, adapter, model-catalog, and model-group types instead of parallel Lora equivalents.
 - Reuse existing credential references without reading or displaying secret values.
 
@@ -78,7 +79,7 @@ agent:
 agents:
   - alias: dev
     model_request:
-      model_group: coding
+      default_model_group: coding
       context_window: 1000000
       retry:
         max_attempts_per_model: 2
@@ -88,7 +89,7 @@ agents:
         backoff_multiplier: 2
 ```
 
-The `models` and `model_groups` values are passed unchanged to `ModelConfig.from_mapping()`. Pygent validates unknown fields, URLs, credentials, capabilities, duplicate entries, and group references. Lora validates only its surrounding application settings and that every agent references an existing model group.
+The `models` and `model_groups` values are passed unchanged to `ModelConfig.from_mapping()`. Pygent validates unknown fields, URLs, credentials, capabilities, duplicate entries, and group references. Lora validates only its surrounding application settings and that every agent's default references an existing model group.
 
 Pygent associates a `ModelConnection` with each named model. If multiple selected models use the same endpoint and credential, their native model entries repeat that connection value. The UI may visually group equal connection values, but neither the persisted config nor runtime introduces a reusable Lora connection object.
 
@@ -127,15 +128,19 @@ The model section has three ordered steps:
 
 1. **Connections**: add a provider/protocol/base URL/credential reference, then load models. These are editor drafts derived into native model entries, not a persisted Lora schema.
 2. **Models**: select one or more models per connection, assign stable unique model keys, review capabilities, and optionally edit custom capabilities/provider options.
-3. **Model groups**: create multiple named groups and order selected model keys. Drag or arrow controls change Pygent fallback order. Each agent selects one group.
+3. **Model groups**: create multiple named groups and order selected model keys. Drag or arrow controls change Pygent fallback order. Each agent selects one default group for new conversations.
 
 Saving sends one complete replacement of `models`, `model_groups`, and the agent-to-group references. The backend validates the native subtree with `ModelConfig.from_mapping()` before atomically rewriting `config.yaml`. Partial invalid state remains only in the browser draft.
 
-The general Settings summary displays the active group and its ordered `model_key / provider / model_id` entries. It no longer displays routes or a separate fallback list.
+The new-conversation action includes a required model-group selector, defaulted from the selected agent. The created Session persists both `model_group_name` and `selected_model_key`; the initial selected model is the first entry in the configured group. Different conversations may use different groups concurrently.
+
+An idle conversation exposes a child-model selector containing only members of its fixed group. Switching it updates `selected_model_key` atomically and affects the next turn. Switching is rejected while that conversation has an active execution, and the group selector is not shown after creation.
+
+The general Settings summary displays the configured groups and their ordered `model_key / provider / model_id` entries. Conversation chrome displays its fixed group and current preferred model. It no longer displays routes or a separate fallback list.
 
 ## Runtime assembly
 
-`RunConfig` holds the parsed Pygent `ModelConfig` and the selected Pygent `ModelGroup`, rather than Lora `ModelRouteConfig` objects. Retry fields use Pygent terminology (`max_attempts_per_model`).
+`RunConfig` holds the parsed Pygent `ModelConfig` and the agent's default Pygent `ModelGroup`, rather than Lora `ModelRouteConfig` objects. A Session selection resolves the fixed group and preferred model for an execution. Retry fields use Pygent terminology (`max_attempts_per_model`).
 
 At the deployment boundary Lora:
 
@@ -143,10 +148,14 @@ At the deployment boundary Lora:
 - creates one native Pygent client per model key using its protocol and connection;
 - creates one adapter per used protocol;
 - constructs `DefaultModelInvoker`/the existing event-projection subclass with those maps;
-- publishes the selected group's ordered `ModelEntry` values through the existing managed Pygent model-group handle;
+- binds the Agent to a deferred Pygent model-group requirement named for the Session's fixed native group;
+- publishes one immutable dynamic profile per child model. A profile contains the selected child first, followed by every other group member in the group's configured order;
+- selects the Session's current child-model profile with Pygent `ModelCallOptions` at execution admission, so an in-flight execution cannot change order;
 - closes all clients through the invoker lifecycle.
 
 The runtime no longer fabricates a capability preset, guesses DeepSeek from a URL, forces `openai_chat_completions`, or translates fallback IDs. Trace and usage events use Pygent `model_key`, `provider`, `model_id`, and group name directly.
+
+Changing the preferred child does not create a different Lora model group and does not disable fallback. For a configured group `[A, B, C]`, selecting `B` produces the Pygent execution order `[B, A, C]`; selecting `C` produces `[C, A, B]`. Pygent's normal continuation rule remains authoritative inside an admitted execution.
 
 ## API contracts
 
@@ -154,6 +163,9 @@ The runtime no longer fabricates a capability preset, guesses DeepSeek from a UR
 - `PATCH /settings` accepts a complete native model-config replacement plus agent group selections and optional transient credential values.
 - `GET /settings/model-catalogs` returns the bundled Pygent provider/capability catalogs in JSON-safe form.
 - `POST /settings/models/discover` accepts one connection draft and returns native `ModelInfo` values or a structured discovery error.
+- Session creation accepts `model_group_name`; omission uses the selected agent's default group.
+- Session detail returns immutable `model_group_name`, current `selected_model_key`, and the group's selectable model summaries.
+- A dedicated Session update operation changes only `selected_model_key` and requires the Session to be idle.
 
 The OpenAPI contract and API documentation are regenerated or updated with these shapes. Raw credentials are forbidden in all response models, logs, and validation errors.
 
@@ -162,6 +174,8 @@ The OpenAPI contract and API documentation are regenerated or updated with these
 - Native Pygent validation errors become HTTP 422 responses with the failing configuration path where available.
 - Missing credentials do not prevent saving a model, but mark it unconfigured and prevent chat execution through that model group.
 - Discovery authentication, timeout, TLS, transport, and invalid-response errors remain scoped to the connection being tested.
+- A Session model-group change is rejected after creation. A child-model change is rejected if the key is outside the fixed group or the Session is running.
+- Removing a group referenced by any Session, or removing a model currently selected by a Session, is rejected. Adding group members or changing fallback order affects only later execution admissions.
 - Settings writes continue to use an atomic temporary-file replacement.
 - Runtime reload occurs only after the new file validates. If reload fails, the API reports the failure and retains the valid saved configuration for diagnosis; it does not restore legacy routes.
 
@@ -176,6 +190,10 @@ Implementation follows test-first changes for:
 - client closure on discovery success, validation failure, timeout, and cancellation;
 - native group ordering as runtime fallback ordering;
 - multiple groups and different connections in one configuration;
+- different conversations selecting different fixed groups;
+- idle child-model switching and selected-first fallback order (`[A, B, C]` to `[B, A, C]`);
+- rejection of group switching, out-of-group child selection, running-session switching, and removal of referenced configuration;
+- persistence and recovery of the fixed group and selected child model;
 - settings request/response secrecy;
 - desktop connection/model/group editing, validation, and payload generation;
 - existing API, CLI, runtime, scenario, and desktop regression suites.
