@@ -12,6 +12,7 @@ from lora.sessions import SessionManager
 from lora.tracing.events import EventStore
 from lora_api.container import ApiContext
 from lora_api.models.responses import (
+    ModelSummaryResponse,
     SessionDetailResponse,
     SessionGroupListResponse,
     SessionGroupResponse,
@@ -52,9 +53,15 @@ class SessionService:
         return sorted(records, key=lambda record: record.updated_at, reverse=True)
 
     def create_session(
-        self, *, case_id: str = "chat", mode: str = "chat"
+        self,
+        *,
+        case_id: str = "chat",
+        mode: str = "chat",
+        model_group_name: str | None = None,
     ) -> SessionRecordResponse:
-        ref = self.manager.create(case_id, mode=mode)
+        ref = self.manager.create(
+            case_id, mode=mode, model_group_name=model_group_name
+        )
         if self.reminders is not None:
             self.reminders.prewarm_session(ref.session_id)
         metadata = read_json(Path(ref.session_dir) / "metadata.json")
@@ -80,7 +87,30 @@ class SessionService:
             metadata=session.metadata,
             runtime_execution_id=run_metadata.get("runtime_execution_id"),
             run_history_start_index=run_metadata.get("history_start_index", 0),
+            selectable_models=self._selectable_models(session.model_group_name),
         )
+
+    def update_selected_model(
+        self, session_id: str, selected_model_key: str
+    ) -> SessionRecordResponse:
+        session = self.manager.set_selected_model(session_id, selected_model_key)
+        metadata = read_json(Path(session.session_dir) / "metadata.json")
+        return _record_from_metadata(
+            Path(session.session_dir), metadata, scope_id=self.scope_id
+        )
+
+    def _selectable_models(self, group_name: str) -> list[ModelSummaryResponse]:
+        native = self.manager.config.model_config
+        if native is None or not group_name or group_name not in native.model_groups:
+            return []
+        return [
+            ModelSummaryResponse(
+                model_key=entry.name,
+                provider=entry.spec.provider,
+                model_id=entry.spec.model_id,
+            )
+            for entry in native.model_groups[group_name].models
+        ]
 
     def delete_session(self, session_id: str) -> bool:
         validate_path_id(session_id, "session_id")
@@ -194,6 +224,8 @@ def _record_from_metadata(
         title=title,
         last_case_run_id=_optional_str(metadata.get("last_case_run_id")),
         last_case_run_status=_optional_str(metadata.get("last_case_run_status")),
+        model_group_name=str(metadata.get("model_group_name") or ""),
+        selected_model_key=str(metadata.get("selected_model_key") or ""),
     )
 
 

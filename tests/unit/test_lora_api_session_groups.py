@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from unittest.mock import patch
 
 import pytest
@@ -12,6 +14,7 @@ from lora.sessions import SessionManager
 from lora.tracing.events import EventStore
 from lora_api.dependencies import ApiContext
 from lora_api.services.session_service import SessionService, _first_user_message_from_events
+from tests.unit.test_session_manager import native_run_config
 
 
 def test_session_groups_are_partitioned_by_remembered_project(tmp_path: Path) -> None:
@@ -61,6 +64,87 @@ def test_conversation_scope_can_create_and_load_a_chat(tmp_path: Path) -> None:
     assert delete_session(created.session_id, scope_id="conversation", context=context).deleted is True
     groups = {group.scope.scope_id: group for group in list_session_groups(context=context).groups}
     assert groups["conversation"].sessions == []
+
+
+def test_create_session_chooses_fixed_group_and_returns_children(
+    tmp_path: Path,
+) -> None:
+    from lora_api.models.requests import CreateSessionRequest
+    from lora_api.routers.sessions import create_session, get_session
+
+    config = native_run_config(tmp_path)
+    context = ApiContext(
+        workspace_root=str(tmp_path),
+        state_path=str(tmp_path / "state.json"),
+        _config=config,
+    )
+    created = asyncio.run(
+        create_session(
+            CreateSessionRequest(model_group_name="coding"), context=context
+        )
+    )
+    detail = get_session(created.session_id, context=context)
+
+    assert created.model_group_name == "coding"
+    assert created.selected_model_key == "main"
+    assert [item.model_key for item in detail.selectable_models] == [
+        "main",
+        "backup",
+    ]
+
+
+def test_idle_session_can_change_only_its_preferred_child(tmp_path: Path) -> None:
+    from lora_api.models.requests import (
+        CreateSessionRequest,
+        UpdateSessionModelRequest,
+    )
+    from lora_api.routers.sessions import create_session, update_session_model
+
+    config = native_run_config(tmp_path)
+    context = ApiContext(
+        workspace_root=str(tmp_path),
+        state_path=str(tmp_path / "state.json"),
+        _config=config,
+    )
+    created = asyncio.run(create_session(CreateSessionRequest(), context=context))
+    changed = asyncio.run(
+        update_session_model(
+            created.session_id,
+            UpdateSessionModelRequest(selected_model_key="backup"),
+            context=context,
+        )
+    )
+    assert changed.model_group_name == "coding"
+    assert changed.selected_model_key == "backup"
+
+
+def test_active_session_rejects_preferred_child_change(tmp_path: Path) -> None:
+    from fastapi import HTTPException
+    from lora_api.models.requests import (
+        CreateSessionRequest,
+        UpdateSessionModelRequest,
+    )
+    from lora_api.routers.sessions import create_session, update_session_model
+
+    config = native_run_config(tmp_path)
+    context = ApiContext(
+        workspace_root=str(tmp_path),
+        state_path=str(tmp_path / "state.json"),
+        _config=config,
+    )
+    created = asyncio.run(create_session(CreateSessionRequest(), context=context))
+    context._session_coordinator = SimpleNamespace(
+        session_busy=AsyncMock(return_value=True)
+    )
+    with pytest.raises(HTTPException) as captured:
+        asyncio.run(
+            update_session_model(
+                created.session_id,
+                UpdateSessionModelRequest(selected_model_key="backup"),
+                context=context,
+            )
+        )
+    assert captured.value.status_code == 409
 
 
 def test_update_settings_remembers_switched_workspace_for_project_list(tmp_path: Path) -> None:

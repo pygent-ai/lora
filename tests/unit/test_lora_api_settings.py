@@ -407,3 +407,28 @@ def test_update_settings_rejects_unreferenced_credential_values(
         asyncio.run(update_settings(request, context=context))
     assert captured.value.status_code == 422
     assert "must-not-be-written" not in str(captured.value.detail)
+
+
+def test_update_settings_rejects_removing_a_session_model(tmp_path: Path) -> None:
+    from lora_api.models.requests import UpdateSettingsRequest
+    from lora_api.routers.settings import update_settings
+    from tests.unit.test_session_manager import native_run_config
+
+    config = native_run_config(tmp_path)
+    config.user_lora_root = str(tmp_path / "user")
+    context = ApiContext(
+        workspace_root=str(tmp_path),
+        state_path=str(tmp_path / "state.json"),
+        _config=config,
+    )
+    session = context.manager.create("chat", mode="chat")
+    context.manager.set_selected_model(session.session_id, "backup")
+    replacement = native_mapping(group=("main",))
+    request = UpdateSettingsRequest(
+        model_config=replacement,
+        default_model_group="coding",
+    )
+
+    with pytest.raises(HTTPException) as captured:
+        asyncio.run(update_settings(request, context=context))
+    assert captured.value.status_code == 409

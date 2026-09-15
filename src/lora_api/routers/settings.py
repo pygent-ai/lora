@@ -14,6 +14,7 @@ from lora.runtime.model_configuration import (
     builtin_model_catalogs,
     discover_models,
 )
+from lora.core.io import read_json
 from lora_api.dependencies import ApiContext, get_api_context
 from lora_api.models.requests import DiscoverModelsRequest, UpdateSettingsRequest
 from lora_api.models.responses import RuntimeConfigResponse
@@ -51,6 +52,7 @@ async def update_settings(
             request,
             user_lora_root=user_lora_root,
             agent_alias=agent_alias,
+            context=context,
         )
     if request.approvals_enabled is not None:
         update_user_approvals(user_lora_root, enabled=request.approvals_enabled)
@@ -104,6 +106,7 @@ def _replace_native_model_settings(
     *,
     user_lora_root: str,
     agent_alias: str,
+    context: ApiContext,
 ) -> None:
     assert request.native_model_config is not None
     try:
@@ -113,6 +116,7 @@ def _replace_native_model_settings(
             raise ValueError(
                 f"default_model_group references unknown model group {group_name!r}"
             )
+        _guard_persisted_session_selections(context, parsed)
         referenced_credentials = {
             credential["env"]
             for model in request.native_model_config.get("models", {}).values()
@@ -159,6 +163,46 @@ def _replace_native_model_settings(
                 "message": str(exc),
             },
         ) from exc
+
+
+def _guard_persisted_session_selections(
+    context: ApiContext, replacement: ModelConfig
+) -> None:
+    from lora_api.project_state import build_session_scopes
+
+    roots = [Path(context.config.lora_root) / "sessions"]
+    roots.extend(
+        Path(scope.lora_root) / "sessions"
+        for scope in build_session_scopes(
+            context.project_state,
+            active_workspace_root=context.config.workspace_root,
+        )
+    )
+    checked_roots: set[Path] = set()
+    for root in roots:
+        sessions_root = root.resolve()
+        if sessions_root in checked_roots or not sessions_root.is_dir():
+            continue
+        checked_roots.add(sessions_root)
+        for metadata_path in sessions_root.glob("*/metadata.json"):
+            metadata = read_json(metadata_path)
+            group_name = metadata.get("model_group_name")
+            model_key = metadata.get("selected_model_key")
+            if not isinstance(group_name, str) or not group_name:
+                continue
+            group = replacement.model_groups.get(group_name)
+            if group is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Model group {group_name!r} is used by an existing session",
+                )
+            if isinstance(model_key, str) and model_key not in {
+                entry.name for entry in group.models
+            }:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Model {model_key!r} is used by an existing session",
+                )
 
 
 def _settings_overrides(request: UpdateSettingsRequest) -> dict[str, Any]:

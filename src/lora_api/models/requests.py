@@ -9,6 +9,12 @@ class CreateSessionRequest(BaseModel):
     case_id: str = "chat"
     mode: str = "chat"
     scope_id: str | None = None
+    model_group_name: str | None = None
+
+
+class UpdateSessionModelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    selected_model_key: str = Field(min_length=1)
 
 
 class ChatTurnRequest(BaseModel):

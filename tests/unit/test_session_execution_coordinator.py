@@ -79,6 +79,23 @@ async def test_equal_session_ids_in_different_roots_do_not_block(tmp_path) -> No
 
 
 @pytest.mark.asyncio
+async def test_session_busy_matches_both_root_and_session_id(tmp_path) -> None:
+    coordinator = SessionExecutionCoordinator()
+    manager = SimpleNamespace(sessions_root=tmp_path / "one" / "sessions")
+    other_manager = SimpleNamespace(sessions_root=tmp_path / "two" / "sessions")
+    turn = SimpleNamespace(
+        manager=manager,
+        command=SimpleNamespace(session_id="session-1"),
+        state=TurnState.RUNNING,
+    )
+    coordinator._managed_runs[id(turn)] = turn
+
+    assert await coordinator.session_busy(manager, "session-1") is True
+    assert await coordinator.session_busy(manager, "session-2") is False
+    assert await coordinator.session_busy(other_manager, "session-1") is False
+
+
+@pytest.mark.asyncio
 async def test_close_seals_a_turn_cancelled_before_start(tmp_path) -> None:
     coordinator = SessionExecutionCoordinator()
 

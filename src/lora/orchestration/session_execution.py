@@ -218,6 +218,18 @@ class SessionExecutionCoordinator:
         async with self._lock:
             return self._case_runs.get(case_run_id)
 
+    async def session_busy(self, manager: Any, session_id: str) -> bool:
+        key = SessionExecutionKey.from_manager(manager, session_id)
+        async with self._lock:
+            return any(
+                not turn.state.terminal
+                and SessionExecutionKey.from_manager(
+                    turn.manager, turn.command.session_id
+                )
+                == key
+                for turn in self._managed_runs.values()
+            )
+
     async def _register_case_run(self, turn: ManagedSessionTurn) -> None:
         if turn.run_ref is None:
             raise RuntimeError("cannot register a turn before its case run exists")

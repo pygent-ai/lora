@@ -51,6 +51,8 @@ class SessionRecordResponse(BaseModel):
     title: str
     last_case_run_id: str | None = None
     last_case_run_status: str | None = None
+    model_group_name: str = ""
+    selected_model_key: str = ""
 
 
 class SessionListResponse(BaseModel):
@@ -83,6 +85,13 @@ class SessionDetailResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     runtime_execution_id: str | None = None
     run_history_start_index: int = 0
+    selectable_models: list["ModelSummaryResponse"] = Field(default_factory=list)
+
+
+class ModelSummaryResponse(BaseModel):
+    model_key: str
+    provider: str
+    model_id: str
 
 
 class DeleteResponse(BaseModel):
