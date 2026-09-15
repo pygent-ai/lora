@@ -15,9 +15,11 @@ class RuntimeConfigResponse(BaseModel):
     workspace_root: str
     lora_root: str
     agent: str
-    profile: str
-    routes: list[dict[str, Any]]
-    fallback: list[str]
+    model_configuration_status: str
+    model_configuration_error: str | None
+    models: dict[str, dict[str, Any]]
+    model_groups: dict[str, dict[str, Any]]
+    default_model_group: str | None
     retry: dict[str, Any]
     user_lora_root: str
     max_steps: int

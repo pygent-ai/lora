@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
+from lora.credentials import lookup_credential
 from lora.schema import RunConfig
 from lora_api.container import ApiContext
 from lora_api.models.responses import (
@@ -55,22 +58,51 @@ def remove_project(context: ApiContext, scope_id: str) -> bool:
 
 
 def config_response(config: RunConfig) -> RuntimeConfigResponse:
-    if config.resolved_agent is None:
-        raise ValueError("selected agent has no model routes")
+    mapping = deepcopy(config.model_config_mapping or {})
+    models = mapping.get("models", {})
+    if not isinstance(models, dict):
+        models = {}
+    safe_models: dict[str, dict] = {}
+    for key, raw_model in models.items():
+        if not isinstance(key, str) or not isinstance(raw_model, dict):
+            continue
+        model = deepcopy(raw_model)
+        connection = model.get("connection")
+        if isinstance(connection, dict):
+            credential = connection.get("credential")
+            env_name = credential.get("env") if isinstance(credential, dict) else None
+            if isinstance(env_name, str):
+                _, source = lookup_credential(
+                    env_name, user_lora_root=config.user_lora_root
+                )
+                connection["credential_source"] = source
+            else:
+                connection["credential_source"] = "none"
+        safe_models[key] = model
+    groups = mapping.get("model_groups", {})
+    if not isinstance(groups, dict):
+        groups = {}
+    retry = config.resolved_agent.retry if config.resolved_agent is not None else None
     return RuntimeConfigResponse(
         approvals_enabled=config.runtime_approvals.enabled,
         workspace_root=config.workspace_root,
         lora_root=config.lora_root,
         agent=config.agent_alias,
-        profile=config.resolved_agent.profile,
-        routes=config.resolved_agent.safe_dict()["routes"],
-        fallback=list(config.resolved_agent.fallback),
+        model_configuration_status=config.model_configuration_status,
+        model_configuration_error=config.model_configuration_error,
+        models=safe_models,
+        model_groups=deepcopy(groups),
+        default_model_group=(
+            config.resolved_agent.default_model_group
+            if config.resolved_agent is not None
+            else None
+        ),
         retry={
-            "max_attempts_per_route": config.resolved_agent.retry.max_attempts_per_route,
-            "attempt_idle_timeout_seconds": config.resolved_agent.retry.attempt_idle_timeout_seconds,
-            "backoff_initial": config.resolved_agent.retry.backoff_initial,
-            "backoff_maximum": config.resolved_agent.retry.backoff_maximum,
-            "backoff_multiplier": config.resolved_agent.retry.backoff_multiplier,
+            "max_attempts_per_model": retry.max_attempts_per_model if retry else 2,
+            "attempt_idle_timeout_seconds": retry.attempt_idle_timeout_seconds if retry else 60.0,
+            "backoff_initial": retry.backoff_initial if retry else 0.5,
+            "backoff_maximum": retry.backoff_maximum if retry else 4.0,
+            "backoff_multiplier": retry.backoff_multiplier if retry else 2.0,
         },
         user_lora_root=config.user_lora_root or "",
         max_steps=config.max_steps,

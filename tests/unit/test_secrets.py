@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from lora.config import load_run_config
 from lora.credentials import (
-    DEFAULT_API_KEY_ENV,
     credential_is_configured,
     delete_user_credential,
     list_user_credential_names,
@@ -96,22 +95,22 @@ class SecretsTests(unittest.TestCase):
             user_root = Path(tmp) / ".lora"
             root.mkdir()
             user_root.mkdir()
-            (user_root / "config.yaml").write_text(
-                "\n".join(
-                    [
-                        "agents:",
-                        "  - alias: dev",
-                        "    model_request:",
-                        "      routes:",
-                        "        - id: primary",
-                        "          provider: openai",
-                        "          api_key_env: DEV_API_KEY",
-                        "          model_name: profile-model",
-                        "          base_url: https://example.test/v1",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
+            from lora.config import replace_user_model_config
+            from tests.unit.test_model_configuration import native_mapping
+
+            mapping = native_mapping()
+            mapping["models"]["a"]["connection"]["credential"] = {
+                "env": "DEV_API_KEY"
+            }
+            replace_user_model_config(
+                user_root,
+                model_config=mapping,
+                agents=[
+                    {
+                        "alias": "dev",
+                        "model_request": {"default_model_group": "coding"},
+                    }
+                ],
             )
             (user_root / "credentials.env").write_text(
                 "DEV_API_KEY=from-user-file\n", encoding="utf-8"
@@ -119,13 +118,12 @@ class SecretsTests(unittest.TestCase):
             os.environ.pop("DEV_API_KEY", None)
             config = load_run_config(workspace_root=root, agent_alias="dev")
 
-        self.assertEqual(
-            config.resolved_agent.routes[0].api_key_source, "user-file:DEV_API_KEY"
-        )  # type: ignore[union-attr]
-        self.assertEqual(config.resolved_agent.routes[0].api_key, "from-user-file")  # type: ignore[union-attr]
-        self.assertEqual(config.resolved_agent.routes[0].api_key_env, "DEV_API_KEY")  # type: ignore[union-attr]
+        self.assertEqual(config.model_configuration_status, "configured")
+        serialized = str(config.to_dict())
+        self.assertIn("DEV_API_KEY", serialized)
+        self.assertNotIn("from-user-file", serialized)
 
-    def test_default_api_key_env_is_deepseek(self) -> None:
+    def test_legacy_routes_do_not_create_a_default_credential(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch("lora.config.loader.Path.home", return_value=Path(tmp)),
@@ -137,18 +135,11 @@ class SecretsTests(unittest.TestCase):
                 "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: m\n          base_url: https://example.test/v1\n          api_key_env: DEEPSEEK_API_KEY\n",
                 encoding="utf-8",
             )
-            os.environ["DEEPSEEK_API_KEY"] = "fallback"
-            try:
-                config = load_run_config(workspace_root=root, agent_alias="dev")
-            finally:
-                os.environ.pop("DEEPSEEK_API_KEY", None)
+            config = load_run_config(workspace_root=root, agent_alias="dev")
 
-        self.assertEqual(
-            config.resolved_agent.routes[0].api_key_env, DEFAULT_API_KEY_ENV
-        )  # type: ignore[union-attr]
-        self.assertEqual(
-            config.resolved_agent.routes[0].api_key_source, "env:DEEPSEEK_API_KEY"
-        )  # type: ignore[union-attr]
+        self.assertEqual(config.model_configuration_status, "legacy")
+        self.assertIsNone(config.model_config)
+        self.assertIsNone(config.resolved_agent)
 
     def test_user_credentials_file_wins_over_process_environment(self) -> None:
         with (
@@ -159,22 +150,19 @@ class SecretsTests(unittest.TestCase):
             user_root = Path(tmp) / ".lora"
             root.mkdir()
             user_root.mkdir()
-            (user_root / "config.yaml").write_text(
-                "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: m\n          base_url: https://example.test/v1\n          api_key_env: DEV_API_KEY\n",
-                encoding="utf-8",
-            )
             (user_root / "credentials.env").write_text(
                 "DEV_API_KEY=file-key\n", encoding="utf-8"
             )
             os.environ["DEV_API_KEY"] = "stale-process-key"
             try:
-                config = load_run_config(workspace_root=root, agent_alias="dev")
+                value, source = lookup_credential(
+                    "DEV_API_KEY", user_lora_root=user_root
+                )
             finally:
                 os.environ.pop("DEV_API_KEY", None)
 
-        route = config.resolved_agent.routes[0]  # type: ignore[union-attr]
-        self.assertEqual(route.api_key, "file-key")
-        self.assertEqual(route.api_key_source, "user-file:DEV_API_KEY")
+        self.assertEqual(value, "file-key")
+        self.assertEqual(source, "user-file:DEV_API_KEY")
 
 
 if __name__ == "__main__":
