@@ -28,8 +28,15 @@ class SessionManager:
         self.lora_root = Path(config.lora_root)
         self.sessions_root = self.lora_root / "sessions"
 
-    def create(self, case_id: str, mode: str = "e2e") -> SessionRef:
+    def create(
+        self,
+        case_id: str,
+        mode: str = "e2e",
+        *,
+        model_group_name: str | None = None,
+    ) -> SessionRef:
         validate_path_id(case_id, "case_id")
+        selected_group, selected_model = self._selection_for_group(model_group_name)
         session_id = self._new_session_id(case_id, mode)
         session_dir = self.sessions_root / session_id
         session_dir.mkdir(parents=True, exist_ok=False)
@@ -43,6 +50,8 @@ class SessionManager:
             session_dir=str(session_dir),
             created_at=now,
             updated_at=now,
+            model_group_name=selected_group,
+            selected_model_key=selected_model,
             metadata={"active_case_id": case_id, "mode": mode},
         )
         write_json_atomic(session_dir / "session.json", session.to_dict())
@@ -55,6 +64,8 @@ class SessionManager:
                 "created_at": now,
                 "updated_at": now,
                 "workspace_root": str(self.workspace_root),
+                "model_group_name": selected_group,
+                "selected_model_key": selected_model,
             },
         )
         return SessionRef(
@@ -70,7 +81,36 @@ class SessionManager:
             raise FileNotFoundError(f"Session {session_id!r} does not exist")
         data = read_json(path)
         data["session_dir"] = str(session_dir)
-        return self._apply_history_checkpoints(AgentSession.from_dict(data))
+        session = AgentSession.from_dict(data)
+        self._resolve_missing_selection(session)
+        return self._apply_history_checkpoints(session)
+
+    def model_selection(self, session_id: str) -> tuple[str, str]:
+        session = self.load(session_id)
+        if not session.model_group_name or not session.selected_model_key:
+            raise RuntimeError("model_configuration_required")
+        return session.model_group_name, session.selected_model_key
+
+    def set_selected_model(
+        self, session_id: str, model_key: str
+    ) -> AgentSession:
+        session = self.load(session_id)
+        native = self.config.model_config
+        if native is None or not session.model_group_name:
+            raise RuntimeError("model_configuration_required")
+        group = native.model_groups.get(session.model_group_name)
+        if group is None:
+            raise ValueError(
+                f"unknown fixed model group {session.model_group_name!r}"
+            )
+        if model_key not in {entry.name for entry in group.models}:
+            raise ValueError(
+                f"model {model_key!r} is not in fixed model group "
+                f"{session.model_group_name!r}"
+            )
+        session.selected_model_key = model_key
+        self.save(session)
+        return session
 
     def load_or_create(self, spec: SessionSpec) -> AgentSession:
         if spec.mode in {"resume", "shared"}:
@@ -313,19 +353,10 @@ class SessionManager:
         *,
         credential_source: RunConfig | None = None,
     ) -> RunConfig:
-        """Load persisted run settings and rehydrate non-persisted credentials."""
+        """Load persisted native run settings; credentials resolve at client build."""
 
         config = RunConfig.from_dict(read_json(Path(ref.run_dir) / "run_config.json"))
-        source = (
-            credential_source.resolved_agent if credential_source is not None else None
-        )
-        target = config.resolved_agent
-        if source is not None and target is not None:
-            credentials = {
-                (route.id, route.api_key_env): route.api_key for route in source.routes
-            }
-            for route in target.routes:
-                route.api_key = credentials.get((route.id, route.api_key_env))
+        del credential_source
         return config
 
     def save(self, session: AgentSession) -> None:
@@ -404,6 +435,39 @@ class SessionManager:
         write_json_atomic(
             session_dir / "session.json", redact_secrets(session.to_dict())
         )
+        metadata_path = session_dir / "metadata.json"
+        if metadata_path.exists():
+            metadata = read_json(metadata_path)
+            metadata.update(
+                {
+                    "updated_at": session.updated_at,
+                    "model_group_name": session.model_group_name,
+                    "selected_model_key": session.selected_model_key,
+                }
+            )
+            write_json_atomic(metadata_path, metadata)
+
+    def _selection_for_group(
+        self, group_name: str | None
+    ) -> tuple[str, str]:
+        resolved = self.config.resolved_agent
+        native = self.config.model_config
+        if resolved is None or native is None:
+            if group_name:
+                raise RuntimeError("model_configuration_required")
+            return "", ""
+        selected_group = group_name or resolved.default_model_group
+        group = native.model_groups.get(selected_group)
+        if group is None:
+            raise ValueError(f"unknown model group {selected_group!r}")
+        return selected_group, group.models[0].name
+
+    def _resolve_missing_selection(self, session: AgentSession) -> None:
+        if session.model_group_name and session.selected_model_key:
+            return
+        group_name, model_key = self._selection_for_group(None)
+        session.model_group_name = group_name
+        session.selected_model_key = model_key
 
     def _apply_history_checkpoints(self, session: AgentSession) -> AgentSession:
         database_path = self._checkpoint_database_path(session.session_id)

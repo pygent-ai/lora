@@ -5,13 +5,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora.schema import (
-    ModelRouteConfig,
-    ResolvedAgentConfig,
-    RunConfig,
-    SessionSpec,
-)
+import pytest
+
+from lora.schema import ResolvedAgentConfig, RunConfig, SessionSpec
 from lora.sessions import SessionManager
+from tests.unit.test_model_configuration import native_mapping
+
+
+def native_run_config(root: str | Path) -> RunConfig:
+    mapping = native_mapping(group=("main", "backup"))
+    return RunConfig(
+        workspace_root=str(root),
+        lora_root=str(Path(root) / ".lora"),
+        model_config_mapping=mapping,
+        resolved_agent=ResolvedAgentConfig(
+            alias="default", default_model_group="coding"
+        ),
+    )
 
 
 class SessionManagerTests(unittest.TestCase):
@@ -66,21 +76,8 @@ class SessionManagerTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             secret = "sk-runtime-secret"
-            route = ModelRouteConfig(
-                id="primary",
-                provider="openai",
-                model_name="model",
-                base_url="https://example.invalid",
-                api_key_env="MODEL_API_KEY",
-                api_key=secret,
-                api_key_source="config",
-            )
-            config = RunConfig(
-                workspace_root=tmp,
-                lora_root=Path(tmp) / ".lora",
-                max_steps=7,
-                resolved_agent=ResolvedAgentConfig(alias="default", routes=(route,)),
-            )
+            config = native_run_config(tmp)
+            config.max_steps = 7
             manager = SessionManager(config)
             session = manager.create("case-a")
             run = manager.start_case_run(session.session_id, "case-a")
@@ -92,7 +89,14 @@ class SessionManagerTests(unittest.TestCase):
 
             self.assertNotIn(secret, persisted)
             self.assertEqual(restored.max_steps, 7)
-            self.assertEqual(restored.resolved_agent.routes[0].api_key, secret)
+            self.assertIsNotNone(restored.model_config)
+            assert restored.model_config is not None
+            self.assertEqual(
+                restored.model_config.connections["main"].credential.resolve(
+                    {"TEST_KEY": secret}
+                ),
+                secret,
+            )
 
     def test_finish_case_run_updates_metadata_and_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -240,3 +244,66 @@ def test_running_session_exposes_current_run_and_recovery_checkpoint(tmp_path):
         SessionService(manager).load_detail(session.session_id).runtime_execution_id
         is None
     )
+
+
+def test_session_persists_fixed_group_and_preferred_model(tmp_path: Path) -> None:
+    config = native_run_config(tmp_path)
+    manager = SessionManager(config)
+    ref = manager.create("chat", mode="chat", model_group_name="coding")
+    assert manager.model_selection(ref.session_id) == ("coding", "main")
+
+    changed = manager.set_selected_model(ref.session_id, "backup")
+
+    assert (changed.model_group_name, changed.selected_model_key) == (
+        "coding",
+        "backup",
+    )
+    assert SessionManager(config).model_selection(ref.session_id) == (
+        "coding",
+        "backup",
+    )
+    metadata = json.loads(
+        (Path(ref.session_dir) / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["model_group_name"] == "coding"
+    assert metadata["selected_model_key"] == "backup"
+
+
+def test_session_rejects_model_outside_fixed_group(tmp_path: Path) -> None:
+    manager = SessionManager(native_run_config(tmp_path))
+    ref = manager.create("chat", mode="chat", model_group_name="coding")
+    with pytest.raises(ValueError, match="is not in fixed model group"):
+        manager.set_selected_model(ref.session_id, "vision-only")
+
+
+def test_session_rejects_unknown_creation_group(tmp_path: Path) -> None:
+    manager = SessionManager(native_run_config(tmp_path))
+    with pytest.raises(ValueError, match="unknown model group"):
+        manager.create("chat", mode="chat", model_group_name="unknown")
+
+
+def test_fork_keeps_fixed_group_and_preferred_model(tmp_path: Path) -> None:
+    manager = SessionManager(native_run_config(tmp_path))
+    source = manager.create("chat", mode="chat")
+    manager.set_selected_model(source.session_id, "backup")
+    forked = manager.fork(source.session_id)
+    assert manager.model_selection(forked.session_id) == ("coding", "backup")
+
+
+def test_old_session_selection_resolves_default_and_persists_on_save(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(native_run_config(tmp_path))
+    ref = manager.create("chat", mode="chat")
+    path = Path(ref.session_dir) / "session.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.pop("model_group_name")
+    data.pop("selected_model_key")
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    loaded = manager.load(ref.session_id)
+    assert (loaded.model_group_name, loaded.selected_model_key) == ("coding", "main")
+    assert "model_group_name" not in json.loads(path.read_text(encoding="utf-8"))
+
+    manager.save(loaded)
+    assert json.loads(path.read_text(encoding="utf-8"))["model_group_name"] == "coding"

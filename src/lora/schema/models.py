@@ -577,6 +577,8 @@ class AgentSession:
     session_dir: str
     created_at: str
     updated_at: str
+    model_group_name: str = ""
+    selected_model_key: str = ""
     system_prompt: str = ""
     status: str = "normal"
     token_usage: dict[str, Any] = field(default_factory=dict)
@@ -604,6 +606,8 @@ class AgentSession:
             session_dir=data.get("session_dir", ""),
             created_at=data["created_at"],
             updated_at=data["updated_at"],
+            model_group_name=data.get("model_group_name", ""),
+            selected_model_key=data.get("selected_model_key", ""),
             system_prompt=data.get("system_prompt", ""),
             status=data.get("status", "normal"),
             token_usage=dict(data.get("token_usage") or {}),

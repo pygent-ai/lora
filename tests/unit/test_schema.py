@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora.schema import CaseDefinition, CaseRunRef, CaseRunResult, ContextEvent, ModelRouteConfig, ResolvedAgentConfig, RunConfig, SessionRef
+from lora.schema import CaseDefinition, CaseRunRef, CaseRunResult, ContextEvent, ResolvedAgentConfig, RunConfig, SessionRef
+from tests.unit.test_model_configuration import native_mapping
 
 
 class SchemaTests(unittest.TestCase):
@@ -18,33 +19,29 @@ class SchemaTests(unittest.TestCase):
 
     def test_run_config_round_trip_keeps_safe_agent_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            mapping = native_mapping()
             config = RunConfig(
                 workspace_root=tmp,
                 lora_root=Path(tmp) / ".lora",
                 agent_alias="dev",
                 resolved_agent=ResolvedAgentConfig(
                     alias="dev",
-                    routes=(ModelRouteConfig(
-                        id="primary",
-                        provider="openai",
-                        model_name="profile-model",
-                        api_key="raw-secret",
-                        api_key_source="env:DEV_API_KEY",
-                        api_key_env="DEV_API_KEY",
-                        base_url="https://api.example/v1",
-                    ),),
+                    default_model_group="coding",
                 ),
+                model_config_mapping=mapping,
             )
 
             data = config.to_dict()
             restored = RunConfig.from_dict(data)
 
         self.assertEqual(data["agent_alias"], "dev")
-        self.assertEqual(data["resolved_agent"]["routes"][0]["model_name"], "profile-model")
+        self.assertEqual(data["model_config_mapping"]["models"]["a"]["model_id"], "model-a")
         self.assertEqual(data["allow_read_outside_workspace"], True)
         self.assertNotIn("raw-secret", str(data))
         self.assertEqual(restored.agent_alias, "dev")
-        self.assertEqual(restored.resolved_agent.routes[0].model_name, "profile-model")
+        self.assertIsNotNone(restored.model_config)
+        assert restored.model_config is not None
+        self.assertEqual(restored.model_config.models["a"].spec.model_id, "model-a")
         self.assertEqual(restored.allow_read_outside_workspace, True)
 
     def test_refs_round_trip(self) -> None:
