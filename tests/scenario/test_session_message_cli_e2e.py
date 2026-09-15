@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Event, Lock, Thread
 
+from tests.native_config_support import native_model_config_yaml
+
 
 def test_cli_message_reaches_running_agent_after_tool_result(tmp_path: Path) -> None:
     requests: list[dict[str, object]] = []
@@ -86,26 +88,11 @@ def test_cli_message_reaches_running_agent_after_tool_result(tmp_path: Path) -> 
     provider_thread = Thread(target=provider.serve_forever, daemon=True)
     provider_thread.start()
     (user_root / "config.yaml").write_text(
-        "\n".join(
-            [
-                "agent:",
-                "  default_alias: test",
-                "agents:",
-                "  - alias: test",
-                "    model_request:",
-                "      routes:",
-                "        - id: primary",
-                "          provider: openai",
-                "          model_name: local-test",
-                f"          base_url: http://127.0.0.1:{provider.server_port}/v1",
-                "          api_key_env: LORA_SESSION_MESSAGE_TEST_KEY",
-                "runtime:",
-                "  approvals:",
-                "    enabled: false",
-                "eternal_conversation:",
-                "  enabled: false",
-                "",
-            ]
+        native_model_config_yaml(
+            alias="test",
+            model_id="local-test",
+            base_url=f"http://127.0.0.1:{provider.server_port}/v1",
+            credential_env="LORA_SESSION_MESSAGE_TEST_KEY",
         ),
         encoding="utf-8",
     )

@@ -6,12 +6,12 @@ from pathlib import Path
 import httpx
 import pytest
 from pygent import Context, UserMessage
-from pygent.llm import OpenAICompatibleClient
+from pygent.llm import ModelConfig, OpenAICompatibleClient
 
-from examples import react_agent_demo
-from lora.config import load_run_config
+import examples.react_agent_demo as react_agent_demo
 from lora.runtime.agent import core
-from lora.schema import ModelRetryConfig, ModelRouteConfig, ResolvedAgentConfig
+from lora.runtime import model_configuration
+from tests.unit.test_model_configuration import native_runtime_config
 
 
 def _answer_stream() -> httpx.Response:
@@ -44,32 +44,29 @@ async def test_native_invoker_preserves_configured_retry_and_fallback(
         return _answer_stream()
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        monkeypatch.setattr(core, "OpenAICompatibleClient", lambda **kwargs:
+        monkeypatch.setitem(model_configuration.CLIENT_FACTORIES, "openai_chat_completions", lambda **kwargs:
             OpenAICompatibleClient(
                 base_url=kwargs["base_url"], api_key=kwargs["api_key"], client=client,
             ))
-        resolved = ResolvedAgentConfig(
-            alias="compatibility",
-            routes=tuple(ModelRouteConfig(
-                id=name, provider="openai", model_name=name,
-                base_url="https://example.test/v1", api_key_env="TEST_API_KEY",
-                api_key="test", api_key_source="test",
-            ) for name in ("backup", "primary")),
-            fallback=("primary", "backup"),
-            retry=ModelRetryConfig(
-                max_attempts_per_route=attempts, backoff_initial=0, backoff_maximum=0,
-            ),
-        )
-        agent = core.LoraAgent(load_run_config(workspace_root=tmp_path), resolved_agent=resolved)
+        config = native_runtime_config(tmp_path, group=("primary", "backup"))
+        for key, raw in config.model_config_mapping["models"].items():
+            raw["model_id"] = key
+        config.model_config = ModelConfig.from_mapping(config.model_config_mapping)
+        assert config.resolved_agent is not None
+        config.resolved_agent.retry.max_attempts_per_model = attempts
+        config.resolved_agent.retry.backoff_initial = 0
+        config.resolved_agent.retry.backoff_maximum = 0
+        agent = core.LoraAgent(config)
         try:
             layer = agent.new_model_layer()
             answer, _ = await layer.invoke(
                 UserMessage(content="hello"), Context(tools=layer.tools),
             )
             assert answer.content == "compatible"
-            assert core._actual_model_route(resolved, answer).id == "backup"
+            assert core._actual_model_key(answer) == "backup"
             assert requests == ["primary"] * attempts + ["backup"]
         finally:
+            assert agent.llm is not None
             await agent.llm.aclose()
 
 

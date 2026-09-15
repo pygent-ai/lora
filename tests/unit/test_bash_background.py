@@ -10,6 +10,7 @@ from pygent import AIMessage, ToolCall, ToolResult, freeze_json
 from pygent.tool import ToolTask, ToolTaskState
 
 from lora.config import load_run_config
+from tests.unit.test_model_configuration import native_runtime_config
 from lora.core.io import plain_object
 from lora.runtime.context import LoraContext
 from lora.runtime.service import LoraRuntimeService
@@ -61,7 +62,7 @@ def test_background_output_keeps_existing_preview_limits(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("wait_seconds", [0, 0.05])
 async def test_managed_bash_background_can_be_queried_stopped_and_read_after_restart(tmp_path: Path, wait_seconds: float) -> None:
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     service = LoraRuntimeService(config, tool_max_concurrency=1)
     task_id = None
     try:
@@ -112,7 +113,7 @@ async def test_background_completion_finalizes_audit_and_late_file_writes(tmp_pa
     from lora.runtime.agent.pipeline import ToolAuditModule
     from lora.runtime.bash_tasks import BashTaskObservations
 
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     manager = SessionManager(config)
     session = manager.create("chat", mode="chat")
     run = manager.start_case_run(session.session_id, "chat", run_config=config)
@@ -176,7 +177,7 @@ async def test_background_completion_finalizes_audit_and_late_file_writes(tmp_pa
     {"is_background": True}, {"timeout": 0}, {"timeout": -1},
 ])
 async def test_bash_background_never_bypasses_approval(tmp_path: Path, arguments: dict) -> None:
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     config.runtime_approvals.enabled = True
     config.runtime_approvals.preauthorized_tools = ()
     service = LoraRuntimeService(config)

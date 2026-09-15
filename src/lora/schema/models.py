@@ -20,26 +20,6 @@ def _require(value: str, field_name: str) -> str:
 
 
 @dataclass(slots=True)
-class ModelRouteConfig:
-    """Transitional import shim; native config loading never constructs this type."""
-
-    id: str
-    provider: str
-    model_name: str
-    base_url: str
-    api_key_env: str
-    api_key: str | None = field(default=None, repr=False, compare=False)
-    api_key_source: str = "missing"
-
-    def __post_init__(self) -> None:
-        self.id = _require(self.id, "model route id")
-        self.provider = _require(self.provider, "model route provider")
-        self.model_name = _require(self.model_name, "model route model_name")
-        self.base_url = _require(self.base_url, "model route base_url")
-        self.api_key_env = _require(self.api_key_env, "model route api_key_env")
-
-
-@dataclass(slots=True)
 class ModelRetryConfig:
     max_attempts_per_model: int = 2
     attempt_idle_timeout_seconds: float = 60.0

@@ -8,9 +8,11 @@ from pathlib import Path
 
 import pytest
 from pygent import AIMessage, ToolCall, ToolMessage, ToolResult, UserMessage
+from pygent.llm import ModelExecution, ModelProviderResponse
 from pygent.runtime.codec import message_to_dict
 
 from lora.config import load_run_config
+from tests.unit.test_model_configuration import native_runtime_config
 from lora.runtime.agent.pipeline import checkpoint_conversation_message
 from lora.runtime.context import LoraContext
 from lora.runtime.service import LoraRuntimeService
@@ -22,7 +24,7 @@ from lora.tracing import EventStore
 @pytest.mark.asyncio
 async def test_interrupted_turn_recovers_completed_conversation_boundaries() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        config = load_run_config(workspace_root=Path(tmp))
+        config = native_runtime_config(Path(tmp))
         manager = SessionManager(config)
         session_ref = manager.create(case_id="chat", mode="chat")
         run_ref = manager.start_case_run(
@@ -131,7 +133,7 @@ async def test_interrupted_turn_recovers_completed_conversation_boundaries() -> 
 
 def test_session_load_replays_raw_checkpoint_written_before_session_snapshot() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        config = load_run_config(workspace_root=Path(tmp))
+        config = native_runtime_config(Path(tmp))
         manager = SessionManager(config)
         session_ref = manager.create(case_id="chat", mode="chat")
         run_ref = manager.start_case_run(
@@ -154,7 +156,7 @@ def test_session_load_replays_raw_checkpoint_written_before_session_snapshot() -
 @pytest.mark.asyncio
 async def test_recovery_and_audit_history_both_redact_secrets() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        config = load_run_config(workspace_root=Path(tmp))
+        config = native_runtime_config(Path(tmp))
         manager = SessionManager(config)
         session_ref = manager.create(case_id="chat", mode="chat")
         run_ref = manager.start_case_run(
@@ -187,7 +189,7 @@ async def test_recovery_and_audit_history_both_redact_secrets() -> None:
 @pytest.mark.asyncio
 async def test_transient_checkpoints_do_not_enter_session_history() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        config = load_run_config(workspace_root=Path(tmp))
+        config = native_runtime_config(Path(tmp))
         manager = SessionManager(config)
         session_ref = manager.create(case_id="chat", mode="chat")
         run_ref = manager.start_case_run(
@@ -236,11 +238,8 @@ async def test_execute_case_handles_multi_message_context_policy(
     carry_context: bool,
 ) -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        config = load_run_config(workspace_root=Path(tmp))
+        config = native_runtime_config(Path(tmp))
         assert config.resolved_agent is not None
-        for route in config.resolved_agent.routes:
-            route.api_key = None
-            route.api_key_source = "missing"
         manager = SessionManager(config)
         session_ref = manager.create(case_id="multi", mode="case")
         session = manager.load(session_ref.session_id)
@@ -262,6 +261,25 @@ async def test_execute_case_handles_multi_message_context_policy(
             },
         )
         service = LoraRuntimeService(config)
+        class Invoker:
+            def validate_model(self, _model) -> None:
+                return None
+
+            def execute(self, **_kwargs) -> ModelExecution:
+                async def invoke(_emit) -> ModelProviderResponse:
+                    return ModelProviderResponse(
+                        message=AIMessage(content="completed"), usage={}
+                    )
+
+                return ModelExecution(invoke)
+
+            async def aclose(self) -> None:
+                return None
+
+        invoker = Invoker()
+        service._model_invokers[config.resolved_agent.alias] = invoker
+        for agent in service._agent_definitions.values():
+            agent.llm = invoker
         try:
             await service.execute_case(
                 manager=manager,

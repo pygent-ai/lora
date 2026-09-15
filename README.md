@@ -22,22 +22,10 @@ New-Item -ItemType Directory -Force "$HOME\.lora"
 Copy-Item .\user-config.yaml.example "$HOME\.lora\config.yaml"
 ```
 
-```yaml
-agent:
-  default_alias: dev
-
-agents:
-  - alias: dev
-    model_request:
-      profile: default
-      routes:
-        - id: primary
-          provider: openai
-          model_name: deepseek-v4-flash
-          base_url: https://api.deepseek.com
-          api_key_env: DEEPSEEK_API_KEY
-      fallback: [primary]
-```
+完整格式见 [`user-config.yaml.example`](user-config.yaml.example)：顶层 `models`
+使用 Pygent 原生 `ModelConfig`（每个模型自带 connection、protocol、credential 和
+capabilities），`model_groups` 按顺序声明子模型及回退链。新建对话时选择一个模型组，
+对话创建后模型组固定；空闲时可以在该组内切换首选子模型，其余子模型继续作为回退。
 
 API key 保存在同一用户目录下的凭据文件：
 
@@ -46,7 +34,7 @@ uv run lora credentials set DEEPSEEK_API_KEY
 uv run lora credentials validate
 ```
 
-如果 `~/.lora/config.yaml` 尚未建立，系统将使用内置默认配置（含内置模型别名与持久化策略）。
+如果尚未建立有效的模型配置，系统会显示“需要配置模型”，不会猜测默认模型或 API key。
 
 ## 用户配置
 
@@ -151,7 +139,7 @@ npm --prefix apps/desktop run build
 
 运行时依赖锁定为官方 PyPI 发布的 `pygent-ai==0.3.15`（对应 [官方 v0.3.15](https://github.com/pygent-ai/pygent/releases/tag/v0.3.15)），`uv.lock` 记录下载地址和校验值，不使用 `../pygent` 本地源码覆盖。已有环境运行 `uv sync --locked` 即可切换到官方发行包。
 
-用户配置中的 `retry.max_attempts_per_route` 保持兼容，由适配层传给 Pygent 0.3.15 的 `RetryPolicy.max_attempts_per_model`；`routes` 和 `fallback` 的配置格式不变。
+重试直接使用 Pygent 0.3.15 的 `RetryPolicy.max_attempts_per_model`；旧 `routes` / `fallback` 配置会被识别为 legacy，但不会继续执行。
 
 ### Bash 后台任务
 

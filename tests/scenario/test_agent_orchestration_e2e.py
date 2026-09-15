@@ -10,6 +10,7 @@ from pygent import AIMessage, ToolCall, ToolMessage, UserMessage
 from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
+from tests.unit.test_model_configuration import native_runtime_config
 from lora.orchestration import LocalExecutionHost, WorkspaceRuntimePool
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import (
@@ -256,24 +257,18 @@ async def test_parent_agent_fanout_send_wait_any_and_callbacks_persist(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "seed.txt").write_text("seed evidence", encoding="utf-8")
-    config = load_run_config(workspace_root=workspace)
+    config = native_runtime_config(workspace)
     config.eternal_conversation.enabled = False
     config.runtime_approvals.enabled = False
     config.max_steps = 8
     assert config.resolved_agent is not None
     agent_alias = config.resolved_agent.alias
     config.delegation.allowed_agents = (agent_alias,)
-    for route in config.resolved_agent.routes:
-        route.api_key = "agent-orchestration-e2e"
-        route.api_key_source = "test"
 
     invoker = _OrchestrationInvoker(agent_alias)
 
     def runtime_factory(run_config: Any, **kwargs: Any) -> LoraRuntimeService:
         assert run_config.resolved_agent is not None
-        for route in run_config.resolved_agent.routes:
-            route.api_key = "agent-orchestration-e2e"
-            route.api_key_source = "test"
         service = LoraRuntimeService(run_config, **kwargs)
         service._model_invokers[run_config.resolved_agent.alias] = invoker
         for agent in service._agent_definitions.values():

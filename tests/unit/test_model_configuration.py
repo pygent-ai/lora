@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pygent.llm import ModelConfig, ModelConnection, ModelInfo
 
+from lora.schema import ResolvedAgentConfig, RunConfig
 from lora.runtime.model_configuration import (
     CLIENT_FACTORIES,
     CredentialEnvironment,
@@ -20,7 +22,7 @@ from lora.runtime.model_configuration import (
 
 def native_mapping(
     *, protocol: str = "openai_chat_completions", group: tuple[str, ...] = ("a",)
-) -> dict[str, object]:
+) -> dict[str, Any]:
     capabilities = {
         "modalities": {"input": ["text"], "output": ["text"]},
         "streaming": {"output": ["text"]},
@@ -47,6 +49,23 @@ def native_mapping(
         },
         "model_groups": {"coding": {"models": list(group)}},
     }
+
+
+def native_runtime_config(root, *, group: tuple[str, ...] = ("main", "backup")):
+    mapping = native_mapping(group=group)
+    for model in mapping["models"].values():
+        model["connection"]["credential"] = {"none": True}
+    config = RunConfig(
+        workspace_root=str(root),
+        lora_root=str(root / ".lora"),
+        model_config_mapping=mapping,
+        resolved_agent=ResolvedAgentConfig(
+            alias="default", default_model_group="coding"
+        ),
+    )
+    config.runtime_approvals.enabled = False
+    config.eternal_conversation.enabled = False
+    return config
 
 
 def test_preferred_models_moves_only_selected_child_to_front() -> None:

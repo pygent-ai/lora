@@ -7,14 +7,14 @@ import sqlite3
 import pytest
 from pygent.runtime import SQLiteModelDeploymentStore
 
-from lora.config import load_run_config
 from lora.runtime.service import LoraRuntimeService
+from tests.unit.test_model_configuration import native_runtime_config
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("location", ["profile", "admission"])
 async def test_old_model_json_does_not_block_new_runtime(tmp_path: Path, location: str) -> None:
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     config.runtime_durability.history_path = str(tmp_path / "executions.sqlite3")
     legacy = tmp_path / "model-deployments-v1.sqlite3"
     store = SQLiteModelDeploymentStore(legacy)
@@ -56,7 +56,7 @@ async def test_old_model_json_does_not_block_new_runtime(tmp_path: Path, locatio
 
 @pytest.mark.asyncio
 async def test_current_store_keeps_its_namespace_on_restart(tmp_path: Path) -> None:
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     config.runtime_durability.history_path = str(tmp_path / "executions.sqlite3")
     legacy = tmp_path / "model-deployments-v1.sqlite3"
     store = SQLiteModelDeploymentStore(legacy)

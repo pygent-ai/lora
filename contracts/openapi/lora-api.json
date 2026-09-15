@@ -1,26 +1,1439 @@
 {
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Lora Local API",
+    "version": "0.3.2"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/automations": {
+      "get": {
+        "tags": [
+          "automations"
+        ],
+        "summary": "List Automations",
+        "operationId": "list_automations_automations_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Automations Automations Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "automations"
+        ],
+        "summary": "Create Automation",
+        "operationId": "create_automation_automations_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Automation Automations Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/automations/{automation_id}": {
+      "get": {
+        "tags": [
+          "automations"
+        ],
+        "summary": "Get Automation",
+        "operationId": "get_automation_automations__automation_id__get",
+        "parameters": [
+          {
+            "name": "automation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Automation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Automation Automations  Automation Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "automations"
+        ],
+        "summary": "Update Automation",
+        "operationId": "update_automation_automations__automation_id__patch",
+        "parameters": [
+          {
+            "name": "automation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Automation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Automation Automations  Automation Id  Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "automations"
+        ],
+        "summary": "Delete Automation",
+        "operationId": "delete_automation_automations__automation_id__delete",
+        "parameters": [
+          {
+            "name": "automation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Automation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Automation Automations  Automation Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/automations/{automation_id}/pause": {
+      "post": {
+        "tags": [
+          "automations"
+        ],
+        "summary": "Pause Automation",
+        "operationId": "pause_automation_automations__automation_id__pause_post",
+        "parameters": [
+          {
+            "name": "automation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Automation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Pause Automation Automations  Automation Id  Pause Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/automations/{automation_id}/resume": {
+      "post": {
+        "tags": [
+          "automations"
+        ],
+        "summary": "Resume Automation",
+        "operationId": "resume_automation_automations__automation_id__resume_post",
+        "parameters": [
+          {
+            "name": "automation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Automation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Resume Automation Automations  Automation Id  Resume Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/automations/{automation_id}/run": {
+      "post": {
+        "tags": [
+          "automations"
+        ],
+        "summary": "Run Automation",
+        "operationId": "run_automation_automations__automation_id__run_post",
+        "parameters": [
+          {
+            "name": "automation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Automation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Run Automation Automations  Automation Id  Run Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/automations/{automation_id}/runs": {
+      "get": {
+        "tags": [
+          "automations"
+        ],
+        "summary": "List Automation Runs",
+        "operationId": "list_automation_runs_automations__automation_id__runs_get",
+        "parameters": [
+          {
+            "name": "automation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Automation Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Automation Runs Automations  Automation Id  Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "List Projects",
+        "operationId": "list_projects_projects_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Delete Project",
+        "operationId": "delete_project_projects_delete",
+        "parameters": [
+          {
+            "name": "scope_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "List Sessions",
+        "operationId": "list_sessions_sessions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Create Session",
+        "operationId": "create_session_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionRecordResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/groups": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "List Session Groups",
+        "operationId": "list_session_groups_sessions_groups_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionGroupListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/model": {
+      "patch": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Update Session Model",
+        "operationId": "update_session_model_sessions__session_id__model_patch",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSessionModelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionRecordResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Get Session",
+        "operationId": "get_session_sessions__session_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Delete Session",
+        "operationId": "delete_session_sessions__session_id__delete",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/stream": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Stream Turn",
+        "operationId": "stream_turn_chat_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatTurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/approvals/{approval_id}": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Deliver Approval",
+        "operationId": "deliver_approval_chat_approvals__approval_id__post",
+        "parameters": [
+          {
+            "name": "approval_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Approval Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolApprovalRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Deliver Approval Chat Approvals  Approval Id  Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/executions/{execution_id}/steering": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Deliver Steering",
+        "operationId": "deliver_steering_chat_executions__execution_id__steering_post",
+        "parameters": [
+          {
+            "name": "execution_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Execution Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSteeringRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Deliver Steering Chat Executions  Execution Id  Steering Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime/tasks/{task_id}": {
+      "get": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Get Task",
+        "operationId": "get_task_runtime_tasks__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Task Runtime Tasks  Task Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Cancel Task",
+        "operationId": "cancel_task_runtime_tasks__task_id__delete",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Cancel Task Runtime Tasks  Task Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tool-results/{tool_call_id}": {
+      "get": {
+        "tags": [
+          "tool-results"
+        ],
+        "summary": "Get Tool Result",
+        "operationId": "get_tool_result_tool_results__tool_call_id__get",
+        "parameters": [
+          {
+            "name": "tool_call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tool Call Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/traces/{session_id}/{case_run_id}": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "Get Trace Events",
+        "operationId": "get_trace_events_traces__session_id___case_run_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "case_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Case Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceEventsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Settings",
+        "operationId": "get_settings_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfigResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Update Settings",
+        "operationId": "update_settings_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfigResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/model-catalogs": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Model Catalogs",
+        "operationId": "get_model_catalogs_settings_model_catalogs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Model Catalogs Settings Model Catalogs Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/models/discover": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Discover Connection Models",
+        "operationId": "discover_connection_models_settings_models_discover_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoverModelsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Discover Connection Models Settings Models Discover Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workspace/entries": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Workspace Entries",
+        "operationId": "workspace_entries_workspace_entries_get",
+        "parameters": [
+          {
+            "name": "scope_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceEntriesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workspace/file": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Workspace File",
+        "operationId": "workspace_file_workspace_file_get",
+        "parameters": [
+          {
+            "name": "scope_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceFileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/terminal/execute": {
+      "post": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "Execute Terminal Command",
+        "operationId": "execute_terminal_command_terminal_execute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalCommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/terminal/reset": {
+      "post": {
+        "tags": [
+          "terminal"
+        ],
+        "summary": "Reset Terminal",
+        "operationId": "reset_terminal_terminal_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
   "components": {
     "schemas": {
-      "ChatTurnRequest": {
-        "additionalProperties": false,
+      "AutomationCreateRequest": {
         "properties": {
-          "after_sequence": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Prompt"
+          },
+          "workspace_root": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Workspace Root"
+          },
+          "destination": {
+            "type": "string",
+            "enum": [
+              "standalone",
+              "heartbeat"
             ],
-            "title": "After Sequence"
+            "title": "Destination"
           },
-          "case_id": {
-            "default": "chat",
-            "title": "Case Id",
-            "type": "string"
-          },
-          "execution_id": {
+          "target_session_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -29,18 +1442,187 @@
                 "type": "null"
               }
             ],
-            "title": "Execution Id"
+            "title": "Target Session Id"
           },
-          "log_model_text_deltas": {
-            "default": false,
-            "title": "Log Model Text Deltas",
-            "type": "boolean"
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
           },
+          "at_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At Time"
+          },
+          "rrule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rrule"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "prompt",
+          "workspace_root",
+          "destination"
+        ],
+        "title": "AutomationCreateRequest"
+      },
+      "AutomationUpdateRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "workspace_root": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Root"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "standalone",
+                  "heartbeat"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination"
+          },
+          "target_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Session Id"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "at_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At Time"
+          },
+          "rrule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rrule"
+          }
+        },
+        "type": "object",
+        "title": "AutomationUpdateRequest"
+      },
+      "ChatSteeringRequest": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Session Id"
+          },
+          "input_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Input Id"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "session_id",
+          "input_id",
+          "message"
+        ],
+        "title": "ChatSteeringRequest"
+      },
+      "ChatTurnRequest": {
+        "properties": {
           "message": {
             "anyOf": [
               {
-                "minLength": 1,
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               {
                 "type": "null"
@@ -59,6 +1641,33 @@
             ],
             "title": "Session Id"
           },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "case_id": {
+            "type": "string",
+            "title": "Case Id",
+            "default": "chat"
+          },
+          "model_group_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Group Name"
+          },
           "turn_id": {
             "anyOf": [
               {
@@ -69,148 +1678,8 @@
               }
             ],
             "title": "Turn Id"
-          }
-        },
-        "title": "ChatTurnRequest",
-        "type": "object"
-      },
-      "CreateSessionRequest": {
-        "properties": {
-          "case_id": {
-            "default": "chat",
-            "title": "Case Id",
-            "type": "string"
           },
-          "mode": {
-            "default": "chat",
-            "title": "Mode",
-            "type": "string"
-          }
-        },
-        "title": "CreateSessionRequest",
-        "type": "object"
-      },
-      "DeleteResponse": {
-        "properties": {
-          "deleted": {
-            "title": "Deleted",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "deleted"
-        ],
-        "title": "DeleteResponse",
-        "type": "object"
-      },
-      "HTTPValidationError": {
-        "properties": {
-          "detail": {
-            "items": {
-              "$ref": "#/components/schemas/ValidationError"
-            },
-            "title": "Detail",
-            "type": "array"
-          }
-        },
-        "title": "HTTPValidationError",
-        "type": "object"
-      },
-      "HealthResponse": {
-        "properties": {
-          "service": {
-            "title": "Service",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "service"
-        ],
-        "title": "HealthResponse",
-        "type": "object"
-      },
-      "ModelGroupSettingsRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "fallback": {
-            "items": {
-              "type": "string"
-            },
-            "minItems": 1,
-            "title": "Fallback",
-            "type": "array"
-          },
-          "profile": {
-            "default": "default",
-            "minLength": 1,
-            "title": "Profile",
-            "type": "string"
-          },
-          "retry": {
-            "$ref": "#/components/schemas/ModelRetrySettingsRequest"
-          },
-          "routes": {
-            "items": {
-              "$ref": "#/components/schemas/ModelRouteSettingsRequest"
-            },
-            "minItems": 1,
-            "title": "Routes",
-            "type": "array"
-          }
-        },
-        "required": [
-          "routes",
-          "fallback"
-        ],
-        "title": "ModelGroupSettingsRequest",
-        "type": "object"
-      },
-      "ModelRetrySettingsRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "attempt_idle_timeout_seconds": {
-            "default": 60.0,
-            "exclusiveMinimum": 0.0,
-            "title": "Attempt Timeout Seconds",
-            "type": "number"
-          },
-          "backoff_initial": {
-            "default": 0.5,
-            "minimum": 0.0,
-            "title": "Backoff Initial",
-            "type": "number"
-          },
-          "backoff_maximum": {
-            "default": 4.0,
-            "minimum": 0.0,
-            "title": "Backoff Maximum",
-            "type": "number"
-          },
-          "backoff_multiplier": {
-            "default": 2.0,
-            "minimum": 1.0,
-            "title": "Backoff Multiplier",
-            "type": "number"
-          },
-          "max_attempts_per_route": {
-            "default": 2,
-            "minimum": 1.0,
-            "title": "Max Attempts Per Route",
-            "type": "integer"
-          }
-        },
-        "title": "ModelRetrySettingsRequest",
-        "type": "object"
-      },
-      "ModelRouteSettingsRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "api_key": {
+          "execution_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -219,43 +1688,209 @@
                 "type": "null"
               }
             ],
-            "title": "Api Key"
+            "title": "Execution Id"
           },
-          "api_key_env": {
-            "minLength": 1,
-            "title": "Api Key Env",
-            "type": "string"
+          "after_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Sequence"
           },
-          "base_url": {
-            "minLength": 1,
-            "title": "Base Url",
-            "type": "string"
-          },
-          "id": {
-            "minLength": 1,
-            "title": "Id",
-            "type": "string"
-          },
-          "model_name": {
-            "minLength": 1,
-            "title": "Model Name",
-            "type": "string"
-          },
-          "provider": {
-            "minLength": 1,
-            "title": "Provider",
-            "type": "string"
+          "log_model_text_deltas": {
+            "type": "boolean",
+            "title": "Log Model Text Deltas",
+            "default": false
           }
         },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ChatTurnRequest"
+      },
+      "CreateSessionRequest": {
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "title": "Case Id",
+            "default": "chat"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "chat"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "model_group_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Group Name"
+          }
+        },
+        "type": "object",
+        "title": "CreateSessionRequest"
+      },
+      "DeleteResponse": {
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted"
+          }
+        },
+        "type": "object",
         "required": [
-          "id",
-          "provider",
-          "model_name",
-          "base_url",
-          "api_key_env"
+          "deleted"
         ],
-        "title": "ModelRouteSettingsRequest",
-        "type": "object"
+        "title": "DeleteResponse"
+      },
+      "DiscoverModelsRequest": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Protocol"
+          },
+          "connection": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Connection"
+          },
+          "credential_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Value"
+          },
+          "timeout_seconds": {
+            "type": "number",
+            "maximum": 60.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Timeout Seconds",
+            "default": 10.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "protocol",
+          "connection"
+        ],
+        "title": "DiscoverModelsRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "service": {
+            "type": "string",
+            "title": "Service"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "service"
+        ],
+        "title": "HealthResponse"
+      },
+      "ModelRetrySettingsRequest": {
+        "properties": {
+          "max_attempts_per_model": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Attempts Per Model",
+            "default": 2
+          },
+          "attempt_idle_timeout_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Attempt Idle Timeout Seconds",
+            "default": 60.0
+          },
+          "backoff_initial": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Backoff Initial",
+            "default": 0.5
+          },
+          "backoff_maximum": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Backoff Maximum",
+            "default": 4.0
+          },
+          "backoff_multiplier": {
+            "type": "number",
+            "minimum": 1.0,
+            "title": "Backoff Multiplier",
+            "default": 2.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ModelRetrySettingsRequest"
+      },
+      "ModelSummaryResponse": {
+        "properties": {
+          "model_key": {
+            "type": "string",
+            "title": "Model Key"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_key",
+          "provider",
+          "model_id"
+        ],
+        "title": "ModelSummaryResponse"
       },
       "ProjectListResponse": {
         "properties": {
@@ -266,35 +1901,26 @@
             "items": {
               "$ref": "#/components/schemas/ProjectResponse"
             },
-            "title": "Projects",
-            "type": "array"
+            "type": "array",
+            "title": "Projects"
           }
         },
+        "type": "object",
         "required": [
           "active",
           "projects"
         ],
-        "title": "ProjectListResponse",
-        "type": "object"
+        "title": "ProjectListResponse"
       },
       "ProjectResponse": {
         "properties": {
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "lora_root": {
-            "title": "Lora Root",
-            "type": "string"
-          },
           "scope_id": {
-            "title": "Scope Id",
-            "type": "string"
+            "type": "string",
+            "title": "Scope Id"
           },
-          "tooltip": {
-            "default": "",
-            "title": "Tooltip",
-            "type": "string"
+          "label": {
+            "type": "string",
+            "title": "Label"
           },
           "workspace_root": {
             "anyOf": [
@@ -306,26 +1932,98 @@
               }
             ],
             "title": "Workspace Root"
+          },
+          "lora_root": {
+            "type": "string",
+            "title": "Lora Root"
+          },
+          "tooltip": {
+            "type": "string",
+            "title": "Tooltip",
+            "default": ""
           }
         },
+        "type": "object",
         "required": [
           "scope_id",
           "label",
           "workspace_root",
           "lora_root"
         ],
-        "title": "ProjectResponse",
-        "type": "object"
+        "title": "ProjectResponse"
       },
       "RuntimeConfigResponse": {
         "properties": {
-          "agent": {
-            "title": "Agent",
-            "type": "string"
+          "approvals_enabled": {
+            "type": "boolean",
+            "title": "Approvals Enabled"
           },
-          "context_compression_trigger_ratio": {
-            "title": "Context Compression Trigger Ratio",
-            "type": "number"
+          "workspace_root": {
+            "type": "string",
+            "title": "Workspace Root"
+          },
+          "lora_root": {
+            "type": "string",
+            "title": "Lora Root"
+          },
+          "agent": {
+            "type": "string",
+            "title": "Agent"
+          },
+          "model_configuration_status": {
+            "type": "string",
+            "title": "Model Configuration Status"
+          },
+          "model_configuration_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Configuration Error"
+          },
+          "models": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Models"
+          },
+          "model_groups": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Model Groups"
+          },
+          "default_model_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Model Group"
+          },
+          "retry": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Retry"
+          },
+          "user_lora_root": {
+            "type": "string",
+            "title": "User Lora Root"
+          },
+          "max_steps": {
+            "type": "integer",
+            "title": "Max Steps"
           },
           "context_window": {
             "anyOf": [
@@ -338,116 +2036,101 @@
             ],
             "title": "Context Window"
           },
-          "fallback": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Fallback",
-            "type": "array"
-          },
-          "lora_root": {
-            "title": "Lora Root",
-            "type": "string"
-          },
-          "max_steps": {
-            "title": "Max Steps",
-            "type": "integer"
-          },
-          "profile": {
-            "title": "Profile",
-            "type": "string"
-          },
-          "retry": {
-            "additionalProperties": true,
-            "title": "Retry",
-            "type": "object"
-          },
-          "routes": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Routes",
-            "type": "array"
-          },
-          "user_lora_root": {
-            "title": "User Lora Root",
-            "type": "string"
-          },
-          "workspace_root": {
-            "title": "Workspace Root",
-            "type": "string"
+          "context_compression_trigger_ratio": {
+            "type": "number",
+            "title": "Context Compression Trigger Ratio"
           }
         },
+        "type": "object",
         "required": [
+          "approvals_enabled",
           "workspace_root",
           "lora_root",
           "agent",
-          "profile",
-          "routes",
-          "fallback",
+          "model_configuration_status",
+          "model_configuration_error",
+          "models",
+          "model_groups",
+          "default_model_group",
           "retry",
           "user_lora_root",
           "max_steps",
           "context_window",
           "context_compression_trigger_ratio"
         ],
-        "title": "RuntimeConfigResponse",
-        "type": "object"
+        "title": "RuntimeConfigResponse"
       },
       "SessionDetailResponse": {
         "properties": {
+          "session": {
+            "$ref": "#/components/schemas/SessionRecordResponse"
+          },
           "history": {
             "items": {
               "additionalProperties": true,
               "type": "object"
             },
-            "title": "History",
-            "type": "array"
+            "type": "array",
+            "title": "History"
           },
           "metadata": {
             "additionalProperties": true,
-            "title": "Metadata",
-            "type": "object"
+            "type": "object",
+            "title": "Metadata"
           },
-          "session": {
-            "$ref": "#/components/schemas/SessionRecordResponse"
+          "runtime_execution_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Execution Id"
+          },
+          "run_history_start_index": {
+            "type": "integer",
+            "title": "Run History Start Index",
+            "default": 0
+          },
+          "selectable_models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelSummaryResponse"
+            },
+            "type": "array",
+            "title": "Selectable Models"
           }
         },
+        "type": "object",
         "required": [
           "session"
         ],
-        "title": "SessionDetailResponse",
-        "type": "object"
+        "title": "SessionDetailResponse"
       },
       "SessionGroupListResponse": {
         "properties": {
           "active_scope_id": {
-            "title": "Active Scope Id",
-            "type": "string"
+            "type": "string",
+            "title": "Active Scope Id"
           },
           "groups": {
             "items": {
               "$ref": "#/components/schemas/SessionGroupResponse"
             },
-            "title": "Groups",
-            "type": "array"
+            "type": "array",
+            "title": "Groups"
           }
         },
+        "type": "object",
         "required": [
           "active_scope_id",
           "groups"
         ],
-        "title": "SessionGroupListResponse",
-        "type": "object"
+        "title": "SessionGroupListResponse"
       },
       "SessionGroupResponse": {
         "properties": {
-          "collapsed": {
-            "default": false,
-            "title": "Collapsed",
-            "type": "boolean"
-          },
           "scope": {
             "$ref": "#/components/schemas/SessionScopeResponse"
           },
@@ -455,16 +2138,21 @@
             "items": {
               "$ref": "#/components/schemas/SessionRecordResponse"
             },
-            "title": "Sessions",
-            "type": "array"
+            "type": "array",
+            "title": "Sessions"
+          },
+          "collapsed": {
+            "type": "boolean",
+            "title": "Collapsed",
+            "default": false
           }
         },
+        "type": "object",
         "required": [
           "scope",
           "sessions"
         ],
-        "title": "SessionGroupResponse",
-        "type": "object"
+        "title": "SessionGroupResponse"
       },
       "SessionListResponse": {
         "properties": {
@@ -472,25 +2160,56 @@
             "items": {
               "$ref": "#/components/schemas/SessionRecordResponse"
             },
-            "title": "Sessions",
-            "type": "array"
+            "type": "array",
+            "title": "Sessions"
           }
         },
+        "type": "object",
         "required": [
           "sessions"
         ],
-        "title": "SessionListResponse",
-        "type": "object"
+        "title": "SessionListResponse"
       },
       "SessionRecordResponse": {
         "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "session_dir": {
+            "type": "string",
+            "title": "Session Dir"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
           "case_id": {
-            "title": "Case Id",
-            "type": "string"
+            "type": "string",
+            "title": "Case Id"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
           },
           "created_at": {
-            "title": "Created At",
-            "type": "string"
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
           },
           "last_case_run_id": {
             "anyOf": [
@@ -514,38 +2233,18 @@
             ],
             "title": "Last Case Run Status"
           },
-          "mode": {
-            "title": "Mode",
-            "type": "string"
+          "model_group_name": {
+            "type": "string",
+            "title": "Model Group Name",
+            "default": ""
           },
-          "scope_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Scope Id"
-          },
-          "session_dir": {
-            "title": "Session Dir",
-            "type": "string"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "updated_at": {
-            "title": "Updated At",
-            "type": "string"
+          "selected_model_key": {
+            "type": "string",
+            "title": "Selected Model Key",
+            "default": ""
           }
         },
+        "type": "object",
         "required": [
           "session_id",
           "session_dir",
@@ -555,30 +2254,21 @@
           "updated_at",
           "title"
         ],
-        "title": "SessionRecordResponse",
-        "type": "object"
+        "title": "SessionRecordResponse"
       },
       "SessionScopeResponse": {
         "properties": {
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "lora_root": {
-            "title": "Lora Root",
-            "type": "string"
-          },
-          "runtime_workspace_root": {
-            "title": "Runtime Workspace Root",
-            "type": "string"
-          },
           "scope_id": {
-            "title": "Scope Id",
-            "type": "string"
+            "type": "string",
+            "title": "Scope Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
           },
           "tooltip": {
-            "title": "Tooltip",
-            "type": "string"
+            "type": "string",
+            "title": "Tooltip"
           },
           "workspace_root": {
             "anyOf": [
@@ -590,8 +2280,17 @@
               }
             ],
             "title": "Workspace Root"
+          },
+          "lora_root": {
+            "type": "string",
+            "title": "Lora Root"
+          },
+          "runtime_workspace_root": {
+            "type": "string",
+            "title": "Runtime Workspace Root"
           }
         },
+        "type": "object",
         "required": [
           "scope_id",
           "label",
@@ -600,39 +2299,102 @@
           "lora_root",
           "runtime_workspace_root"
         ],
-        "title": "SessionScopeResponse",
-        "type": "object"
+        "title": "SessionScopeResponse"
+      },
+      "TerminalCommandRequest": {
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Scope Id"
+          },
+          "command": {
+            "type": "string",
+            "maxLength": 32000,
+            "minLength": 1,
+            "title": "Command"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scope_id",
+          "command"
+        ],
+        "title": "TerminalCommandRequest"
+      },
+      "TerminalCommandResponse": {
+        "properties": {
+          "output": {
+            "type": "string",
+            "title": "Output"
+          },
+          "exit_code": {
+            "type": "integer",
+            "title": "Exit Code"
+          },
+          "cwd": {
+            "type": "string",
+            "title": "Cwd"
+          }
+        },
+        "type": "object",
+        "required": [
+          "output",
+          "exit_code",
+          "cwd"
+        ],
+        "title": "TerminalCommandResponse"
+      },
+      "TerminalResetRequest": {
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Scope Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scope_id"
+        ],
+        "title": "TerminalResetRequest"
       },
       "ToolApprovalRequest": {
         "properties": {
           "approved": {
-            "title": "Approved",
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Approved"
           },
           "comment": {
-            "default": "",
+            "type": "string",
             "title": "Comment",
-            "type": "string"
+            "default": ""
           }
         },
+        "type": "object",
         "required": [
           "approved"
         ],
-        "title": "ToolApprovalRequest",
-        "type": "object"
+        "title": "ToolApprovalRequest"
       },
       "ToolResultResponse": {
         "properties": {
-          "created_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Created At"
+          "tool_call_id": {
+            "type": "string",
+            "title": "Tool Call Id"
+          },
+          "tool_name": {
+            "type": "string",
+            "title": "Tool Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "result": {
+            "title": "Result"
           },
           "error": {
             "anyOf": [
@@ -645,73 +2407,105 @@
             ],
             "title": "Error"
           },
-          "result": {
-            "title": "Result"
-          },
           "result_size": {
-            "title": "Result Size",
-            "type": "integer"
+            "type": "integer",
+            "title": "Result Size"
           },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "tool_call_id": {
-            "title": "Tool Call Id",
-            "type": "string"
-          },
-          "tool_name": {
-            "title": "Tool Name",
-            "type": "string"
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
           }
         },
+        "type": "object",
         "required": [
           "tool_call_id",
           "tool_name",
           "status",
           "result_size"
         ],
-        "title": "ToolResultResponse",
-        "type": "object"
+        "title": "ToolResultResponse"
       },
       "TraceEventsResponse": {
         "properties": {
-          "case_run_id": {
-            "title": "Case Run Id",
-            "type": "string"
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
           },
-          "context_snapshots": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Context Snapshots",
-            "type": "array"
+          "case_run_id": {
+            "type": "string",
+            "title": "Case Run Id"
           },
           "events": {
             "items": {
               "additionalProperties": true,
               "type": "object"
             },
-            "title": "Events",
-            "type": "array"
+            "type": "array",
+            "title": "Events"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
+          "context_snapshots": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Context Snapshots"
           }
         },
+        "type": "object",
         "required": [
           "session_id",
           "case_run_id",
           "events"
         ],
-        "title": "TraceEventsResponse",
-        "type": "object"
+        "title": "TraceEventsResponse"
+      },
+      "UpdateSessionModelRequest": {
+        "properties": {
+          "selected_model_key": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Selected Model Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "selected_model_key"
+        ],
+        "title": "UpdateSessionModelRequest"
       },
       "UpdateSettingsRequest": {
-        "additionalProperties": false,
         "properties": {
+          "approvals_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approvals Enabled"
+          },
+          "workspace_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Root"
+          },
           "agent_alias": {
             "anyOf": [
               {
@@ -722,28 +2516,6 @@
               }
             ],
             "title": "Agent Alias"
-          },
-          "api_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Api Key"
-          },
-          "context_window": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Context Window"
           },
           "max_steps": {
             "anyOf": [
@@ -756,17 +2528,30 @@
             ],
             "title": "Max Steps"
           },
-          "model_group": {
+          "context_window": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ModelGroupSettingsRequest"
+                "type": "integer"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Context Window"
           },
-          "workspace_root": {
+          "model_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Config"
+          },
+          "default_model_group": {
             "anyOf": [
               {
                 "type": "string"
@@ -775,21 +2560,32 @@
                 "type": "null"
               }
             ],
-            "title": "Workspace Root"
+            "title": "Default Model Group"
+          },
+          "retry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelRetrySettingsRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "credential_values": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Credential Values"
           }
         },
-        "title": "UpdateSettingsRequest",
-        "type": "object"
+        "additionalProperties": false,
+        "type": "object",
+        "title": "UpdateSettingsRequest"
       },
       "ValidationError": {
         "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
           "loc": {
             "items": {
               "anyOf": [
@@ -801,569 +2597,120 @@
                 }
               ]
             },
-            "title": "Location",
-            "type": "array"
+            "type": "array",
+            "title": "Location"
           },
           "msg": {
-            "title": "Message",
-            "type": "string"
+            "type": "string",
+            "title": "Message"
           },
           "type": {
-            "title": "Error Type",
-            "type": "string"
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
           }
         },
+        "type": "object",
         "required": [
           "loc",
           "msg",
           "type"
         ],
-        "title": "ValidationError",
-        "type": "object"
-      }
-    }
-  },
-  "info": {
-    "title": "Lora Local API",
-    "version": "0.3.2"
-  },
-  "openapi": "3.1.0",
-  "paths": {
-    "/chat/approvals/{approval_id}": {
-      "post": {
-        "operationId": "deliver_approval_chat_approvals__approval_id__post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "approval_id",
-            "required": true,
-            "schema": {
-              "title": "Approval Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolApprovalRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Deliver Approval Chat Approvals  Approval Id  Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Deliver Approval",
-        "tags": [
-          "chat"
-        ]
-      }
-    },
-    "/chat/stream": {
-      "post": {
-        "operationId": "stream_turn_chat_stream_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatTurnRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Stream Turn",
-        "tags": [
-          "chat"
-        ]
-      }
-    },
-    "/health": {
-      "get": {
-        "operationId": "health_health_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HealthResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Health",
-        "tags": [
-          "health"
-        ]
-      }
-    },
-    "/projects": {
-      "get": {
-        "operationId": "list_projects_projects_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProjectListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Projects",
-        "tags": [
-          "projects"
-        ]
-      }
-    },
-    "/runtime/tasks/{task_id}": {
-      "delete": {
-        "operationId": "cancel_task_runtime_tasks__task_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "task_id",
-            "required": true,
-            "schema": {
-              "title": "Task Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Cancel Task Runtime Tasks  Task Id  Delete",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Cancel Task",
-        "tags": [
-          "runtime"
-        ]
+        "title": "ValidationError"
       },
-      "get": {
-        "operationId": "get_task_runtime_tasks__task_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "task_id",
-            "required": true,
-            "schema": {
-              "title": "Task Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Task Runtime Tasks  Task Id  Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
+      "WorkspaceEntriesResponse": {
+        "properties": {
+          "root": {
+            "type": "string",
+            "title": "Root"
           },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceEntryResponse"
             },
-            "description": "Validation Error"
+            "type": "array",
+            "title": "Entries"
           }
         },
-        "summary": "Get Task",
-        "tags": [
-          "runtime"
-        ]
-      }
-    },
-    "/sessions": {
-      "get": {
-        "operationId": "list_sessions_sessions_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Sessions",
-        "tags": [
-          "sessions"
-        ]
+        "type": "object",
+        "required": [
+          "root",
+          "path",
+          "entries"
+        ],
+        "title": "WorkspaceEntriesResponse"
       },
-      "post": {
-        "operationId": "create_session_sessions_post",
-        "requestBody": {
+      "WorkspaceEntryResponse": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "kind"
+        ],
+        "title": "WorkspaceEntryResponse"
+      },
+      "WorkspaceFileResponse": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
           "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateSessionRequest"
-              }
-            }
+            "type": "string",
+            "title": "Content"
           },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionRecordResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
+          "encoding": {
+            "type": "string",
+            "title": "Encoding"
           },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+          "size": {
+            "type": "integer",
+            "title": "Size"
           }
         },
-        "summary": "Create Session",
-        "tags": [
-          "sessions"
-        ]
-      }
-    },
-    "/sessions/groups": {
-      "get": {
-        "operationId": "list_session_groups_sessions_groups_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionGroupListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Session Groups",
-        "tags": [
-          "sessions"
-        ]
-      }
-    },
-    "/sessions/{session_id}": {
-      "delete": {
-        "operationId": "delete_session_sessions__session_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          }
+        "type": "object",
+        "required": [
+          "path",
+          "content",
+          "encoding",
+          "size"
         ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeleteResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Delete Session",
-        "tags": [
-          "sessions"
-        ]
-      },
-      "get": {
-        "operationId": "get_session_sessions__session_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionDetailResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Session",
-        "tags": [
-          "sessions"
-        ]
-      }
-    },
-    "/settings": {
-      "get": {
-        "operationId": "get_settings_settings_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeConfigResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Settings",
-        "tags": [
-          "settings"
-        ]
-      },
-      "patch": {
-        "operationId": "update_settings_settings_patch",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateSettingsRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RuntimeConfigResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update Settings",
-        "tags": [
-          "settings"
-        ]
-      }
-    },
-    "/tool-results/{tool_call_id}": {
-      "get": {
-        "operationId": "get_tool_result_tool_results__tool_call_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "tool_call_id",
-            "required": true,
-            "schema": {
-              "title": "Tool Call Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResultResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Tool Result",
-        "tags": [
-          "tool-results"
-        ]
-      }
-    },
-    "/traces/{session_id}/{case_run_id}": {
-      "get": {
-        "operationId": "get_trace_events_traces__session_id___case_run_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "case_run_id",
-            "required": true,
-            "schema": {
-              "title": "Case Run Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TraceEventsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Trace Events",
-        "tags": [
-          "traces"
-        ]
+        "title": "WorkspaceFileResponse"
       }
     }
   }

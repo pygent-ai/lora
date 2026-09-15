@@ -1,38 +1,86 @@
+models:
+  deepseek-chat:
+    provider: deepseek
+    model_id: deepseek-chat
+    protocol: openai_chat_completions
+    connection:
+      base_url: https://api.deepseek.com
+      credential:
+        env: DEEPSEEK_API_KEY
+      verify_ssl: true
+    provider_options: {}
+    capabilities:
+      modalities:
+        input: [text]
+        output: [text]
+      streaming:
+        output: [text]
+      tools:
+        call: true
+        choice: [auto]
+        parallel: false
+      structured_output:
+        json_object: true
+        json_schema: false
+      reasoning:
+        supported: false
+        controllable: false
+      limits:
+        context_tokens: 65536
+        max_output_tokens: 8192
+
+  openai-codex:
+    provider: openai
+    model_id: gpt-5.1-codex
+    protocol: openai_responses
+    connection:
+      base_url: https://api.openai.com/v1
+      credential:
+        env: OPENAI_API_KEY
+      verify_ssl: true
+    provider_options: {}
+    capabilities:
+      modalities:
+        input: [text]
+        output: [text]
+      streaming:
+        output: [text]
+      tools:
+        call: true
+        choice: [auto]
+        parallel: false
+      structured_output:
+        json_object: true
+        json_schema: false
+      reasoning:
+        supported: false
+        controllable: false
+      limits:
+        context_tokens: 65536
+        max_output_tokens: 8192
+
+model_groups:
+  coding:
+    models: [openai-codex, deepseek-chat]
+  economy:
+    models: [deepseek-chat]
+
 agent:
   default_alias: dev
 
 agents:
   - alias: dev
     model_request:
-      profile: default
-      routes:
-        - id: primary
-          provider: openai
-          api_key_env: DEEPSEEK_API_KEY
-          model_name: deepseek-v4-flash
-          base_url: https://api.deepseek.com
-      fallback: [primary]
+      default_model_group: coding
       retry:
-        max_attempts_per_route: 2
+        max_attempts_per_model: 2
         attempt_idle_timeout_seconds: 60
         backoff_initial: 0.5
         backoff_maximum: 4
         backoff_multiplier: 2
-  - alias: fast-check
-    model_request:
-      profile: fast-check
-      routes:
-        - id: primary
-          provider: openai
-          api_key_env: DEEPSEEK_API_KEY
-          model_name: deepseek-v4-flash
-          base_url: https://api.deepseek.com
-      fallback: [primary]
 
 runtime:
   approvals:
-    # Full access: set enabled to false to allow all tools without approval prompts.
-    # Set enabled to true to require approval, except for preauthorized_tools.
     enabled: true
     timeout_seconds: 300
     preauthorized_tools: []

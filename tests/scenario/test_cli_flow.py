@@ -9,11 +9,16 @@ import unittest
 from pathlib import Path
 
 from lora.core.paths import project_lora_root
+from tests.native_config_support import native_model_config_yaml
 
 
 def _isolated_cli_env(root: Path) -> dict[str, str]:
     home = root / "home"
     home.mkdir(parents=True, exist_ok=True)
+    config_path = home / ".lora" / "config.yaml"
+    if not config_path.exists():
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(native_model_config_yaml(), encoding="utf-8")
     env = {
         **os.environ,
         "PYTHONPATH": str(Path.cwd() / "src"),
@@ -806,19 +811,11 @@ class CliScenarioTests(unittest.TestCase):
             root = Path(tmp)
             _write_user_config(
                 root,
-                "\n".join(
-                    [
-                        "agents:",
-                        "  - alias: dev",
-                        "    model_request:",
-                        "      routes:",
-                        "        - id: primary",
-                        "          provider: openai",
-                        "          model_name: dev-model",
-                        "          api_key_env: DEV_PROFILE_KEY",
-                        "          base_url: https://profile.example/v1",
-                        "",
-                    ]
+                native_model_config_yaml(
+                    alias="dev",
+                    model_id="dev-model",
+                    base_url="https://profile.example/v1",
+                    credential_env="DEV_PROFILE_KEY",
                 ),
             )
             env = _isolated_cli_env(root)
@@ -857,21 +854,23 @@ class CliScenarioTests(unittest.TestCase):
 
             self.assertEqual(run_config["agent_alias"], "dev")
             self.assertEqual(
-                run_config["resolved_agent"]["routes"][0]["model_name"], "dev-model"
+                run_config["resolved_agent"]["default_model_group"], "coding"
             )
             self.assertEqual(
-                run_config["resolved_agent"]["routes"][0]["api_key_source"], "missing"
+                run_config["model_config_mapping"]["models"]["primary"]["model_id"],
+                "dev-model",
             )
             self.assertIn("agent alias 'dev'", payload["final_answer"])
             self.assertEqual(request["payload"]["agent_alias"], "dev")
-            self.assertEqual(request["payload"]["model_name"], "dev-model")
+            self.assertEqual(request["payload"]["model_group"], "coding")
+            self.assertEqual(request["payload"]["model_id"], "dev-model")
 
     def test_missing_agent_alias_returns_exit_code_2(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_user_config(
                 root,
-                "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: dev-model\n          base_url: https://example.test/v1\n          api_key_env: DEV_KEY\n",
+                native_model_config_yaml(alias="dev", credential_env="DEV_KEY"),
             )
             env = _isolated_cli_env(root)
             run = subprocess.run(

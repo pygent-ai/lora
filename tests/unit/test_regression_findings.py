@@ -13,6 +13,7 @@ from lora.evaluation import CaseManager
 from lora.schema import CaseRunRef, ContextEvent, RunConfig
 from lora.sessions import SessionManager
 from lora.tracing import EventStore
+from tests.native_config_support import native_model_config_yaml
 
 
 class DocumentationRegressionFindingTests(unittest.TestCase):
@@ -48,14 +49,14 @@ class ConfigParserRegressionFindingTests(unittest.TestCase):
             root.mkdir()
             user_root.mkdir(parents=True)
             (user_root / "config.yaml").write_text(
-                "agents:\n  - alias: default\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          model_name: user-model\n          base_url: https://example.test/v1\n          api_key_env: TEST_KEY\n",
+                native_model_config_yaml(model_id="user-model"),
                 encoding="utf-8",
             )
 
             with patch("lora.config.loader.Path.home", return_value=home):
                 config = load_run_config(workspace_root=root)
 
-        self.assertEqual(config.resolved_agent.routes[0].model_name, "user-model")  # type: ignore[union-attr]
+        self.assertEqual(config.model_config.models["primary"].spec.model_id, "user-model")  # type: ignore[union-attr]
 
     def test_yaml_parser_preserves_hash_inside_quoted_scalar(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

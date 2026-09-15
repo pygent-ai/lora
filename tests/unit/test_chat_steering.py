@@ -13,6 +13,7 @@ from pygent import AIMessage
 from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
+from tests.unit.test_model_configuration import native_runtime_config
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import SessionManager
 from lora_api.dependencies import get_api_context
@@ -43,7 +44,7 @@ async def test_http_steering_reaches_running_react_and_persists_once(tmp_path: P
         async def aclose(self):
             pass
 
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     config.eternal_conversation.enabled = False
     manager = SessionManager(config)
     session = manager.create("chat", mode="chat")

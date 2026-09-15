@@ -13,27 +13,15 @@ API / CLI / case runner
 
 ## 配置
 
-模型配置只有一种形式，并统一位于用户级 `~/.lora/config.yaml`：
-
-```yaml
-agents:
-  - alias: dev
-    model_request:
-      profile: default
-      routes:
-        - id: primary
-          provider: openai
-          model_name: deepseek-v4-flash
-          base_url: https://api.deepseek.com
-          api_key_env: DEEPSEEK_API_KEY
-      fallback: [primary]
-      retry:
-        max_attempts_per_route: 2
-        attempt_idle_timeout_seconds: 60
-```
+模型配置只有一种形式，并统一位于用户级 `~/.lora/config.yaml`。顶层
+`models` 和 `model_groups` 原样采用 Pygent `ModelConfig`，Agent 的
+`model_request.default_model_group` 指向其中一个组，重试字段使用
+`max_attempts_per_model`。完整可编辑示例见仓库根目录
+[`user-config.yaml.example`](../../user-config.yaml.example)。
 
 所有项目共用用户级 `agent/agents`，不再有项目级模型配置文件读取与回退。
-旧单模型字段、`runtime.model`、顶层 `model/base_url` 与 CLI `--model` 均不支持。
+旧 `routes` / `fallback`、旧单模型字段、`runtime.model`、顶层
+`model/base_url` 与 CLI `--model` 均不支持。
 
 ## Agent Module
 

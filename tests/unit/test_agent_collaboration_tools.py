@@ -10,6 +10,7 @@ from pygent import AIMessage, ToolCall, ToolMessage, UserMessage
 from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
+from tests.unit.test_model_configuration import native_runtime_config
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import (
     AgentMessage,
@@ -206,14 +207,11 @@ class _Invoker:
 async def test_model_tools_share_the_injected_session_collaboration_service(
     tmp_path: Path,
 ) -> None:
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     assert config.resolved_agent is not None
     agent_alias = config.resolved_agent.alias
     config.delegation.allowed_agents = (agent_alias,)
     config.runtime_approvals.enabled = False
-    for route in config.resolved_agent.routes:
-        route.api_key = "agent-collaboration-test"
-        route.api_key_source = "test"
 
     manager = SessionManager(config)
     parent = manager.create("parent", mode="agent")
@@ -267,7 +265,7 @@ async def test_model_tools_share_the_injected_session_collaboration_service(
 
 @pytest.mark.asyncio
 async def test_wait_any_checks_every_id_before_resuming_work(tmp_path: Path) -> None:
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     assert config.resolved_agent is not None
     agent_alias = config.resolved_agent.alias
     config.delegation.allowed_agents = (agent_alias,)

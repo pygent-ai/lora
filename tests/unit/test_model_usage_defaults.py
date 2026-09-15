@@ -87,7 +87,7 @@ async def test_start_turn_admits_persisted_session_preference(tmp_path):
     session = manager.create(case_id="chat", mode="agent")
     manager.set_selected_model(session.session_id, "backup")
     run = manager.start_case_run(session.session_id, "chat", run_config=config)
-    agent = object()
+    agent = SimpleNamespace(llm=object())
     handle = SimpleNamespace(execution_id="execution-1")
     service = LoraRuntimeService.__new__(LoraRuntimeService)
     service.config = config

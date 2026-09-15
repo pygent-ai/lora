@@ -415,12 +415,7 @@ class LoraRuntimeService:
                 raise PermissionError(
                     f"collaboration with agent {agent_alias!r} is not allowed"
                 )
-            child_config = load_run_config(
-                workspace_root=self.config.workspace_root,
-                agent_alias=agent_alias,
-                max_steps=self.config.max_steps,
-                context_window=self.config.context_window,
-            )
+            child_config = self._child_agent_config(agent_alias)
             operation = await collaboration.start(
                 config=child_config,
                 manager=SessionManager(child_config),
@@ -545,12 +540,7 @@ class LoraRuntimeService:
         else:
             for item in items:
                 if isinstance(item, CollaborationOperation):
-                    child_config = load_run_config(
-                        workspace_root=self.config.workspace_root,
-                        agent_alias=item.agent_alias,
-                        max_steps=self.config.max_steps,
-                        context_window=self.config.context_window,
-                    )
+                    child_config = self._child_agent_config(item.agent_alias)
                     await collaboration.resume_operation(
                         config=child_config,
                         manager=SessionManager(child_config),
@@ -711,6 +701,16 @@ class LoraRuntimeService:
         self._agent_definitions[key] = agent
         return agent
 
+    def _child_agent_config(self, alias: str) -> RunConfig:
+        if alias == self.config.agent_alias:
+            return RunConfig.from_dict(self.config.to_dict())
+        return load_run_config(
+            workspace_root=self.config.workspace_root,
+            agent_alias=alias,
+            max_steps=self.config.max_steps,
+            context_window=self.config.context_window,
+        )
+
     async def bind(self, module: Any, agent: LoraAgent) -> Any:
         await self.initialize()
         bound = self.binding.bind(module)
@@ -833,11 +833,15 @@ class LoraRuntimeService:
                     request_id=run_ref.case_run_id,
                     idempotency_key=run_ref.case_run_id,
                     identity=run_ref.session_id,
-                    model_calls={
-                        f"lora:{group_name}": {
-                            "profile": preferred_profile_name(selected_model_key)
+                    model_calls=(
+                        {
+                            f"lora:{group_name}": {
+                                "profile": preferred_profile_name(selected_model_key)
+                            }
                         }
-                    },
+                        if agent.llm is not None
+                        else {}
+                    ),
                     deadline=deadline
                     if deadline is not None
                     else time.monotonic() + 30 * 60,
@@ -1017,11 +1021,15 @@ class LoraRuntimeService:
                     request_id=run_ref.case_run_id,
                     idempotency_key=run_ref.case_run_id,
                     identity=run_ref.session_id,
-                    model_calls={
-                        f"lora:{group_name}": {
-                            "profile": preferred_profile_name(selected_model_key)
+                    model_calls=(
+                        {
+                            f"lora:{group_name}": {
+                                "profile": preferred_profile_name(selected_model_key)
+                            }
                         }
-                    },
+                        if agent.llm is not None
+                        else {}
+                    ),
                     deadline=time.monotonic() + 30 * 60,
                 ),
             )
@@ -1182,10 +1190,7 @@ class LoraRuntimeService:
         request: dict[str, Any],
         memory_tool: MemoryAgentTool,
     ) -> str:
-        child_config = load_run_config(
-            workspace_root=self.config.workspace_root,
-            agent_alias=alias,
-        )
+        child_config = self._child_agent_config(alias)
         if child_config.resolved_agent is None:
             raise RuntimeError(f"background memory Agent {alias!r} is unconfigured")
         agent = LoraAgent(

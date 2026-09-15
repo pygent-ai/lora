@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from lora.cli import main
 from lora.credentials import read_env_entries
+from tests.native_config_support import native_model_config_yaml
 
 
 class CredentialsCliTests(unittest.TestCase):
@@ -22,21 +23,10 @@ class CredentialsCliTests(unittest.TestCase):
             root.mkdir()
             user_root.mkdir()
             (user_root / "config.yaml").write_text(
-                "\n".join(
-                    [
-                        "agent:",
-                        "  default_alias: dev",
-                        "agents:",
-                        "  - alias: dev",
-                        "    model_request:",
-                        "      routes:",
-                        "        - id: primary",
-                        "          provider: openai",
-                        "          api_key_env: DEV_API_KEY",
-                        "          model_name: profile-model",
-                        "          base_url: https://example.test/v1",
-                        "",
-                    ]
+                native_model_config_yaml(
+                    alias="dev",
+                    model_id="profile-model",
+                    credential_env="DEV_API_KEY",
                 ),
                 encoding="utf-8",
             )
@@ -100,7 +90,11 @@ class CredentialsCliTests(unittest.TestCase):
             user_root = root / ".lora"
             user_root.mkdir()
             (user_root / "config.yaml").write_text(
-                "agents:\n  - alias: dev\n    model_request:\n      routes:\n        - id: primary\n          provider: openai\n          api_key_env: DEV_API_KEY\n          model_name: profile-model\n          base_url: https://example.test/v1\n",
+                native_model_config_yaml(
+                    alias="dev",
+                    model_id="profile-model",
+                    credential_env="DEV_API_KEY",
+                ),
                 encoding="utf-8",
             )
             os.environ.pop("DEV_API_KEY", None)

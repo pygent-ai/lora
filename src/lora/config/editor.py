@@ -11,39 +11,6 @@ from .loader import USER_CONFIG_FILENAME
 from .yaml_subset import dump_yaml_subset, parse_yaml_subset
 
 
-def update_user_model_group(
-    user_lora_root: str | Path,
-    *,
-    alias: str,
-    model_request: dict[str, Any],
-) -> Path:
-    """Upsert one agent's model group in the user configuration atomically."""
-
-    root = Path(user_lora_root).expanduser().resolve()
-    path = root / USER_CONFIG_FILENAME
-    data = parse_yaml_subset(path.read_text(encoding="utf-8")) if path.exists() else {}
-    agents = data.get("agents")
-    if agents is None:
-        agents = []
-        data["agents"] = agents
-    if not isinstance(agents, list):
-        raise ValueError("agents must be a list")
-
-    replacement = {"alias": alias, "model_request": model_request}
-    for index, agent in enumerate(agents):
-        if isinstance(agent, dict) and agent.get("alias") == alias:
-            agents[index] = replacement
-            break
-    else:
-        agents.append(replacement)
-
-    agent_config = data.get("agent")
-    if agent_config is None:
-        data["agent"] = {"default_alias": alias}
-
-    return _write_config(path, data)
-
-
 def replace_user_model_config(
     user_lora_root: str | Path,
     *,
@@ -87,6 +54,16 @@ def replace_user_model_config(
     return _write_config(path, data)
 
 
+def clear_user_model_config(user_lora_root: str | Path) -> Path:
+    """Remove model-related settings while preserving unrelated user settings."""
+
+    path = Path(user_lora_root).expanduser().resolve() / USER_CONFIG_FILENAME
+    data = parse_yaml_subset(path.read_text(encoding="utf-8")) if path.exists() else {}
+    for key in ("models", "model_groups", "agents", "agent"):
+        data.pop(key, None)
+    return _write_config(path, data)
+
+
 def update_user_approvals(user_lora_root: str | Path, *, enabled: bool) -> Path:
     """Persist tool approval mode while preserving other runtime settings."""
     path = Path(user_lora_root).expanduser().resolve() / USER_CONFIG_FILENAME
@@ -112,7 +89,7 @@ def _write_config(path: Path, data: dict[str, Any]) -> Path:
 
 
 __all__ = [
+    "clear_user_model_config",
     "replace_user_model_config",
-    "update_user_model_group",
     "update_user_approvals",
 ]

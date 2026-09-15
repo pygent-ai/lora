@@ -10,6 +10,7 @@ from pygent import AIMessage, ToolCall, ToolMessage, UserMessage
 from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
+from tests.unit.test_model_configuration import native_runtime_config
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import SessionManager
 
@@ -59,16 +60,13 @@ def recovery_service(
     *,
     force_compression: bool = False,
 ) -> tuple[Any, LoraRuntimeService]:
-    config = load_run_config(workspace_root=workspace)
+    config = native_runtime_config(workspace)
     config.eternal_conversation.enabled = False
     config.runtime_approvals.enabled = False
     if force_compression:
         config.context_window = 40_000
         config.context_compression_trigger_ratio = 0.8
     assert config.resolved_agent is not None
-    for route in config.resolved_agent.routes:
-        route.api_key = "recovery-test"
-        route.api_key_source = "test"
     service = LoraRuntimeService(config)
     invoker = ScriptedRecoveryInvoker()
     service._model_invokers[config.resolved_agent.alias] = invoker

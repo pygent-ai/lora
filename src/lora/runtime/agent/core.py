@@ -162,10 +162,16 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         self.managed_model = managed_model
         self.interactive_approvals = interactive_approvals
         self.workspace_root = Path(config.workspace_root)
-        self.llm = model_invoker or build_model_invoker(
-            native,
-            credential_environ=CredentialEnvironment(config.user_lora_root),
-        )
+        if model_invoker is not None:
+            self.llm = model_invoker
+        else:
+            try:
+                self.llm = build_model_invoker(
+                    native,
+                    credential_environ=CredentialEnvironment(config.user_lora_root),
+                )
+            except LookupError:
+                self.llm = None
         self._standard_tools: StandardTools | None = None
         self._toolkit: ToolKit | None = None
         self._external_tools = external_tools

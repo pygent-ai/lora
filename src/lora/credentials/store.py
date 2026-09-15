@@ -40,14 +40,6 @@ def load_credentials(*, user_lora_root: str | Path) -> list[str]:
     return loaded
 
 
-def resolve_api_key_env_name(model_request: dict[str, object] | None) -> str:
-    if isinstance(model_request, dict):
-        value = model_request.get("api_key_env")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return DEFAULT_API_KEY_ENV
-
-
 def lookup_credential(
     env_name: str,
     *,

@@ -33,8 +33,9 @@ async def test_submit_creates_session_prewarms_titles_and_transfers_lease(
             workspace_root=str(tmp_path), lora_root=str(tmp_path / ".lora")
         )
 
-        def create(self, case_id, *, mode):
+        def create(self, case_id, *, mode, model_group_name=None):
             assert (case_id, mode) == ("chat", "chat")
+            assert model_group_name is None
             return SimpleNamespace(session_id="session-1")
 
         def save_title_from_user_input(self, session_id, message):

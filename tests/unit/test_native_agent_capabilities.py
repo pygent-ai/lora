@@ -12,6 +12,7 @@ from pygent import AIMessage, ToolCall, ToolMessage, UserMessage
 from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
+from tests.unit.test_model_configuration import native_runtime_config
 from lora.runtime.context_snapshots import ContextSnapshotStore
 from lora.runtime.service import LoraRuntimeService
 from lora.schema import BashCliPreset
@@ -107,13 +108,10 @@ async def test_agent_message_is_appended_after_tool_result_without_starting_a_tu
     tmp_path: Path,
 ) -> None:
     (tmp_path / "seed.txt").write_text("seed", encoding="utf-8")
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     config.eternal_conversation.enabled = False
     config.runtime_approvals.enabled = False
     assert config.resolved_agent is not None
-    for route in config.resolved_agent.routes:
-        route.api_key = "agent-message-test"
-        route.api_key_source = "test"
 
     manager = SessionManager(config)
     target = manager.create(case_id="agent-message-target", mode="chat")
@@ -243,13 +241,10 @@ async def test_authorized_external_file_tools_complete_with_audit(
 
             return ModelExecution(invoke)
 
-    config = load_run_config(workspace_root=workspace)
+    config = native_runtime_config(workspace)
     config.eternal_conversation.enabled = False
     config.runtime_approvals.enabled = False
     assert config.resolved_agent is not None
-    for route in config.resolved_agent.routes:
-        route.api_key = "test-key"
-        route.api_key_source = "test"
     manager = SessionManager(config)
     session = manager.create(case_id="external-tools", mode="chat")
     run = manager.start_case_run(
@@ -290,7 +285,7 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "seed.txt").write_text("seed content", encoding="utf-8")
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     existing_skill = Path(config.lora_root) / "skills" / "existing-skill" / "SKILL.md"
     existing_skill.parent.mkdir(parents=True)
     existing_skill.write_text(
@@ -320,9 +315,6 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
 
     monkeypatch.setattr("lora.runtime.reminders.cli_context.shutil.which", staged_which)
     assert config.resolved_agent is not None
-    for route in config.resolved_agent.routes:
-        route.api_key = "capability-test"
-        route.api_key_source = "test"
 
     manager = SessionManager(config)
     session_ref = manager.create(case_id="native-capabilities", mode="chat")
@@ -430,13 +422,10 @@ async def test_eternal_memory_replaces_projection_before_first_model_call(
     tmp_path: Path,
     snapshot_ready: bool,
 ) -> None:
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     config.eternal_conversation.enabled = True
     config.runtime_approvals.enabled = False
     assert config.resolved_agent is not None
-    for route in config.resolved_agent.routes:
-        route.api_key = "projection-test"
-        route.api_key_source = "test"
 
     manager = SessionManager(config)
     session_ref = manager.create(case_id="native-projection", mode="chat")

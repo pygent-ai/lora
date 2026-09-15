@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lora.config import load_run_config, replace_user_model_config
+from lora.config import clear_user_model_config, load_run_config, replace_user_model_config
 from lora.config.yaml_subset import dump_yaml_subset, parse_yaml_subset
 
 
@@ -210,6 +210,20 @@ def test_replace_user_model_config_preserves_non_model_settings(tmp_path: Path) 
     assert saved["models"] == model_config["models"]
     assert saved["model_groups"] == model_config["model_groups"]
     assert "routes" not in path.read_text(encoding="utf-8")
+
+
+def test_clear_user_model_config_preserves_non_model_settings(tmp_path: Path) -> None:
+    user_root = tmp_path / ".lora"
+    user_root.mkdir()
+    path = user_root / "config.yaml"
+    native = parse_yaml_subset(NATIVE_CONFIG)
+    native["runtime"] = {"approvals": {"enabled": False}}
+    path.write_text(dump_yaml_subset(native), encoding="utf-8")
+
+    clear_user_model_config(user_root)
+
+    saved = parse_yaml_subset(path.read_text(encoding="utf-8"))
+    assert saved == {"runtime": {"approvals": {"enabled": False}}}
 
 
 @pytest.mark.parametrize(("content", "message"), [("max_steps: 0\n", "max_steps"), ("delegation:\n  max_depth: 0\n", "delegation limits"), ("delegation:\n  max_parallel: 0\n", "delegation limits")])

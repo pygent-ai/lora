@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from lora.core.paths import project_lora_root
+from tests.native_config_support import native_model_config_yaml
 
 
 class GeneratedTestFlowScenarioTests(unittest.TestCase):
@@ -87,21 +88,10 @@ def _write_no_api_config(root: Path) -> None:
     config_path = root / "home" / ".lora" / "config.yaml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
-        "\n".join(
-            [
-                "agent:",
-                "  default_alias: test",
-                "agents:",
-                "  - alias: test",
-                "    model_request:",
-                "      routes:",
-                "        - id: primary",
-                "          provider: openai",
-                "          model_name: test-model",
-                "          base_url: https://example.invalid/v1",
-                "          api_key_env: LORA_SCENARIO_NO_API_KEY",
-                "",
-            ]
+        native_model_config_yaml(
+            alias="test",
+            base_url="https://example.invalid/v1",
+            credential_env="LORA_SCENARIO_NO_API_KEY",
         ),
         encoding="utf-8",
     )

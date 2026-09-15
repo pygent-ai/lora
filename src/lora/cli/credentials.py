@@ -101,23 +101,53 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
         max_steps=args.max_steps,
     )
     resolved = config.resolved_agent
-    route = resolved.routes[0] if resolved is not None else None
-    env_name = route.api_key_env if route is not None else DEFAULT_API_KEY_ENV
-    api_key = route.api_key if route is not None else None
-    api_key_source = route.api_key_source if route is not None else "missing"
+    native = config.model_config
+    if resolved is None or native is None:
+        return {
+            "status": "missing",
+            "agent_alias": config.agent_alias,
+            "hint": "Configure native models and model_groups before validating credentials.",
+        }
+    entry = native.model_groups[resolved.default_model_group].models[0]
+    raw_model = config.model_config_mapping["models"][entry.name]
+    credential = raw_model.get("connection", {}).get("credential", {})
+    if credential.get("none") is True:
+        return {
+            "status": "ok",
+            "agent_alias": config.agent_alias,
+            "model_group": resolved.default_model_group,
+            "model_key": entry.name,
+            "api_key_env": None,
+            "api_key_source": "none",
+        }
+    env_name = credential.get("env")
+    if not isinstance(env_name, str) or not env_name:
+        return {
+            "status": "missing",
+            "agent_alias": config.agent_alias,
+            "model_group": resolved.default_model_group,
+            "model_key": entry.name,
+            "hint": "The selected model has no native credential reference.",
+        }
+    api_key, lookup_source = lookup_credential(
+        env_name, user_lora_root=config.user_lora_root
+    )
     if api_key:
         return {
             "status": "ok",
             "agent_alias": config.agent_alias,
+            "model_group": resolved.default_model_group,
+            "model_key": entry.name,
             "api_key_env": env_name,
-            "api_key_source": api_key_source,
+            "api_key_source": lookup_source,
         }
-    _, lookup_source = lookup_credential(env_name)
     return {
         "status": "missing",
         "agent_alias": config.agent_alias,
+        "model_group": resolved.default_model_group,
+        "model_key": entry.name,
         "api_key_env": env_name,
-        "api_key_source": api_key_source,
+        "api_key_source": "missing",
         "hint": (
             f"Set the key with `lora credentials set {env_name}` "
             f"or export {env_name} in your shell environment."

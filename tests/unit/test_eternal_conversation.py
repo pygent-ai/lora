@@ -8,6 +8,7 @@ from pygent import AIMessage, PygentAgent, ToolCall, ToolMessage, UserMessage
 from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
+from tests.unit.test_model_configuration import native_runtime_config
 from lora.runtime.agent.common import DEFAULT_REACT_MAX_STEPS
 from lora.runtime.agent.core import LoraAgent
 from lora.runtime.eternal_conversation import (
@@ -154,7 +155,7 @@ async def test_background_memory_runner_uses_native_pygent_react(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = load_run_config(workspace_root=tmp_path)
+    config = native_runtime_config(tmp_path)
     invoker = _MemoryReActInvoker()
     real_agent = LoraAgent
     created_react_agents: list[dict] = []
@@ -163,8 +164,12 @@ async def test_background_memory_runner_uses_native_pygent_react(
         created_react_agents.append(kwargs)
         return PygentAgent(**kwargs)
 
-    def make_agent(child_config, *, managed_model):
-        agent = real_agent(child_config, managed_model=managed_model)
+    def make_agent(child_config, *, managed_model, model_group_name=None):
+        agent = real_agent(
+            child_config,
+            managed_model=managed_model,
+            model_group_name=model_group_name,
+        )
         agent.llm = invoker
         return agent
 

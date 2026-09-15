@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from lora_api.app import create_app
+from tests.native_config_support import native_model_config_yaml
 
 
 @pytest.mark.asyncio
@@ -46,14 +47,15 @@ async def test_api_stream_persists_usage_reasoning_and_timing_across_restart(tmp
     provider = ThreadingHTTPServer(('127.0.0.1', 0), Provider)
     thread = Thread(target=provider.serve_forever, daemon=True)
     thread.start()
-    (user_root / 'config.yaml').write_text('\n'.join([
-        'agent:', '  default_alias: test', 'agents:', '  - alias: test',
-        '    model_request:', '      routes:', '        - id: primary',
-        '          provider: openai', '          model_name: local-test',
-        f'          base_url: http://127.0.0.1:{provider.server_port}/v1',
-        '          api_key_env: LORA_LOCAL_STREAM_TEST_KEY',
-        'eternal_conversation:', '  enabled: false', '',
-    ]), encoding='utf-8')
+    (user_root / 'config.yaml').write_text(
+        native_model_config_yaml(
+            alias='test',
+            model_id='local-test',
+            base_url=f'http://127.0.0.1:{provider.server_port}/v1',
+            credential_env='LORA_LOCAL_STREAM_TEST_KEY',
+        ),
+        encoding='utf-8',
+    )
     try:
         app = create_app(workspace_root=str(workspace))
         async with app.router.lifespan_context(app):
