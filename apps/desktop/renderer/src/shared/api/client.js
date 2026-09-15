@@ -31,6 +31,11 @@ export function createApiClient(options = {}) {
     baseUrl,
     getHealth: (options = {}) => jsonRequest("/health", options),
     getSettings: (options = {}) => jsonRequest("/settings", options),
+    getModelCatalogs: (options = {}) => jsonRequest("/settings/model-catalogs", options),
+    discoverModels: (request, options = {}) =>
+      jsonRequest("/settings/models/discover", {
+        ...options, method: "POST", body: request,
+      }),
     updateSettings: (settings, options = {}) =>
       jsonRequest("/settings", {
         ...options,
@@ -96,6 +101,7 @@ export function createApiClient(options = {}) {
           case_id: request.caseId || "chat",
           mode: request.mode || "chat",
           scope_id: request.scopeId || undefined,
+          model_group_name: request.modelGroupName || undefined,
         },
       }),
     getSession: (sessionId, { scopeId, ...options } = {}) =>
@@ -123,6 +129,12 @@ export function createApiClient(options = {}) {
         ...options, method: "POST",
         body: { session_id: sessionId, input_id: inputId, message },
       }),
+    updateSessionModel: (sessionId, selectedModelKey, { scopeId, ...options } = {}) =>
+      jsonRequest(`/sessions/${encodeURIComponent(sessionId)}/model${scopeQuery(scopeId)}`, {
+        ...options,
+        method: "PATCH",
+        body: { selected_model_key: selectedModelKey },
+      }),
     streamChat: (request, handlers = {}) =>
       streamChatTurn({
         baseUrl,
@@ -142,35 +154,37 @@ export function settingsPayload(settings) {
     agent_alias: settingsString(settings.agent),
     max_steps: Number.isFinite(settings.maxSteps) ? settings.maxSteps : undefined,
     context_window: Object.hasOwn(settings, "contextWindow") ? contextWindow ?? null : undefined,
-    api_key: cleanString(settings.apiKey),
     approvals_enabled: typeof settings.approvalsEnabled === "boolean" ? settings.approvalsEnabled : undefined,
-    model_group: modelGroupPayload(settings),
+    model_config: nativeModelConfigPayload(settings),
+    default_model_group: cleanString(settings.defaultModelGroup),
+    credential_values: credentialValuesPayload(settings.credentialValues),
+    retry: settings.retry ? {
+      max_attempts_per_model: settingsNumber(settings.retry.max_attempts_per_model),
+      attempt_idle_timeout_seconds: settingsNumber(settings.retry.attempt_idle_timeout_seconds),
+      backoff_initial: settingsNonNegativeNumber(settings.retry.backoff_initial),
+      backoff_maximum: settingsNonNegativeNumber(settings.retry.backoff_maximum),
+      backoff_multiplier: settingsNumber(settings.retry.backoff_multiplier),
+    } : undefined,
   });
 }
 
-function modelGroupPayload(settings) {
-  if (!Array.isArray(settings.modelRoutes)) {
+function nativeModelConfigPayload(settings) {
+  if (!settings.models || !settings.modelGroups) {
     return undefined;
   }
   return {
-    profile: settingsString(settings.profile) || "default",
-    routes: settings.modelRoutes.map((route) => compactObject({
-      id: settingsString(route.id),
-      provider: settingsString(route.provider),
-      model_name: settingsString(route.model_name),
-      base_url: settingsString(route.base_url),
-      api_key_env: settingsString(route.api_key_env),
-      api_key: cleanString(route.api_key),
+    models: Object.fromEntries(Object.entries(settings.models).map(([key, model]) => {
+      const { credential_source: _source, ...connection } = model.connection || {};
+      return [key, { ...model, connection }];
     })),
-    fallback: Array.isArray(settings.fallback) ? settings.fallback.map(settingsString) : [],
-    retry: {
-      max_attempts_per_route: settingsNumber(settings.retry?.max_attempts_per_route),
-      attempt_idle_timeout_seconds: settingsNumber(settings.retry?.attempt_idle_timeout_seconds),
-      backoff_initial: settingsNonNegativeNumber(settings.retry?.backoff_initial),
-      backoff_maximum: settingsNonNegativeNumber(settings.retry?.backoff_maximum),
-      backoff_multiplier: settingsNumber(settings.retry?.backoff_multiplier),
-    },
+    model_groups: settings.modelGroups,
   };
+}
+
+function credentialValuesPayload(values) {
+  if (!values || typeof values !== "object") return undefined;
+  const entries = Object.entries(values).filter(([, value]) => cleanString(value));
+  return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
 export function parseSseEvents(text) {
@@ -240,6 +254,7 @@ async function streamChatAttempt({ baseUrl, fetchImpl, request, onEvent, signal 
       session_id: request.sessionId || null,
       scope_id: request.scopeId || null,
       case_id: request.caseId || "chat",
+      model_group_name: request.modelGroupName || null,
       turn_id: request.turnId || null,
       execution_id: request.executionId || null,
       after_sequence: Number.isFinite(request.afterSequence) ? request.afterSequence : null,

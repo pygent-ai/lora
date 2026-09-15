@@ -23,6 +23,7 @@ class ChatTurnRequest(BaseModel):
     session_id: str | None = None
     scope_id: str | None = None
     case_id: str = "chat"
+    model_group_name: str | None = None
     turn_id: str | None = None
     execution_id: str | None = None
     after_sequence: int | None = None

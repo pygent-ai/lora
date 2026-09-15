@@ -298,6 +298,7 @@ class ChatRunRegistry:
             message=request.message,
             case_id=request.case_id,
             turn_id=request.turn_id,
+            model_group_name=request.model_group_name,
         )
         await turn.wait_ready()
         return ActiveChatRun(turn)

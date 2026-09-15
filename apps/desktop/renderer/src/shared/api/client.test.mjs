@@ -67,7 +67,6 @@ test("api client updates settings with backend snake_case fields", async () => {
     agent: "dev",
     maxSteps: 7,
     contextWindow: "64000",
-    apiKey: "secret-from-ui",
   });
 
   assert.deepEqual(response, { agent: "dev", profile: "production" });
@@ -79,7 +78,6 @@ test("api client updates settings with backend snake_case fields", async () => {
     agent_alias: "dev",
     max_steps: 7,
     context_window: 64000,
-    api_key: "secret-from-ui",
   });
 });
 
@@ -103,7 +101,6 @@ test("api client sends blank runtime fields so settings can clear overrides", as
     agent: "default",
     maxSteps: -1,
     contextWindow: "",
-    apiKey: "",
   });
 
   assert.deepEqual(JSON.parse(calls[0].init.body), {
@@ -235,7 +232,7 @@ test("api client fetches tool results by tool call id", async () => {
   assert.deepEqual(response, { tool_call_id: "evt_1", result: "complete" });
 });
 
-test("api client sends a Pygent model group with ordered fallback routes", async () => {
+test("api client sends the exact native Pygent model subtree", async () => {
   const calls = [];
   const client = createApiClient({
     baseUrl: "http://127.0.0.1:8765",
@@ -245,17 +242,31 @@ test("api client sends a Pygent model group with ordered fallback routes", async
     },
   });
 
+  const models = {
+    primary: {
+      provider: "openai",
+      model_id: "gpt-main",
+      protocol: "openai_chat_completions",
+      connection: { base_url: "https://main.test/v1", credential: { env: "MAIN_KEY" } },
+      provider_options: {}, capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
+    },
+    backup: {
+      provider: "openai",
+      model_id: "gpt-backup",
+      protocol: "openai_chat_completions",
+      connection: { base_url: "https://backup.test/v1", credential: { env: "BACKUP_KEY" } },
+      provider_options: {}, capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
+    },
+  };
   await client.updateSettings({
     workspaceRoot: "E:/Projects/lora",
     agent: "dev",
-    profile: "production",
-    modelRoutes: [
-      { id: "primary", provider: "openai", model_name: "gpt-main", base_url: "https://main.test/v1", api_key_env: "MAIN_KEY", api_key: "" },
-      { id: "backup", provider: "openai", model_name: "gpt-backup", base_url: "https://backup.test/v1", api_key_env: "BACKUP_KEY", api_key: "backup-secret" },
-    ],
-    fallback: ["primary", "backup"],
+    models,
+    modelGroups: { coding: { models: ["primary", "backup"] } },
+    defaultModelGroup: "coding",
+    credentialValues: { MAIN_KEY: "", BACKUP_KEY: "backup-secret" },
     retry: {
-      max_attempts_per_route: "3",
+      max_attempts_per_model: "3",
       attempt_idle_timeout_seconds: "45",
       backoff_initial: "0",
       backoff_maximum: "3",
@@ -263,21 +274,33 @@ test("api client sends a Pygent model group with ordered fallback routes", async
     },
   });
 
-  assert.deepEqual(JSON.parse(calls[0].init.body).model_group, {
-    profile: "production",
-    routes: [
-      { id: "primary", provider: "openai", model_name: "gpt-main", base_url: "https://main.test/v1", api_key_env: "MAIN_KEY" },
-      { id: "backup", provider: "openai", model_name: "gpt-backup", base_url: "https://backup.test/v1", api_key_env: "BACKUP_KEY", api_key: "backup-secret" },
-    ],
-    fallback: ["primary", "backup"],
-    retry: {
-      max_attempts_per_route: 3,
+  const payload = JSON.parse(calls[0].init.body);
+  assert.deepEqual(payload.model_config, {
+    models,
+    model_groups: { coding: { models: ["primary", "backup"] } },
+  });
+  assert.equal(payload.default_model_group, "coding");
+  assert.deepEqual(payload.credential_values, { BACKUP_KEY: "backup-secret" });
+  assert.deepEqual(payload.retry, {
+      max_attempts_per_model: 3,
       attempt_idle_timeout_seconds: 45,
       backoff_initial: 0,
       backoff_maximum: 3,
       backoff_multiplier: 2,
-    },
   });
+});
+
+test("api client creates a grouped chat and updates only its child model", async () => {
+  const calls = [];
+  const client = createApiClient({ fetchImpl: async (url, init) => {
+    calls.push({ url, init });
+    return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+  } });
+  await client.createSession({ modelGroupName: "coding" });
+  await client.updateSessionModel("chat one", "backup", { scopeId: "conversation" });
+  assert.equal(JSON.parse(calls[0].init.body).model_group_name, "coding");
+  assert.equal(calls[1].url, "http://127.0.0.1:8765/sessions/chat%20one/model?scope_id=conversation");
+  assert.deepEqual(JSON.parse(calls[1].init.body), { selected_model_key: "backup" });
 });
 
 test("api client delivers runtime approval decisions", async () => {

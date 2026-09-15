@@ -2359,6 +2359,18 @@ input:focus,
   background: color-mix(in srgb, var(--surface-2) 76%, transparent);
 }
 
+.model-config-status {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning, #b7791f) 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning, #b7791f) 8%, var(--surface));
+}
+
+.model-config-status strong { font-size: 13px; }
+.model-config-status span { color: var(--muted); font-size: 12px; }
+
 .model-group-heading,
 .model-route-title,
 .fallback-row,

@@ -56,9 +56,11 @@ const EMPTY_SETTINGS = {
   workspace_root: "",
   lora_root: "",
   agent: "default",
-  profile: "default",
-  routes: [],
-  fallback: [],
+  model_configuration_status: "unconfigured",
+  model_configuration_error: "model_configuration_required",
+  models: {},
+  model_groups: {},
+  default_model_group: "",
   retry: null,
   user_lora_root: "",
   max_steps: -1,
@@ -94,6 +96,12 @@ export function App() {
     return { ...initial, ...(!compact && saved && typeof saved.historyCollapsed === "boolean" && typeof saved.traceCollapsed === "boolean" ? saved : {}), compact };
   });
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
+  const [pendingNewModelGroup, setPendingNewModelGroup] = useState("");
+  useEffect(() => {
+    setPendingNewModelGroup((current) => current && settings.model_groups?.[current]
+      ? current
+      : settings.default_model_group || "");
+  }, [settings.default_model_group, settings.model_groups]);
   useEffect(() => {
     if (!layout.compact) saveWorkbenchPreferences({ layout: { historyCollapsed: layout.historyCollapsed, traceCollapsed: layout.traceCollapsed } });
   }, [layout]);
@@ -246,7 +254,8 @@ export function App() {
       const latestPendingMessages = pendingSessionMessagesRef.current.get(sessionId);
       const resolvedMessages = selectSessionMessages(latestPendingMessages, nextMessages);
       activeSessionIdRef.current = detail.session.session_id || sessionId;
-      setActiveSession(detail.session);
+      const loadedSession = sessionFromDetail(detail);
+      setActiveSession(loadedSession);
       messagesRef.current = resolvedMessages;
       setMessages(resolvedMessages);
       setActivityCollapseToken((value) => value + 1);
@@ -255,7 +264,7 @@ export function App() {
         resumeSessionRef.current?.(detail);
       }
       window.setTimeout(() => {
-        loadTrace(detail.session, traceToken).catch((err) => {
+        loadTrace(loadedSession, traceToken).catch((err) => {
           if (traceToken === traceLoadTokenRef.current) {
             setError(readableError(err));
           }
@@ -333,13 +342,14 @@ export function App() {
         caseId: "chat",
         mode: "chat",
         scopeId: scope?.scope_id === "conversation" ? "conversation" : undefined,
+        modelGroupName: pendingNewModelGroup || settings.default_model_group || undefined,
       });
       await refreshWorkbench({ selectSessionId: session.session_id });
       setNotice("New chat created");
     } catch (err) {
       setError(readableError(err));
     }
-  }, [api, refreshWorkbench, settings.workspace_root]);
+  }, [api, pendingNewModelGroup, refreshWorkbench, settings.default_model_group, settings.workspace_root]);
 
   const handleDeleteSession = useCallback(
     async (sessionId, scope) => {
@@ -480,6 +490,7 @@ export function App() {
             executionId: recovery?.runtime_execution_id,
             sessionId: streamSessionId,
             caseId: "chat",
+            modelGroupName: pendingNewModelGroup || settings.default_model_group || undefined,
             scopeId: recovery?.session.scope_id || activeSession?.scope_id,
           },
           {
@@ -587,7 +598,7 @@ export function App() {
         }
       }
     },
-    [activeSession?.scope_id, api, refreshWorkbench, setSessionRunning],
+    [activeSession?.scope_id, api, pendingNewModelGroup, refreshWorkbench, setSessionRunning, settings.default_model_group],
   );
   resumeSessionRef.current = (detail) => handleSendMessage("", detail);
 
@@ -604,12 +615,13 @@ export function App() {
         api, sessionId: activeSessionId, scopeId: activeSession?.scope_id, signal, isCurrent,
         onResume: (detail) => {
           traceLoadTokenRef.current += 1;
-          setActiveSession(detail.session);
+          setActiveSession(sessionFromDetail(detail));
           resumeSessionRef.current?.(detail);
         },
         onSnapshot: (detail, trace) => {
           traceLoadTokenRef.current += 1;
-          setActiveSession((current) => JSON.stringify(current) === JSON.stringify(detail.session) ? current : detail.session);
+          const loadedSession = sessionFromDetail(detail);
+          setActiveSession((current) => JSON.stringify(current) === JSON.stringify(loadedSession) ? current : loadedSession);
           setTraceEvents((current) => JSON.stringify(current) === JSON.stringify(trace.events || []) ? current : trace.events || []);
           setContextSnapshots((current) => JSON.stringify(current) === JSON.stringify(trace.context_snapshots || []) ? current : trace.context_snapshots || []);
           sessionLiveEventsRef.current.delete(activeSessionId);
@@ -688,7 +700,11 @@ export function App() {
       setStatus("Opening project");
       await api.updateSettings({ workspaceRoot, agent: "" });
       if (newTask === true) {
-        const session = await api.createSession({ caseId: "chat", mode: "chat" });
+        const session = await api.createSession({
+          caseId: "chat",
+          mode: "chat",
+          modelGroupName: pendingNewModelGroup || settings.default_model_group || undefined,
+        });
         await refreshWorkbench({ selectSessionId: session.session_id });
       } else {
         await refreshWorkbench({ selectFirst: true });
@@ -700,7 +716,7 @@ export function App() {
     } finally {
       projectChooserBusyRef.current = false;
     }
-  }, [api, refreshWorkbench, settings.workspace_root]);
+  }, [api, pendingNewModelGroup, refreshWorkbench, settings.default_model_group, settings.workspace_root]);
 
   const appClassName = appLayoutClassName(layout);
   const fittedWidths = fitPanelWidths(panelWidths, layout, workbenchWidth);
@@ -775,6 +791,13 @@ export function App() {
           const nextSettings = await api.updateSettings({ approvalsEnabled });
           setSettings(nextSettings);
         }}
+        pendingNewModelGroup={pendingNewModelGroup}
+        onChangeNewModelGroup={setPendingNewModelGroup}
+        onChangeModel={async (selectedModelKey) => {
+          if (!activeSessionIdRef.current) return;
+          await api.updateSessionModel(activeSessionIdRef.current, selectedModelKey, { scopeId: activeSession?.scope_id });
+          await loadSession(activeSessionIdRef.current, activeSession, { resumeExecution: false });
+        }}
       />}
       {activeView === "chat" ? <TracePanel
         api={api}
@@ -795,6 +818,7 @@ export function App() {
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
+          api={api}
           disabled={savingSettings}
           onClose={() => setSettingsOpen(false)}
           onSave={handleSaveSettings}
@@ -1044,7 +1068,7 @@ function SessionRow({
   );
 }
 
-export function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, steeringReady = false, approvals, api, onSendMessage, onSteering, onApproval, projects = [], onSelectProject, onChooseProject, onChangePermissions }) {
+export function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, steeringReady = false, approvals, api, onSendMessage, onSteering, onApproval, projects = [], onSelectProject, onChooseProject, onChangePermissions, pendingNewModelGroup = "", onChangeNewModelGroup = () => {}, onChangeModel = () => {} }) {
   const [draft, setDraft] = useState("");
   const [configuring, setConfiguring] = useState(false);
   const [configError, setConfigError] = useState("");
@@ -1116,7 +1140,8 @@ export function ChatPane({ activeSession, messages, activityCollapseToken, setti
           <h2 title={chatTitle}>{chatTitle}</h2>
           <p>
             <span title={settings.workspace_root}>{activeSession?.scope_id === "conversation" ? "独立对话" : shortPath(settings.workspace_root) || "未选择项目"}</span>
-            <span aria-hidden="true"> · </span>{primaryModel(settings)}
+            <span aria-hidden="true"> · </span>{activeSession?.model_group_name || settings.default_model_group || "未配置组"}
+            <span aria-hidden="true"> / </span>{activeSession?.selected_model_key || primaryModel(settings)}
           </p>
         </div>
         <div className={`status-pill ${statusTone(status)}`}>{statusLabel(status)}</div>
@@ -1189,6 +1214,10 @@ export function ChatPane({ activeSession, messages, activityCollapseToken, setti
             ]} />}
           <ComposerMenu label="任务权限（全局）" title="全局权限设置，对后续新运行生效" value={settings.approvals_enabled === false ? "full" : "ask"} disabled={running || configuring} onChange={(value) => void configure(() => onChangePermissions(value === "ask"))}
             options={[{ value:"ask", label:"逐次审批" }, { value:"full", label:"完全访问" }]} />
+          {!activeSession && <ComposerMenu label="模型组" title="模型组在对话创建后固定" value={pendingNewModelGroup || settings.default_model_group || ""} disabled={running || configuring} onChange={onChangeNewModelGroup}
+            options={Object.keys(settings.model_groups || {}).map((name) => ({ value: name, label: name, description: (settings.model_groups[name]?.models || []).join(" → ") }))} />}
+          {activeSession && <ComposerMenu label="首选模型" title={`固定模型组：${activeSession.model_group_name || "未配置"}`} value={activeSession.selected_model_key || ""} disabled={running || configuring} onChange={(value) => void configure(() => onChangeModel(value))}
+            options={(activeSession.selectable_models || []).map((model) => ({ value: model.model_key, label: model.model_key, description: `${model.provider} / ${model.model_id}` }))} />}
           <div className="composer-send-actions">
             <span className="composer-hint">{running ? (steeringReady ? "Enter 追加指令 · 下一处理边界生效" : "正在连接执行，连接后可追加指令") : "Enter 发送 · Shift + Enter 换行"}</span>
             <button className="send" aria-label={running ? (steeringReady ? "追加指令" : "正在连接") : "发送"} title={running ? (steeringReady ? "追加指令" : "正在连接") : "发送"} disabled={(running && !steeringReady) || sending || configuring || !draft.trim()} type="button" onClick={submit}>
@@ -2016,8 +2045,10 @@ function copyContextValue(value) {
   globalThis.navigator?.clipboard?.writeText?.(value).catch(() => {});
 }
 
-export function SettingsPanel({ settings, disabled, onClose, onSave }) {
+export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
   const [draft, setDraft] = useState(() => settingsToDraft(settings));
+  const [catalogs, setCatalogs] = useState(null);
+  const [discovered, setDiscovered] = useState({});
   const settingsRef = useRef(null);
   const validationError = modelGroupValidationError(draft);
 
@@ -2031,64 +2062,95 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
     setDraft(settingsToDraft(settings));
   }, [settings]);
 
+  useEffect(() => {
+    if (!api?.getModelCatalogs) return undefined;
+    let active = true;
+    api.getModelCatalogs().then((value) => { if (active) setCatalogs(value); }).catch(() => {});
+    return () => { active = false; };
+  }, [api]);
+
   function setField(field, value) {
     setDraft((current) => ({ ...current, [field]: value }));
   }
 
-  function setRoute(index, field, value) {
+  function setModel(modelKey, field, value) {
     setDraft((current) => {
-      const routes = current.modelRoutes.map((route, routeIndex) =>
-        routeIndex === index ? { ...route, [field]: value } : route,
-      );
-      const previousId = current.modelRoutes[index]?.id;
-      const fallback = field === "id"
-        ? current.fallback.map((routeId) => (routeId === previousId ? value : routeId))
-        : current.fallback;
-      return { ...current, modelRoutes: routes, fallback };
+      const model = current.models[modelKey];
+      if (!model) return current;
+      if (field === "base_url" || field === "verify_ssl") {
+        return { ...current, models: { ...current.models, [modelKey]: { ...model, connection: { ...model.connection, [field]: value } } } };
+      }
+      if (field === "credential_env") {
+        return { ...current, models: { ...current.models, [modelKey]: { ...model, connection: { ...model.connection, credential: value ? { env: value } : { none: true } } } } };
+      }
+      if (field === "context_tokens" || field === "max_output_tokens") {
+        return { ...current, models: { ...current.models, [modelKey]: { ...model, capabilities: { ...model.capabilities, limits: { ...model.capabilities?.limits, [field]: Number(value) || null } } } } };
+      }
+      if (field === "proxy") {
+        return { ...current, models: { ...current.models, [modelKey]: { ...model, connection: { ...model.connection, proxy: value || undefined } } } };
+      }
+      return { ...current, models: { ...current.models, [modelKey]: { ...model, [field]: value } } };
     });
   }
 
-  function addRoute() {
+  function renameModel(previousKey, nextKey) {
     setDraft((current) => {
-      const id = nextRouteId(current.modelRoutes);
-      return {
-        ...current,
-        modelRoutes: [...current.modelRoutes, emptyModelRoute(id)],
-        fallback: [...current.fallback, id],
-      };
+      const key = nextKey.trim();
+      if (!key || key === previousKey || Object.hasOwn(current.models, key)) return current;
+      const models = {};
+      for (const [name, model] of Object.entries(current.models)) models[name === previousKey ? key : name] = model;
+      const modelGroups = Object.fromEntries(Object.entries(current.modelGroups).map(([name, group]) => [name, { models: group.models.map((item) => item === previousKey ? key : item) }]));
+      return { ...current, models, modelGroups };
     });
   }
 
-  function removeRoute(index) {
+  function addModel() {
     setDraft((current) => {
-      if (current.modelRoutes.length <= 1) return current;
-      const removedId = current.modelRoutes[index]?.id;
-      return {
-        ...current,
-        modelRoutes: current.modelRoutes.filter((_route, routeIndex) => routeIndex !== index),
-        fallback: current.fallback.filter((routeId) => routeId !== removedId),
-      };
+      const key = nextModelKey(current.models);
+      return { ...current, models: { ...current.models, [key]: emptyNativeModel(key) } };
     });
   }
 
-  function toggleFallback(routeId) {
-    setDraft((current) => ({
-      ...current,
-      fallback: current.fallback.includes(routeId)
-        ? current.fallback.filter((item) => item !== routeId)
-        : [...current.fallback, routeId],
-    }));
+  function removeModel(modelKey) {
+    setDraft((current) => {
+      if (Object.values(current.modelGroups).some((group) => group.models.includes(modelKey))) return current;
+      const { [modelKey]: _removed, ...models } = current.models;
+      return { ...current, models };
+    });
   }
 
-  function moveFallback(routeId, direction) {
+  function setGroupModels(groupName, value) {
     setDraft((current) => {
-      const index = current.fallback.indexOf(routeId);
-      const target = index + direction;
-      if (index < 0 || target < 0 || target >= current.fallback.length) return current;
-      const fallback = [...current.fallback];
-      [fallback[index], fallback[target]] = [fallback[target], fallback[index]];
-      return { ...current, fallback };
+      const models = value.split(",").map((item) => item.trim()).filter(Boolean);
+      return { ...current, modelGroups: { ...current.modelGroups, [groupName]: { models } } };
     });
+  }
+
+  function renameGroup(previousName, nextName) {
+    setDraft((current) => {
+      const name = nextName.trim();
+      if (!name || name === previousName || Object.hasOwn(current.modelGroups, name)) return current;
+      const modelGroups = Object.fromEntries(Object.entries(current.modelGroups).map(([key, group]) => [key === previousName ? name : key, group]));
+      return { ...current, modelGroups, defaultModelGroup: current.defaultModelGroup === previousName ? name : current.defaultModelGroup };
+    });
+  }
+
+  function applyCapabilityPreset(modelKey, presetName) {
+    const preset = catalogs?.capability_presets?.[presetName];
+    if (!preset) return;
+    setDraft((current) => ({ ...current, models: { ...current.models, [modelKey]: { ...current.models[modelKey], capabilities: structuredClone(preset) } } }));
+  }
+
+  async function discoverModelIds(modelKey) {
+    const model = draft.models[modelKey];
+    if (!api?.discoverModels || !model) return;
+    const envName = model.connection?.credential?.env;
+    const response = await api.discoverModels({
+      protocol: model.protocol,
+      connection: model.connection,
+      credential_value: envName ? draft.credentialValues[envName] || undefined : undefined,
+    });
+    setDiscovered((current) => ({ ...current, [modelKey]: response.models || [] }));
   }
 
   return (
@@ -2113,6 +2175,10 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
         </header>
 
         <div className="settings-form">
+          {settings.model_configuration_status !== "configured" && <div className="model-config-status" role="status">
+            <strong>未配置模型</strong>
+            <span>{settings.model_configuration_error || "请添加 Pygent 模型和模型组后保存。"}</span>
+          </div>}
           <details className="settings-disclosure">
           <summary>项目与 Agent <span>工作目录与配置档案</span></summary>
           <div className="settings-disclosure-body">
@@ -2124,84 +2190,84 @@ export function SettingsPanel({ settings, disabled, onClose, onSave }) {
             <span>Agent</span>
             <input value={draft.agent} onChange={(event) => setField("agent", event.target.value)} />
           </label>
-          <label>
-            <span>Model group profile</span>
-            <input value={draft.profile} onChange={(event) => setField("profile", event.target.value)} />
-          </label>
           </div>
           </details>
-          <section className="model-group-editor" aria-label="Model group routes">
+          <section className="model-group-editor" aria-label="Native Pygent models">
             <div className="model-group-heading">
               <div>
-                <strong>模型连接</strong>
-                <span>先配置模型与密钥；失败回退策略可在高级设置中调整。</span>
+                <strong>Pygent 模型与连接</strong>
+                <span>每个模型直接保存原生协议、能力和 connection；密钥只保存到凭据库。</span>
               </div>
-              <button className="route-add" type="button" onClick={addRoute}>
+              <button className="route-add" type="button" onClick={addModel}>
                 <Plus aria-hidden="true" /> 添加模型
               </button>
             </div>
             <div className="model-route-list">
-              {draft.modelRoutes.map((route, index) => (
-                <article className="model-route-card" key={`route-${index}`}>
+              {Object.entries(draft.models).map(([modelKey, model], index) => {
+                const credentialEnv = model.connection?.credential?.env || "";
+                const referenced = Object.values(draft.modelGroups).some((group) => group.models.includes(modelKey));
+                const providerProtocols = catalogs?.providers?.[model.provider]?.protocols || {};
+                return <article className="model-route-card" key={modelKey}>
                   <div className="model-route-title">
                     <span className="route-rank">{String(index + 1).padStart(2, "0")}</span>
-                    <strong>{route.id || `route-${index + 1}`}</strong>
+                    <strong>{modelKey}</strong>
                     <button
                       className="route-remove"
-                      disabled={draft.modelRoutes.length <= 1}
+                      disabled={referenced}
                       type="button"
-                      onClick={() => removeRoute(index)}
-                      aria-label={`Remove ${route.id || `route ${index + 1}`}`}
+                      onClick={() => removeModel(modelKey)}
+                      aria-label={`Remove ${modelKey}`}
+                      title={referenced ? "先从所有模型组移除" : "删除模型"}
                     >
                       <Trash2 aria-hidden="true" />
                     </button>
                   </div>
                   <div className="model-route-grid">
-                    <label><span>模型名称</span><input value={route.model_name} onChange={(event) => setRoute(index, "model_name", event.target.value)} /></label>
-                    <label><span>服务地址 · Base URL</span><input value={route.base_url} onChange={(event) => setRoute(index, "base_url", event.target.value)} /></label>
+                    <label><span>模型键 · Model key</span><input defaultValue={modelKey} onBlur={(event) => renameModel(modelKey, event.target.value)} /></label>
+                    <label><span>模型 ID</span><input list={`models-${modelKey}`} value={model.model_id || ""} onChange={(event) => setModel(modelKey, "model_id", event.target.value)} /></label>
+                    <datalist id={`models-${modelKey}`}>{(discovered[modelKey] || []).map((item) => <option key={item.id} value={item.id} />)}</datalist>
+                    <label><span>Provider</span><input value={model.provider || ""} onChange={(event) => setModel(modelKey, "provider", event.target.value)} /></label>
+                    <label><span>协议</span><input list={`protocols-${modelKey}`} value={model.protocol || ""} onChange={(event) => setModel(modelKey, "protocol", event.target.value)} /></label>
+                    <datalist id={`protocols-${modelKey}`}>{Object.keys(providerProtocols).map((protocol) => <option key={protocol} value={protocol} />)}</datalist>
+                    <label><span>服务地址 · Base URL</span><input value={model.connection?.base_url || ""} onChange={(event) => setModel(modelKey, "base_url", event.target.value)} /></label>
+                    <label><span>代理（可选）</span><input value={model.connection?.proxy || ""} onChange={(event) => setModel(modelKey, "proxy", event.target.value)} /></label>
+                    <label><span>密钥环境变量（留空为 no-auth）</span><input value={credentialEnv} onChange={(event) => setModel(modelKey, "credential_env", event.target.value)} /></label>
+                    <label><span>能力预设</span><select defaultValue="" onChange={(event) => applyCapabilityPreset(modelKey, event.target.value)}><option value="">保留当前能力</option>{Object.keys(catalogs?.capability_presets || {}).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
+                    <label><span>上下文 tokens</span><input type="number" min="1" value={model.capabilities?.limits?.context_tokens || ""} onChange={(event) => setModel(modelKey, "context_tokens", event.target.value)} /></label>
+                    <label><span>最大输出 tokens</span><input type="number" min="1" value={model.capabilities?.limits?.max_output_tokens || ""} onChange={(event) => setModel(modelKey, "max_output_tokens", event.target.value)} /></label>
+                    <label><span>TLS 验证</span><select value={model.connection?.verify_ssl === false ? "off" : "on"} onChange={(event) => setModel(modelKey, "verify_ssl", event.target.value === "on")}><option value="on">开启</option><option value="off">关闭</option></select></label>
                     <label className="route-secret">
-                      <span>API 密钥</span>
-                      <input type="password" autoComplete="off" placeholder={route.api_key_source === "missing" ? "尚未配置" : "留空保留已有密钥"} value={route.api_key} onChange={(event) => setRoute(index, "api_key", event.target.value)} />
+                      <span>新的 API 密钥</span>
+                      <input disabled={!credentialEnv} type="password" autoComplete="off" placeholder={model.connection?.credential_source === "missing" ? "尚未配置" : "留空保留已有密钥"} value={draft.credentialValues[credentialEnv] || ""} onChange={(event) => setDraft((current) => ({ ...current, credentialValues: { ...current.credentialValues, [credentialEnv]: event.target.value } }))} />
                     </label>
-                    <details className="route-advanced"><summary>高级连接参数</summary><div className="model-route-grid">
-                      <label><span>连接标识 · Route ID</span><input value={route.id} onChange={(event) => setRoute(index, "id", event.target.value)} /></label>
-                      <label><span>协议适配器 · Provider</span><input value={route.provider} onChange={(event) => setRoute(index, "provider", event.target.value)} /></label>
-                      <label><span>密钥环境变量</span><input value={route.api_key_env} onChange={(event) => setRoute(index, "api_key_env", event.target.value)} /></label>
-                    </div></details>
+                    <button className="plain-action" type="button" onClick={() => discoverModelIds(modelKey)}>从连接发现模型</button>
                   </div>
-                </article>
-              ))}
+                </article>;
+              })}
             </div>
           </section>
           <details className="settings-disclosure"><summary>高级运行设置 <span>回退顺序、重试与上下文</span></summary><div className="settings-disclosure-body">
-          <section className="fallback-editor" aria-label="Fallback order">
+          <section className="fallback-editor" aria-label="Model groups">
             <div className="model-group-heading">
               <div>
-                <strong>Fallback order</strong>
-                <span>Top to bottom. Disabled routes remain configured but are not called.</span>
+                <strong>模型组</strong>
+                <span>逗号分隔的模型键顺序就是 Pygent 回退顺序。</span>
               </div>
             </div>
-            {fallbackDisplayRoutes(draft.modelRoutes, draft.fallback).map((route, displayIndex) => {
-              const priority = draft.fallback.indexOf(route.id);
-              const enabled = priority >= 0;
-              return (
-                <div className={`fallback-row ${enabled ? "enabled" : ""}`} key={`fallback-${displayIndex}`}>
-                  <label className="fallback-toggle">
-                    <input type="checkbox" checked={enabled} onChange={() => toggleFallback(route.id)} />
-                    <span>{enabled ? priority + 1 : "—"}</span>
-                    <strong>{route.id || "Unnamed route"}</strong>
-                    <small>{route.model_name || "No model"}</small>
-                  </label>
-                  <div className="fallback-order-actions">
-                    <button type="button" disabled={!enabled || priority === 0} onClick={() => moveFallback(route.id, -1)} aria-label={`Move ${route.id} up`}><ArrowUp aria-hidden="true" /></button>
-                    <button type="button" disabled={!enabled || priority === draft.fallback.length - 1} onClick={() => moveFallback(route.id, 1)} aria-label={`Move ${route.id} down`}><ArrowDown aria-hidden="true" /></button>
-                  </div>
-                </div>
-              );
-            })}
+            {Object.entries(draft.modelGroups).map(([groupName, group]) => <div className="fallback-row enabled" key={groupName}>
+              <label><span>组名</span><input defaultValue={groupName} onBlur={(event) => renameGroup(groupName, event.target.value)} /></label>
+              <label><span>模型顺序</span><input value={group.models.join(", ")} onChange={(event) => setGroupModels(groupName, event.target.value)} /></label>
+            </div>)}
+            <button className="plain-action" type="button" onClick={() => setDraft((current) => {
+              let index = Object.keys(current.modelGroups).length + 1;
+              while (Object.hasOwn(current.modelGroups, `group-${index}`)) index += 1;
+              const name = `group-${index}`;
+              return { ...current, modelGroups: { ...current.modelGroups, [name]: { models: Object.keys(current.models).slice(0, 1) } }, defaultModelGroup: current.defaultModelGroup || name };
+            })}><Plus aria-hidden="true" /> 添加模型组</button>
+            <label><span>Agent 默认模型组</span><select value={draft.defaultModelGroup} onChange={(event) => setField("defaultModelGroup", event.target.value)}>{Object.keys(draft.modelGroups).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
           </section>
           <div className="retry-grid">
-            <label><span>Attempts / route</span><input min="1" type="number" value={draft.retry.max_attempts_per_route} onChange={(event) => setField("retry", { ...draft.retry, max_attempts_per_route: event.target.value })} /></label>
+            <label><span>Attempts / model</span><input min="1" type="number" value={draft.retry.max_attempts_per_model} onChange={(event) => setField("retry", { ...draft.retry, max_attempts_per_model: event.target.value })} /></label>
             <label><span>Idle timeout (seconds)</span><input min="0.1" step="0.1" type="number" value={draft.retry.attempt_idle_timeout_seconds} onChange={(event) => setField("retry", { ...draft.retry, attempt_idle_timeout_seconds: event.target.value })} /></label>
           </div>
           <label>
@@ -2918,13 +2984,12 @@ function settingsToDraft(settings) {
     approvalsEnabled: settings.approvals_enabled !== false,
     workspaceRoot: settings.workspace_root || "",
     agent: settings.agent || "",
-    profile: settings.profile || "default",
-    modelRoutes: (settings.routes || []).map((route) => ({ ...route, api_key: "" })),
-    fallback: Array.isArray(settings.fallback) && settings.fallback.length
-      ? [...settings.fallback]
-      : (settings.routes || []).map((route) => route.id),
+    models: structuredClone(settings.models || {}),
+    modelGroups: structuredClone(settings.model_groups || {}),
+    defaultModelGroup: settings.default_model_group || "",
+    credentialValues: {},
     retry: {
-      max_attempts_per_route: settings.retry?.max_attempts_per_route ?? 2,
+      max_attempts_per_model: settings.retry?.max_attempts_per_model ?? 2,
       attempt_idle_timeout_seconds: settings.retry?.attempt_idle_timeout_seconds ?? 60,
       backoff_initial: settings.retry?.backoff_initial ?? 0.5,
       backoff_maximum: settings.retry?.backoff_maximum ?? 4,
@@ -2932,44 +2997,62 @@ function settingsToDraft(settings) {
     },
     maxSteps: Number.isFinite(settings.max_steps) ? settings.max_steps : -1,
     contextWindow: Number.isFinite(settings.context_window) ? String(settings.context_window) : "",
-    apiKey: "",
   };
 }
 
-function emptyModelRoute(id) {
+function sessionFromDetail(detail) {
   return {
-    id,
-    provider: "openai",
-    model_name: "",
-    base_url: "https://api.openai.com/v1",
-    api_key_env: `${id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`,
-    api_key_source: "missing",
-    api_key: "",
+    ...(detail?.session || {}),
+    selectable_models: detail?.selectable_models || [],
   };
 }
 
-function nextRouteId(routes) {
-  const used = new Set(routes.map((route) => route.id));
-  let index = routes.length + 1;
-  while (used.has(`route-${index}`)) index += 1;
-  return `route-${index}`;
+function emptyNativeModel(id) {
+  return {
+    provider: "openai",
+    model_id: "",
+    protocol: "openai_chat_completions",
+    connection: {
+      base_url: "https://api.openai.com/v1",
+      credential: { env: `${id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY` },
+      verify_ssl: true,
+    },
+    provider_options: {},
+    capabilities: {
+      modalities: { input: ["text"], output: ["text"] },
+      streaming: { output: ["text"] },
+      tools: { call: true, choice: ["auto"], parallel: true },
+      structured_output: { json_object: true, json_schema: false },
+      reasoning: { supported: false, controllable: false },
+      limits: { context_tokens: 128000, max_output_tokens: 8192 },
+    },
+  };
 }
 
-function fallbackDisplayRoutes(routes, fallback) {
-  const ordered = fallback.map((routeId) => routes.find((route) => route.id === routeId)).filter(Boolean);
-  return [...ordered, ...routes.filter((route) => !fallback.includes(route.id))];
+function nextModelKey(models) {
+  let index = Object.keys(models).length + 1;
+  while (Object.hasOwn(models, `model-${index}`)) index += 1;
+  return `model-${index}`;
 }
 
 export function modelGroupValidationError(draft) {
-  if (!draft.profile?.trim()) return "Model group profile is required.";
-  if (!Array.isArray(draft.modelRoutes) || draft.modelRoutes.length === 0) return "Add at least one model route.";
-  const required = ["id", "provider", "model_name", "base_url", "api_key_env"];
-  for (const [index, route] of draft.modelRoutes.entries()) {
-    if (required.some((field) => !String(route[field] || "").trim())) return `Route ${index + 1} has incomplete fields.`;
+  const models = draft.models || {};
+  const groups = draft.modelGroups || {};
+  if (!Object.keys(models).length) return "Add at least one model.";
+  for (const [key, model] of Object.entries(models)) {
+    if (!key.trim() || !model?.provider?.trim() || !model?.model_id?.trim() || !model?.protocol?.trim()) return `Model ${key || "unnamed"} has incomplete fields.`;
+    if (!model.connection?.base_url?.trim()) return `Model ${key} requires a Base URL.`;
+    const credential = model.connection?.credential;
+    if (!credential || (!credential.none && !credential.env?.trim())) return `Model ${key} requires a credential reference or no-auth setting.`;
+    if (!model.capabilities?.limits) return `Model ${key} requires native capabilities.`;
   }
-  const ids = draft.modelRoutes.map((route) => route.id.trim());
-  if (new Set(ids).size !== ids.length) return "Route IDs must be unique.";
-  if (!Array.isArray(draft.fallback) || draft.fallback.length === 0) return "Enable at least one route in the fallback order.";
+  if (!Object.keys(groups).length) return "Add at least one model group.";
+  for (const [name, group] of Object.entries(groups)) {
+    if (!name.trim() || !Array.isArray(group?.models) || !group.models.length) return `Model group ${name || "unnamed"} must contain at least one model.`;
+    const unknown = group.models.find((key) => !Object.hasOwn(models, key));
+    if (unknown) return `Model group ${name} references unknown model ${unknown}.`;
+  }
+  if (!Object.hasOwn(groups, draft.defaultModelGroup || "")) return "Choose an existing default model group.";
   return "";
 }
 
@@ -3011,7 +3094,8 @@ function isTransientFetchError(error) {
 }
 
 function primaryModel(settings) {
-  return settings.routes?.[0]?.model_name || "unconfigured model";
+  const keys = settings.model_groups?.[settings.default_model_group]?.models || [];
+  return settings.models?.[keys[0]]?.model_id || "unconfigured model";
 }
 
 function formatContextWindow(value) {

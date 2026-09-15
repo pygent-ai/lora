@@ -340,19 +340,21 @@ test("context inspector renders original and compressed versions as variable row
   assert.match(html, /context-variable-role">tool</);
 });
 
-test("model group validation requires unique routes and an active fallback", () => {
+test("native model validation requires groups to reference configured children", () => {
+  const model = {
+    provider: "openai", model_id: "main", protocol: "openai_chat_completions",
+    connection: { base_url: "https://main.test", credential: { env: "MAIN_KEY" } },
+    capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
+  };
   const valid = {
-    profile: "production",
-    modelRoutes: [
-      { id: "primary", provider: "openai", model_name: "main", base_url: "https://main.test", api_key_env: "MAIN_KEY" },
-      { id: "backup", provider: "openai", model_name: "backup", base_url: "https://backup.test", api_key_env: "BACKUP_KEY" },
-    ],
-    fallback: ["primary", "backup"],
+    models: { primary: model, backup: { ...model, model_id: "backup" } },
+    modelGroups: { coding: { models: ["primary", "backup"] } },
+    defaultModelGroup: "coding",
   };
 
   assert.equal(appModule.modelGroupValidationError(valid), "");
-  assert.match(appModule.modelGroupValidationError({ ...valid, fallback: [] }), /at least one route/i);
-  assert.match(appModule.modelGroupValidationError({ ...valid, modelRoutes: [valid.modelRoutes[0], valid.modelRoutes[0]] }), /unique/i);
+  assert.match(appModule.modelGroupValidationError({ ...valid, modelGroups: { coding: { models: ["missing"] } } }), /unknown model/i);
+  assert.match(appModule.modelGroupValidationError({ ...valid, defaultModelGroup: "missing" }), /default model group/i);
 });
 
 test("new chat stays enabled while another session is running", () => {
@@ -982,13 +984,13 @@ test("history preserves reasoning from the final assistant message", () => {
   assert.equal(appModule.thinkingActivityState(message).running, false);
 });
 
-test("model-name changes remain saveable with an existing credential", () => {
-  const route = {
-    id: "primary", provider: "openai", model_name: "pool_0021",
-    base_url: "https://example.test/v1", api_key_env: "MODEL_API_KEY",
-    api_key_source: "user-file", api_key: "",
+test("model-id changes remain saveable with an existing credential reference", () => {
+  const model = {
+    provider: "openai", model_id: "pool_0021", protocol: "openai_chat_completions",
+    connection: { base_url: "https://example.test/v1", credential: { env: "MODEL_API_KEY" }, credential_source: "user-file:MODEL_API_KEY" },
+    provider_options: {}, capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
   };
-  const settings = { profile: "default", routes: [route], fallback: ["primary"] };
+  const settings = { models: { primary: model }, model_groups: { coding: { models: ["primary"] } }, default_model_group: "coding" };
   for (const saving of [false, true]) {
     const html = renderToStaticMarkup(React.createElement(appModule.SettingsPanel, {
       settings, disabled: saving, onClose() {}, onSave() {},
@@ -997,14 +999,33 @@ test("model-name changes remain saveable with an existing credential", () => {
     assert.equal(save.includes("disabled"), saving);
     assert.equal(html.includes("正在保存…"), saving);
   }
-  const draft = { profile: "default", modelRoutes: [route], fallback: ["primary"] };
+  const draft = { models: { primary: model }, modelGroups: { coding: { models: ["primary"] } }, defaultModelGroup: "coding", credentialValues: {} };
   assert.equal(appModule.modelGroupValidationError(draft), "");
   const payload = settingsPayload(draft);
-  assert.equal(payload.model_group.routes[0].model_name, "pool_0021");
-  assert.equal(Object.hasOwn(payload.model_group.routes[0], "api_key"), false);
+  assert.equal(payload.model_config.models.primary.model_id, "pool_0021");
+  assert.equal(JSON.stringify(payload).includes("saved-secret"), false);
   assert.notEqual(appModule.modelGroupValidationError({
-    ...draft, modelRoutes: [{ ...route, model_name: "" }],
+    ...draft, models: { primary: { ...model, model_id: "" } },
   }), "");
+});
+
+test("existing idle chat exposes only child models from its fixed group", () => {
+  const html = renderToStaticMarkup(React.createElement(appModule.ChatPane, {
+    activeSession: {
+      session_id: "s1", title: "Chat", model_group_name: "coding", selected_model_key: "backup",
+      selectable_models: [
+        { model_key: "main", provider: "openai", model_id: "gpt-main" },
+        { model_key: "backup", provider: "anthropic", model_id: "claude-backup" },
+      ],
+    },
+    messages: [], settings: { workspace_root: "", model_groups: { coding: { models: ["main", "backup"] }, vision: { models: ["vision-only"] } } },
+    status: "Ready", running: false, approvals: [], projects: [], api: {},
+    onSendMessage() {}, onSteering() {}, onApproval() {}, onChangePermissions() {}, onChangeModel() {},
+  }));
+  assert.match(html, /coding/);
+  assert.match(html, /backup/);
+  assert.doesNotMatch(html, /vision-only/);
+  assert.doesNotMatch(html, /aria-label="模型组"/);
 });
 
 test("automation triggers render as system-origin cards with the raw instruction", () => {

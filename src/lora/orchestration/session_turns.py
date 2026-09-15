@@ -40,13 +40,16 @@ class SessionTurnService:
         message_kind: str = "lora.chat.turn",
         message_data: dict[str, object] | None = None,
         session_title: str | None = None,
+        model_group_name: str | None = None,
     ) -> ManagedSessionTurn:
         Path(config.workspace_root).mkdir(parents=True, exist_ok=True)
         lease = await self._acquire_runtime(config=config, manager=manager)
         try:
             active_session_id = session_id
             if active_session_id is None:
-                active_session_id = manager.create(case_id, mode="chat").session_id
+                active_session_id = manager.create(
+                    case_id, mode="chat", model_group_name=model_group_name
+                ).session_id
             lease.runtime.reminders.prewarm_session(active_session_id)
             if session_title:
                 manager.save_title(active_session_id, session_title)
