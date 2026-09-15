@@ -2,21 +2,18 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from pygent.llm import ModelConfig
 
 from lora.core.io import non_empty_string as _non_empty
-from lora.credentials import (
-    DEFAULT_API_KEY_ENV,
-    load_credentials,
-    lookup_credential,
-)
+from lora.credentials import load_credentials
 from lora.schema import (
     BashCliPreset,
     DelegationConfig,
     EternalConversationConfig,
     MCPServerConfig,
     ModelRetryConfig,
-    ModelRouteConfig,
     ResolvedAgentConfig,
     RunConfig,
     RuntimeApprovalConfig,
@@ -27,8 +24,6 @@ from lora.schema import (
 
 from .yaml_subset import parse_yaml_subset
 
-DEFAULT_MODEL_NAME = "deepseek-v4-flash"
-DEFAULT_BASE_URL = "https://api.deepseek.com"
 USER_CONFIG_FILENAME = "config.yaml"
 
 
@@ -61,12 +56,22 @@ def load_run_config(
     )
 
     resolved_case_file = str(case_file) if case_file is not None else None
-    resolved_agent = _resolve_agent_config(
+    alias, agent_profile = _resolve_agent_profile(
         config_data=config_data,
         cli_agent_alias=agent_alias,
-        user_lora_root=user_lora_root,
     )
-    agent_profile = _agent_profile(config_data, resolved_agent.alias)
+    model_mapping, model_config, model_status, model_error = _parse_model_config(
+        config_data
+    )
+    resolved_agent = (
+        _resolve_agent_config(
+            alias=alias,
+            profile=agent_profile,
+            model_config=model_config,
+        )
+        if model_config is not None
+        else None
+    )
     model_request = (
         agent_profile.get("model_request")
         if isinstance(agent_profile.get("model_request"), dict)
@@ -80,8 +85,12 @@ def load_run_config(
         or _dig(config_data, "session_id"),
         case_file=resolved_case_file,
         max_steps=int(configured_max_steps),
-        agent_alias=resolved_agent.alias,
+        agent_alias=alias,
         resolved_agent=resolved_agent,
+        model_config_mapping=model_mapping,
+        model_config=model_config,
+        model_configuration_status=model_status,
+        model_configuration_error=model_error,
         user_identity=_non_empty(_dig(config_data, "user.identity")) or "default",
         cli_bash_presets=_resolve_cli_bash_presets(config_data),
         bash_full_output_allowlist=_resolve_bash_full_output_allowlist(config_data),
@@ -127,7 +136,7 @@ def load_run_config(
         mcp_servers=_resolve_mcp_servers(config_data, root),
         delegation=_resolve_delegation(config_data),
         eternal_conversation=_resolve_eternal_conversation(
-            config_data, resolved_agent.alias, root
+            config_data, alias, root
         ),
     )
 
@@ -237,6 +246,8 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
             "mcp",
             "delegation",
             "eternal_conversation",
+            "models",
+            "model_groups",
         },
         "config",
     )
@@ -324,24 +335,16 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
         request = agent.get("model_request")
         if not isinstance(request, dict):
             raise ValueError(f"agents[{index}].model_request must be a mapping")
+        allowed_request_fields = {"default_model_group", "retry", "context_window"}
+        if {"profile", "routes", "fallback"} & set(request):
+            allowed_request_fields.update({"profile", "routes", "fallback"})
         _require_known_keys(
-            request,
-            {"profile", "routes", "fallback", "retry", "context_window"},
-            f"agents[{index}].model_request",
+            request, allowed_request_fields, f"agents[{index}].model_request"
         )
-        routes = request.get("routes")
-        if isinstance(routes, list):
-            for route_index, route in enumerate(routes):
-                if isinstance(route, dict):
-                    _require_known_keys(
-                        route,
-                        {"id", "provider", "model_name", "base_url", "api_key_env"},
-                        f"agents[{index}].model_request.routes[{route_index}]",
-                    )
         _validate_mapping(
             request.get("retry"),
             {
-                "max_attempts_per_route",
+                "max_attempts_per_model",
                 "attempt_idle_timeout_seconds",
                 "backoff_initial",
                 "backoff_maximum",
@@ -365,18 +368,25 @@ def _require_known_keys(value: dict[str, Any], allowed: set[str], path: str) -> 
         raise ValueError(f"{path} contains unknown fields: {', '.join(unknown)}")
 
 
-def _resolve_agent_config(
+def _resolve_agent_profile(
     *,
     config_data: dict[str, Any],
     cli_agent_alias: str | None,
-    user_lora_root: Path,
-) -> ResolvedAgentConfig:
+) -> tuple[str, dict[str, Any]]:
     alias = (
         _non_empty(cli_agent_alias)
         or _non_empty(_dig(config_data, "agent.default_alias"))
         or "default"
     )
-    profile = _agent_profile(config_data, alias)
+    return alias, _agent_profile(config_data, alias)
+
+
+def _resolve_agent_config(
+    *,
+    alias: str,
+    profile: dict[str, Any],
+    model_config: ModelConfig,
+) -> ResolvedAgentConfig:
     model_request = (
         profile.get("model_request")
         if isinstance(profile.get("model_request"), dict)
@@ -384,73 +394,59 @@ def _resolve_agent_config(
     )
     assert isinstance(model_request, dict)
 
-    routes = _resolve_model_routes(
-        model_request,
-        user_lora_root=user_lora_root,
-    )
-    fallback = model_request.get("fallback")
-    if fallback is None:
-        fallback = [route.id for route in routes]
-    if not isinstance(fallback, list):
-        raise ValueError("model_request.fallback must be a list")
+    default_model_group = _non_empty(model_request.get("default_model_group"))
+    if default_model_group is None:
+        raise ValueError(
+            f"Agent alias {alias!r} requires model_request.default_model_group"
+        )
+    if default_model_group not in model_config.model_groups:
+        raise ValueError(
+            f"Agent alias {alias!r} references unknown model group "
+            f"{default_model_group!r}"
+        )
     retry_data = model_request.get("retry") or {}
     if not isinstance(retry_data, dict):
         raise ValueError("model_request.retry must be a mapping")
     return ResolvedAgentConfig(
         alias=alias,
-        profile=_non_empty(model_request.get("profile")) or "default",
-        routes=tuple(routes),
-        fallback=tuple(str(item) for item in fallback),
+        default_model_group=default_model_group,
         retry=ModelRetryConfig(**retry_data),
     )
 
 
-def _resolve_model_routes(
-    model_request: dict[str, Any],
-    *,
-    user_lora_root: Path,
-) -> list[ModelRouteConfig]:
-    raw_routes = model_request.get("routes")
-    if raw_routes is None:
-        raise ValueError("agents[].model_request.routes is required")
-    if not isinstance(raw_routes, list) or not raw_routes:
-        raise ValueError("model_request.routes must be a non-empty list")
-    routes: list[ModelRouteConfig] = []
-    for index, item in enumerate(raw_routes):
-        if not isinstance(item, dict):
-            raise ValueError(f"model_request.routes[{index}] must be a mapping")
-        env_name = _non_empty(item.get("api_key_env")) or DEFAULT_API_KEY_ENV
-        key, source = lookup_credential(
-            env_name,
-            user_lora_root=user_lora_root,
+def _parse_model_config(
+    config_data: dict[str, Any],
+) -> tuple[
+    dict[str, Any],
+    ModelConfig | None,
+    Literal["configured", "unconfigured", "legacy"],
+    str | None,
+]:
+    mapping = {
+        key: config_data[key]
+        for key in ("models", "model_groups")
+        if key in config_data
+    }
+    if _contains_legacy_model_fields(config_data):
+        return (
+            mapping,
+            None,
+            "legacy",
+            "legacy_model_configuration: configure native models and model_groups",
         )
-        routes.append(
-            ModelRouteConfig(
-                id=_required_config(
-                    item.get("id"), f"model_request.routes[{index}].id"
-                ),
-                provider=_required_config(
-                    item.get("provider"), f"model_request.routes[{index}].provider"
-                ),
-                model_name=_required_config(
-                    item.get("model_name"), f"model_request.routes[{index}].model_name"
-                ),
-                base_url=_required_config(
-                    item.get("base_url"), f"model_request.routes[{index}].base_url"
-                ),
-                api_key_env=env_name,
-                api_key=key,
-                api_key_source=source,
-            )
-        )
-    return routes
+    if not mapping:
+        return {}, None, "unconfigured", "model_configuration_required"
+    return mapping, ModelConfig.from_mapping(mapping), "configured", None
 
 
-def _required_config(value: object, name: str) -> str:
-    resolved = _non_empty(value)
-    if resolved is None:
-        raise ValueError(f"{name} is required")
-    return resolved
+def _contains_legacy_model_fields(config_data: dict[str, Any]) -> bool:
+    for agent in config_data.get("agents") or []:
+        request = agent.get("model_request") if isinstance(agent, dict) else None
+        if isinstance(request, dict) and {"profile", "routes", "fallback"} & set(
+            request
+        ):
+            return True
+    return False
 
 
 def _runtime_path(root: Path, value: object, default: str) -> str:
@@ -573,22 +569,7 @@ def _agent_profile(config_data: dict[str, Any], alias: str) -> dict[str, Any]:
     agents = config_data.get("agents")
     if agents is None:
         if alias == "default":
-            return {
-                "alias": "default",
-                "model_request": {
-                    "profile": "default",
-                    "routes": [
-                        {
-                            "id": "primary",
-                            "provider": "openai",
-                            "model_name": DEFAULT_MODEL_NAME,
-                            "base_url": DEFAULT_BASE_URL,
-                            "api_key_env": DEFAULT_API_KEY_ENV,
-                        }
-                    ],
-                    "fallback": ["primary"],
-                },
-            }
+            return {"alias": "default", "model_request": {}}
         raise ValueError(f"Agent alias {alias!r} is not configured")
     if not isinstance(agents, list):
         raise ValueError("agents must be a list")

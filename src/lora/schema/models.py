@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Literal
+
+from pygent.llm import ModelConfig
 
 from lora.core.paths import project_lora_root
 
@@ -19,6 +21,8 @@ def _require(value: str, field_name: str) -> str:
 
 @dataclass(slots=True)
 class ModelRouteConfig:
+    """Transitional import shim; native config loading never constructs this type."""
+
     id: str
     provider: str
     model_name: str
@@ -33,27 +37,24 @@ class ModelRouteConfig:
         self.model_name = _require(self.model_name, "model route model_name")
         self.base_url = _require(self.base_url, "model route base_url")
         self.api_key_env = _require(self.api_key_env, "model route api_key_env")
-        self.api_key_source = _require(
-            self.api_key_source, "model route api_key_source"
-        )
 
 
 @dataclass(slots=True)
 class ModelRetryConfig:
-    max_attempts_per_route: int = 2
+    max_attempts_per_model: int = 2
     attempt_idle_timeout_seconds: float = 60.0
     backoff_initial: float = 0.5
     backoff_maximum: float = 4.0
     backoff_multiplier: float = 2.0
 
     def __post_init__(self) -> None:
-        self.max_attempts_per_route = int(self.max_attempts_per_route)
+        self.max_attempts_per_model = int(self.max_attempts_per_model)
         self.attempt_idle_timeout_seconds = float(self.attempt_idle_timeout_seconds)
         self.backoff_initial = float(self.backoff_initial)
         self.backoff_maximum = float(self.backoff_maximum)
         self.backoff_multiplier = float(self.backoff_multiplier)
-        if self.max_attempts_per_route < 1:
-            raise ValueError("max_attempts_per_route must be at least one")
+        if self.max_attempts_per_model < 1:
+            raise ValueError("max_attempts_per_model must be at least one")
         if self.attempt_idle_timeout_seconds <= 0:
             raise ValueError("attempt_idle_timeout_seconds must be greater than zero")
         if not 0 <= self.backoff_initial <= self.backoff_maximum:
@@ -65,45 +66,22 @@ class ModelRetryConfig:
 @dataclass(slots=True)
 class ResolvedAgentConfig:
     alias: str
-    profile: str = "default"
-    routes: tuple[ModelRouteConfig, ...] = ()
-    fallback: tuple[str, ...] = ()
+    default_model_group: str
     retry: ModelRetryConfig = field(default_factory=ModelRetryConfig)
 
     def __post_init__(self) -> None:
         self.alias = _require(self.alias, "alias")
-        self.profile = _require(self.profile, "profile")
-        self.routes = tuple(
-            route if isinstance(route, ModelRouteConfig) else ModelRouteConfig(**route)
-            for route in self.routes
+        self.default_model_group = _require(
+            self.default_model_group, "default_model_group"
         )
-        self.fallback = tuple(self.fallback or (route.id for route in self.routes))
-        if not self.routes:
-            raise ValueError("model_request.routes must contain at least one route")
-        route_ids = {route.id for route in self.routes}
-        if len(route_ids) != len(self.routes):
-            raise ValueError("model route ids must be unique")
-        if any(route_id not in route_ids for route_id in self.fallback):
-            raise ValueError("fallback references an unknown model route")
         if not isinstance(self.retry, ModelRetryConfig):
             self.retry = ModelRetryConfig(**self.retry)
 
     def safe_dict(self) -> dict[str, Any]:
         return {
             "alias": self.alias,
-            "profile": self.profile,
-            "routes": [
-                {
-                    "id": route.id,
-                    "provider": route.provider,
-                    "model_name": route.model_name,
-                    "base_url": route.base_url,
-                    "api_key_env": route.api_key_env,
-                    "api_key_source": route.api_key_source,
-                }
-                for route in self.routes
-            ],
-            "fallback": list(self.fallback),
+            "default_model_group": self.default_model_group,
+            "retry": asdict(self.retry),
         }
 
 
@@ -268,6 +246,12 @@ class RunConfig:
     resolved_agent: ResolvedAgentConfig | None = field(
         default=None, repr=False, compare=False
     )
+    model_config_mapping: dict[str, Any] = field(default_factory=dict)
+    model_config: ModelConfig | None = field(default=None, repr=False, compare=False)
+    model_configuration_status: Literal["configured", "unconfigured", "legacy"] = (
+        "unconfigured"
+    )
+    model_configuration_error: str | None = None
     user_identity: str = "default"
     cli_bash_presets: list[BashCliPreset] = field(
         default_factory=default_cli_bash_presets
@@ -311,6 +295,13 @@ class RunConfig:
             if self.context_window <= 0:
                 raise ValueError("context_window must be greater than 0")
         self.agent_alias = _require(self.agent_alias, "agent_alias")
+        if self.model_config is None and self.model_config_mapping:
+            self.model_config = ModelConfig.from_mapping(self.model_config_mapping)
+        if self.model_config is not None:
+            self.model_configuration_status = "configured"
+            self.model_configuration_error = None
+        elif self.model_configuration_status == "configured":
+            raise ValueError("configured model status requires model_config")
         self.user_identity = _require(self.user_identity or "default", "user_identity")
         self.cli_bash_presets = [
             preset if isinstance(preset, BashCliPreset) else BashCliPreset(**preset)
@@ -366,7 +357,11 @@ class RunConfig:
         ]
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
+        data = {
+            item.name: _plain_dataclass_value(getattr(self, item.name))
+            for item in fields(self)
+            if item.name != "model_config"
+        }
         data["resolved_agent"] = (
             None if self.resolved_agent is None else self.resolved_agent.safe_dict()
         )
@@ -379,6 +374,21 @@ class RunConfig:
         if isinstance(resolved, dict):
             clean["resolved_agent"] = ResolvedAgentConfig(**resolved)
         return cls(**clean)
+
+
+def _plain_dataclass_value(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: _plain_dataclass_value(getattr(value, item.name))
+            for item in fields(value)
+        }
+    if isinstance(value, dict):
+        return {key: _plain_dataclass_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_dataclass_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_plain_dataclass_value(item) for item in value)
+    return value
 
 
 @dataclass(slots=True)
