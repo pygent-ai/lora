@@ -14,7 +14,7 @@ from pygent.llm import (
     ModelCapabilities,
     ModelCapabilityCatalog,
     ModelConfig,
-    ModelConnection,
+    ConnectionConfig,
     ModelEntry,
     ModelInfo,
     ModelLimits,
@@ -23,6 +23,7 @@ from pygent.llm import (
     OpenAICompatibleClient,
     OpenAIResponsesClient,
     ProviderCatalog,
+    ResolvedModelConnection,
     anthropic_messages_adapters,
     gemini_generate_content_adapters,
     openai_compatible_adapters,
@@ -143,11 +144,10 @@ def build_model_invoker(
         adapters.update(factory())
     clients = {
         key: _create_client(
-            protocol=entry.spec.protocol,
-            connection=config.connections[key],
+            connection=config.connection_for(key),
             credential_environ=credential_environ,
         )
-        for key, entry in config.models.items()
+        for key in config.models
     }
     return LoraModelInvoker(
         adapters={protocol: adapters[protocol] for protocol in protocols},
@@ -157,14 +157,15 @@ def build_model_invoker(
 
 def _create_client(
     *,
-    protocol: str,
-    connection: ModelConnection,
+    connection: ResolvedModelConnection,
     credential_environ: Mapping[str, str],
 ) -> ModelProviderClient:
     try:
-        factory = CLIENT_FACTORIES[protocol]
+        factory = CLIENT_FACTORIES[connection.protocol]
     except KeyError:
-        raise ValueError(f"unsupported model protocol {protocol!r}") from None
+        raise ValueError(
+            f"unsupported model protocol {connection.protocol!r}"
+        ) from None
     api_key = connection.credential.resolve(credential_environ)
     if connection.proxy is None:
         return factory(
@@ -186,14 +187,22 @@ def _create_client(
 
 async def discover_models(
     *,
+    connection_name: str,
     protocol: str,
-    connection: ModelConnection,
+    connection: ConnectionConfig,
     credential_environ: Mapping[str, str],
     timeout: float = 10.0,
 ) -> tuple[ModelInfo, ...]:
     client = _create_client(
-        protocol=protocol,
-        connection=connection,
+        connection=ResolvedModelConnection(
+            name=connection_name,
+            provider=connection.provider,
+            protocol=protocol,
+            base_url=connection.protocols[protocol],
+            credential=connection.credential,
+            verify_ssl=connection.verify_ssl,
+            proxy=connection.proxy,
+        ),
         credential_environ=credential_environ,
     )
     try:

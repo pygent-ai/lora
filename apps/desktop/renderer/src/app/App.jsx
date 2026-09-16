@@ -58,6 +58,7 @@ const EMPTY_SETTINGS = {
   agent: "default",
   model_configuration_status: "unconfigured",
   model_configuration_error: "model_configuration_required",
+  connections: {},
   models: {},
   model_groups: {},
   default_model_group: "",
@@ -2077,70 +2078,10 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
     setDraft((current) => {
       const model = current.models[modelKey];
       if (!model) return current;
-      if (field === "base_url" || field === "verify_ssl") {
-        return { ...current, models: { ...current.models, [modelKey]: { ...model, connection: { ...model.connection, [field]: value } } } };
-      }
-      if (field === "credential_env") {
-        return { ...current, models: { ...current.models, [modelKey]: { ...model, connection: { ...model.connection, credential: value ? { env: value } : { none: true } } } } };
-      }
       if (field === "context_tokens" || field === "max_output_tokens") {
         return { ...current, models: { ...current.models, [modelKey]: { ...model, capabilities: { ...model.capabilities, limits: { ...model.capabilities?.limits, [field]: Number(value) || null } } } } };
       }
-      if (field === "proxy") {
-        return { ...current, models: { ...current.models, [modelKey]: { ...model, connection: { ...model.connection, proxy: value || undefined } } } };
-      }
       return { ...current, models: { ...current.models, [modelKey]: { ...model, [field]: value } } };
-    });
-  }
-
-  function setModelProvider(modelKey, provider) {
-    setDraft((current) => {
-      const model = current.models[modelKey];
-      if (!model) return current;
-      const providerCatalog = catalogs?.providers?.[provider];
-      const protocol = providerCatalog?.default_protocol || Object.keys(providerCatalog?.protocols || {})[0] || model.protocol;
-      const protocolCatalog = providerCatalog?.protocols?.[protocol];
-      const credentialEnv = protocolCatalog?.api_key_env || model.connection?.credential?.env;
-      return {
-        ...current,
-        models: {
-          ...current.models,
-          [modelKey]: {
-            ...model,
-            provider,
-            protocol,
-            connection: {
-              ...model.connection,
-              ...(protocolCatalog?.base_url ? { base_url: protocolCatalog.base_url } : {}),
-              credential: credentialEnv ? { env: credentialEnv } : { none: true },
-            },
-          },
-        },
-      };
-    });
-  }
-
-  function setModelProtocol(modelKey, protocol) {
-    setDraft((current) => {
-      const model = current.models[modelKey];
-      if (!model) return current;
-      const protocolCatalog = catalogs?.providers?.[model.provider]?.protocols?.[protocol];
-      const credentialEnv = protocolCatalog?.api_key_env || model.connection?.credential?.env;
-      return {
-        ...current,
-        models: {
-          ...current.models,
-          [modelKey]: {
-            ...model,
-            protocol,
-            connection: {
-              ...model.connection,
-              ...(protocolCatalog?.base_url ? { base_url: protocolCatalog.base_url } : {}),
-              credential: credentialEnv ? { env: credentialEnv } : { none: true },
-            },
-          },
-        },
-      };
     });
   }
 
@@ -2148,15 +2089,73 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
     setDraft((current) => {
       const model = current.models[modelKey];
       if (!model) return current;
-      const known = catalogs?.model_capabilities?.find((item) => item.provider === model.provider && item.protocol === model.protocol && item.model_id === modelId);
+      const provider = current.connections[model.connection]?.provider;
+      const known = catalogs?.model_capabilities?.find((item) => item.provider === provider && item.protocol === model.protocol && item.model_id === modelId);
       return { ...current, models: { ...current.models, [modelKey]: { ...model, model_id: modelId, ...(known?.capabilities ? { capabilities: structuredClone(known.capabilities) } : {}) } } };
     });
   }
 
-  function setAuthentication(modelKey, mode) {
-    const model = draft.models[modelKey];
-    const suggested = catalogs?.providers?.[model?.provider]?.protocols?.[model?.protocol]?.api_key_env;
-    setModel(modelKey, "credential_env", mode === "api-key" ? (model?.connection?.credential?.env || suggested || `${modelKey.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`) : "");
+  function setConnection(connectionKey, field, value) {
+    setDraft((current) => {
+      const connection = current.connections[connectionKey];
+      if (!connection) return current;
+      const next = field === "proxy" ? { ...connection, proxy: value || undefined } : { ...connection, [field]: value };
+      return { ...current, connections: { ...current.connections, [connectionKey]: next } };
+    });
+  }
+
+  function setConnectionProvider(connectionKey, provider) {
+    setDraft((current) => {
+      const connection = current.connections[connectionKey];
+      if (!connection) return current;
+      const providerCatalog = catalogs?.providers?.[provider];
+      const protocols = Object.fromEntries(Object.entries(providerCatalog?.protocols || {}).map(([key, item]) => [key, { base_url: item.base_url }]));
+      const defaultProtocol = providerCatalog?.default_protocol || Object.keys(protocols)[0] || "";
+      const apiKeyEnv = providerCatalog?.protocols?.[defaultProtocol]?.api_key_env;
+      const connections = { ...current.connections, [connectionKey]: { ...connection, provider, protocols, credential: apiKeyEnv ? { env: apiKeyEnv } : { none: true } } };
+      const models = Object.fromEntries(Object.entries(current.models).map(([key, model]) => [key, model.connection === connectionKey && !protocols[model.protocol] ? { ...model, protocol: defaultProtocol } : model]));
+      return { ...current, connections, models };
+    });
+  }
+
+  function setConnectionProtocolUrl(connectionKey, protocol, baseUrl) {
+    setDraft((current) => {
+      const connection = current.connections[connectionKey];
+      if (!connection) return current;
+      return { ...current, connections: { ...current.connections, [connectionKey]: { ...connection, protocols: { ...connection.protocols, [protocol]: { base_url: baseUrl } } } } };
+    });
+  }
+
+  function setConnectionAuthentication(connectionKey, mode) {
+    const connection = draft.connections[connectionKey];
+    const protocol = Object.keys(connection?.protocols || {})[0];
+    const suggested = catalogs?.providers?.[connection?.provider]?.protocols?.[protocol]?.api_key_env;
+    setConnection(connectionKey, "credential", mode === "api-key" ? { env: connection?.credential?.env || suggested || `${connectionKey.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY` } : { none: true });
+  }
+
+  function addConnection() {
+    setDraft((current) => {
+      const key = nextConnectionKey(current.connections);
+      return { ...current, connections: { ...current.connections, [key]: emptyNativeConnection(key) } };
+    });
+  }
+
+  function renameConnection(previousKey, nextKey) {
+    setDraft((current) => {
+      const key = nextKey.trim();
+      if (!key || key === previousKey || Object.hasOwn(current.connections, key)) return current;
+      const connections = Object.fromEntries(Object.entries(current.connections).map(([name, connection]) => [name === previousKey ? key : name, connection]));
+      const models = Object.fromEntries(Object.entries(current.models).map(([name, model]) => [name, model.connection === previousKey ? { ...model, connection: key } : model]));
+      return { ...current, connections, models };
+    });
+  }
+
+  function removeConnection(connectionKey) {
+    setDraft((current) => {
+      if (Object.values(current.models).some((model) => model.connection === connectionKey)) return current;
+      const { [connectionKey]: _removed, ...connections } = current.connections;
+      return { ...current, connections };
+    });
   }
 
   function renameModel(previousKey, nextKey) {
@@ -2173,7 +2172,9 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
   function addModel() {
     setDraft((current) => {
       const key = nextModelKey(current.models);
-      return { ...current, models: { ...current.models, [key]: emptyNativeModel(key) } };
+      const connectionKey = Object.keys(current.connections)[0] || "";
+      const protocol = Object.keys(current.connections[connectionKey]?.protocols || {})[0] || "";
+      return { ...current, models: { ...current.models, [key]: emptyNativeModel(connectionKey, protocol) } };
     });
   }
 
@@ -2222,10 +2223,13 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
   async function discoverModelIds(modelKey) {
     const model = draft.models[modelKey];
     if (!api?.discoverModels || !model) return;
-    const envName = model.connection?.credential?.env;
+    const connection = draft.connections[model.connection];
+    if (!connection) return;
+    const envName = connection.credential?.env;
+    const { credential_source: _source, ...nativeConnection } = connection;
     const response = await api.discoverModels({
       protocol: model.protocol,
-      connection: model.connection,
+      connection: nativeConnection,
       credential_value: envName ? draft.credentialValues[envName] || undefined : undefined,
     });
     setDiscovered((current) => ({ ...current, [modelKey]: response.models || [] }));
@@ -2270,24 +2274,67 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
           </label>
           </div>
           </details>
+          <section className="model-group-editor" aria-label="Native Pygent connections">
+            <div className="model-group-heading">
+              <div>
+                <strong>1 · Connections</strong>
+                <span>先配置可复用的服务连接。Provider、认证、协议端点、代理和 TLS 都属于 Connection。</span>
+              </div>
+              <button className="route-add" type="button" onClick={addConnection}><Plus aria-hidden="true" /> 添加 Connection</button>
+            </div>
+            <div className="model-route-list">
+              {Object.entries(draft.connections).map(([connectionKey, connection], index) => {
+                const referenced = Object.values(draft.models).some((model) => model.connection === connectionKey);
+                const providers = Object.entries(catalogs?.providers || {});
+                const credentialEnv = connection.credential?.env || "";
+                const authMode = connection.credential?.none ? "none" : "api-key";
+                return <article className="model-route-card connection-route-card" key={connectionKey}>
+                  <div className="model-route-title">
+                    <span className="route-rank">C{String(index + 1).padStart(2, "0")}</span>
+                    <strong>{connectionKey}</strong>
+                    <button className="route-remove" disabled={referenced} type="button" onClick={() => removeConnection(connectionKey)} aria-label={`Remove ${connectionKey}`} title={referenced ? "先让模型改用其他 Connection" : "删除 Connection"}><Trash2 aria-hidden="true" /></button>
+                  </div>
+                  <div className="model-config-sections">
+                    <section className="model-config-block connection-block" aria-label={`${connectionKey} connection`}>
+                      <div className="model-config-block-heading"><strong>连接身份与认证</strong><span>同一个 Connection 可被多个模型复用。</span></div>
+                      <div className="model-route-grid">
+                        <label><span>Connection Key</span><input defaultValue={connectionKey} onBlur={(event) => renameConnection(connectionKey, event.target.value)} /><small>仅供模型引用，不会发给服务商。</small></label>
+                        <label><span>Provider</span><select value={connection.provider || ""} onChange={(event) => setConnectionProvider(connectionKey, event.target.value)}>{!catalogs?.providers?.[connection.provider] && <option value={connection.provider}>{connection.provider || "请选择"}</option>}{providers.map(([key, item]) => <option key={key} value={key}>{item.display_name || key}</option>)}</select><small>Provider 属于 Connection，由 Pygent 投影到模型。</small></label>
+                        <label><span>认证方式</span><select value={authMode} onChange={(event) => setConnectionAuthentication(connectionKey, event.target.value)}><option value="api-key">API Key</option><option value="none">无需认证</option></select></label>
+                        {authMode === "api-key" && <label><span>凭据名称</span><input value={credentialEnv} onChange={(event) => setConnection(connectionKey, "credential", event.target.value ? { env: event.target.value } : { none: true })} /><small>配置只保存名称，不保存密钥。</small></label>}
+                        {authMode === "api-key" && <label className="route-secret"><span>API Key</span><input disabled={!credentialEnv} type="password" autoComplete="off" placeholder={connection.credential_source === "missing" ? "请输入并保存到本机凭据库" : "留空保留已有密钥"} value={draft.credentialValues[credentialEnv] || ""} onChange={(event) => setDraft((current) => ({ ...current, credentialValues: { ...current.credentialValues, [credentialEnv]: event.target.value } }))} /><small>不会写入配置，也不会回显。</small></label>}
+                      </div>
+                    </section>
+                    <section className="model-config-block" aria-label={`${connectionKey} protocol endpoints`}>
+                      <div className="model-config-block-heading"><strong>协议端点</strong><span>一个 Connection 可同时提供多个协议，每个模型从这里选择。</span></div>
+                      <div className="model-route-grid">
+                        {Object.entries(connection.protocols || {}).map(([protocol, endpoint]) => <label key={protocol}><span>{protocolLabel(protocol)}</span><input placeholder="https://api.example.com/v1" value={endpoint?.base_url || ""} onChange={(event) => setConnectionProtocolUrl(connectionKey, protocol, event.target.value)} /><small>{protocol}</small></label>)}
+                      </div>
+                      <details className="connection-advanced"><summary>高级连接设置</summary><div className="model-route-grid">
+                        <label><span>代理（可选）</span><input placeholder="http://127.0.0.1:7890" value={connection.proxy || ""} onChange={(event) => setConnection(connectionKey, "proxy", event.target.value)} /></label>
+                        <label><span>TLS 证书验证</span><select value={connection.verify_ssl === false ? "off" : "on"} onChange={(event) => setConnection(connectionKey, "verify_ssl", event.target.value === "on")}><option value="on">开启（推荐）</option><option value="off">关闭</option></select></label>
+                      </div></details>
+                    </section>
+                  </div>
+                </article>;
+              })}
+            </div>
+          </section>
           <section className="model-group-editor" aria-label="Native Pygent models">
             <div className="model-group-heading">
               <div>
-                <strong>模型目录</strong>
-                <span>先选择服务商和协议，再填写该服务商实际提供的模型 ID。连接参数单独配置。</span>
+                <strong>2 · 模型目录</strong>
+                <span>模型只选择 Connection、协议和真实 Model ID；连接参数不会重复保存。</span>
               </div>
-              <button className="route-add" type="button" onClick={addModel}>
+              <button className="route-add" type="button" disabled={!Object.keys(draft.connections).length} onClick={addModel}>
                 <Plus aria-hidden="true" /> 添加模型
               </button>
             </div>
             <div className="model-route-list">
               {Object.entries(draft.models).map(([modelKey, model], index) => {
-                const credentialEnv = model.connection?.credential?.env || "";
                 const referenced = Object.values(draft.modelGroups).some((group) => group.models.includes(modelKey));
-                const providerProtocols = catalogs?.providers?.[model.provider]?.protocols || {};
-                const providers = Object.entries(catalogs?.providers || {});
-                const protocols = Object.entries(providerProtocols);
-                const authMode = model.connection?.credential?.none ? "none" : "api-key";
+                const selectedConnection = draft.connections[model.connection];
+                const protocols = Object.keys(selectedConnection?.protocols || {});
                 return <article className="model-route-card" key={modelKey}>
                   <div className="model-route-title">
                     <span className="route-rank">{String(index + 1).padStart(2, "0")}</span>
@@ -2308,26 +2355,13 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
                       <div className="model-config-block-heading"><strong>模型信息</strong><span>决定调用谁、使用哪种 API 格式；不属于连接。</span></div>
                       <div className="model-route-grid">
                         <label><span>本地名称</span><input defaultValue={modelKey} onBlur={(event) => renameModel(modelKey, event.target.value)} /><small>仅供 Lora 的模型组引用，不会发送给服务商。</small></label>
-                        <label><span>服务商</span><select value={model.provider || ""} onChange={(event) => setModelProvider(modelKey, event.target.value)}>{!catalogs?.providers?.[model.provider] && <option value={model.provider}>{model.provider || "请选择"}</option>}{providers.map(([key, item]) => <option key={key} value={key}>{item.display_name || key}</option>)}</select><small>选择后会自动带出推荐协议、地址和凭据名称。</small></label>
-                        <label><span>API 协议</span><select value={model.protocol || ""} onChange={(event) => setModelProtocol(modelKey, event.target.value)}>{!providerProtocols[model.protocol] && <option value={model.protocol}>{protocolLabel(model.protocol)}</option>}{protocols.map(([key]) => <option key={key} value={key}>{protocolLabel(key)}</option>)}</select><small>必须与服务端实际兼容的请求格式一致。</small></label>
+                        <label><span>Connection</span><select value={model.connection || ""} onChange={(event) => { const connection = event.target.value; const protocol = Object.keys(draft.connections[connection]?.protocols || {})[0] || ""; setDraft((current) => ({ ...current, models: { ...current.models, [modelKey]: { ...current.models[modelKey], connection, protocol } } })); }}>{Object.keys(draft.connections).map((key) => <option key={key} value={key}>{key} · {draft.connections[key].provider}</option>)}</select><small>选择上一步配置的可复用连接。</small></label>
+                        <label><span>API 协议</span><select value={model.protocol || ""} onChange={(event) => setModel(modelKey, "protocol", event.target.value)}>{!protocols.includes(model.protocol) && <option value={model.protocol}>{protocolLabel(model.protocol)}</option>}{protocols.map((key) => <option key={key} value={key}>{protocolLabel(key)}</option>)}</select><small>只能选择当前 Connection 提供的协议。</small></label>
                         <label><span>服务商模型 ID</span><input list={`models-${modelKey}`} placeholder="例如 gpt-5.1-codex" value={model.model_id || ""} onChange={(event) => setModelId(modelKey, event.target.value)} /><small>这是服务商文档或“发现模型”返回的真实 ID。</small></label>
                         <datalist id={`models-${modelKey}`}>{(discovered[modelKey] || []).map((item) => <option key={item.id} value={item.id} />)}</datalist>
                         <label><span>能力模板</span><select defaultValue="" onChange={(event) => applyCapabilityPreset(modelKey, event.target.value)}><option value="">使用当前能力</option>{Object.keys(catalogs?.capability_presets || {}).map((name) => <option key={name} value={name}>{capabilityPresetLabel(name)}</option>)}</select><small>已知模型会自动匹配；自定义模型可选择最接近的模板。</small></label>
+                        <button className="plain-action discover-action" type="button" onClick={() => discoverModelIds(modelKey)}>通过 Connection 发现模型 ID</button>
                       </div>
-                    </section>
-                    <section className="model-config-block connection-block" aria-label={`${modelKey} connection`}>
-                      <div className="model-config-block-heading"><strong>连接</strong><span>只包含网络地址、认证、代理和 TLS。</span></div>
-                      <div className="model-route-grid">
-                        <label><span>服务地址 · Base URL</span><input placeholder="https://api.example.com/v1" value={model.connection?.base_url || ""} onChange={(event) => setModel(modelKey, "base_url", event.target.value)} /><small>选择内置服务商时自动填写，私有部署时再修改。</small></label>
-                        <label><span>认证方式</span><select value={authMode} onChange={(event) => setAuthentication(modelKey, event.target.value)}><option value="api-key">API Key</option><option value="none">无需认证</option></select><small>本地 Ollama 等免认证服务可选择“无需认证”。</small></label>
-                        {authMode === "api-key" && <label><span>凭据名称</span><input value={credentialEnv} onChange={(event) => setModel(modelKey, "credential_env", event.target.value)} /><small>通常已自动填写，例如 OPENAI_API_KEY；这里只保存引用名称。</small></label>}
-                        {authMode === "api-key" && <label className="route-secret"><span>API Key</span><input disabled={!credentialEnv} type="password" autoComplete="off" placeholder={model.connection?.credential_source === "missing" ? "请输入并保存到本机凭据库" : "留空保留已有密钥"} value={draft.credentialValues[credentialEnv] || ""} onChange={(event) => setDraft((current) => ({ ...current, credentialValues: { ...current.credentialValues, [credentialEnv]: event.target.value } }))} /><small>密钥不会写进模型配置，也不会回显。</small></label>}
-                        <button className="plain-action discover-action" type="button" onClick={() => discoverModelIds(modelKey)}>连接并发现模型 ID</button>
-                      </div>
-                      <details className="connection-advanced"><summary>高级连接设置</summary><div className="model-route-grid">
-                        <label><span>代理（可选）</span><input placeholder="http://127.0.0.1:7890" value={model.connection?.proxy || ""} onChange={(event) => setModel(modelKey, "proxy", event.target.value)} /></label>
-                        <label><span>TLS 证书验证</span><select value={model.connection?.verify_ssl === false ? "off" : "on"} onChange={(event) => setModel(modelKey, "verify_ssl", event.target.value === "on")}><option value="on">开启（推荐）</option><option value="off">关闭</option></select></label>
-                      </div></details>
                     </section>
                     <details className="model-capability-advanced"><summary>高级模型能力</summary><div className="model-route-grid">
                       <label><span>上下文 tokens</span><input type="number" min="1" value={model.capabilities?.limits?.context_tokens || ""} onChange={(event) => setModel(modelKey, "context_tokens", event.target.value)} /></label>
@@ -2351,7 +2385,7 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
                 const order = group.models.indexOf(modelKey);
                 const selected = order >= 0;
                 return <div className={`group-model-option${selected ? " selected" : ""}`} key={modelKey}>
-                  <label><input type="checkbox" checked={selected} onChange={() => toggleGroupModel(groupName, modelKey)} /><span><strong>{modelKey}</strong><small>{model.provider} · {model.model_id || "未填写模型 ID"}</small></span></label>
+                  <label><input type="checkbox" checked={selected} onChange={() => toggleGroupModel(groupName, modelKey)} /><span><strong>{modelKey}</strong><small>{draft.connections[model.connection]?.provider || "未知 Provider"} · {model.model_id || "未填写模型 ID"}</small></span></label>
                   {selected && <><span className="group-model-rank">{order + 1}</span><div className="fallback-order-actions"><button type="button" disabled={order === 0} onClick={() => moveGroupModel(groupName, modelKey, -1)} title="提高优先级"><ArrowUp /></button><button type="button" disabled={order === group.models.length - 1} onClick={() => moveGroupModel(groupName, modelKey, 1)} title="降低优先级"><ArrowDown /></button></div></>}
                 </div>;
               })}</div>
@@ -3083,6 +3117,7 @@ function settingsToDraft(settings) {
     approvalsEnabled: settings.approvals_enabled !== false,
     workspaceRoot: settings.workspace_root || "",
     agent: settings.agent || "",
+    connections: structuredClone(settings.connections || {}),
     models: structuredClone(settings.models || {}),
     modelGroups: structuredClone(settings.model_groups || {}),
     defaultModelGroup: settings.default_model_group || "",
@@ -3121,16 +3156,23 @@ export function capabilityPresetLabel(name) {
   return String(name || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function emptyNativeModel(id) {
+function emptyNativeConnection(id) {
   return {
     provider: "openai",
-    model_id: "",
-    protocol: "openai_chat_completions",
-    connection: {
-      base_url: "https://api.openai.com/v1",
-      credential: { env: `${id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY` },
-      verify_ssl: true,
+    credential: { env: "OPENAI_API_KEY" },
+    protocols: {
+      openai_responses: { base_url: "https://api.openai.com/v1" },
+      openai_chat_completions: { base_url: "https://api.openai.com/v1" },
     },
+    verify_ssl: true,
+  };
+}
+
+function emptyNativeModel(connection, protocol) {
+  return {
+    connection,
+    model_id: "",
+    protocol,
     provider_options: {},
     capabilities: {
       modalities: { input: ["text"], output: ["text"] },
@@ -3143,6 +3185,12 @@ function emptyNativeModel(id) {
   };
 }
 
+function nextConnectionKey(connections) {
+  let index = Object.keys(connections).length + 1;
+  while (Object.hasOwn(connections, `connection-${index}`)) index += 1;
+  return `connection-${index}`;
+}
+
 function nextModelKey(models) {
   let index = Object.keys(models).length + 1;
   while (Object.hasOwn(models, `model-${index}`)) index += 1;
@@ -3150,14 +3198,23 @@ function nextModelKey(models) {
 }
 
 export function modelGroupValidationError(draft) {
+  const connections = draft.connections || {};
   const models = draft.models || {};
   const groups = draft.modelGroups || {};
+  if (!Object.keys(connections).length) return "Add at least one connection.";
+  for (const [key, connection] of Object.entries(connections)) {
+    if (!key.trim() || !connection?.provider?.trim()) return `Connection ${key || "unnamed"} has incomplete fields.`;
+    const protocols = connection.protocols || {};
+    if (!Object.keys(protocols).length || Object.values(protocols).some((endpoint) => !endpoint?.base_url?.trim())) return `Connection ${key} requires at least one protocol endpoint with a Base URL.`;
+    const credential = connection.credential;
+    if (!credential || (!credential.none && !credential.env?.trim())) return `Connection ${key} requires a credential reference or no-auth setting.`;
+  }
   if (!Object.keys(models).length) return "Add at least one model.";
   for (const [key, model] of Object.entries(models)) {
-    if (!key.trim() || !model?.provider?.trim() || !model?.model_id?.trim() || !model?.protocol?.trim()) return `Model ${key || "unnamed"} has incomplete fields.`;
-    if (!model.connection?.base_url?.trim()) return `Model ${key} requires a Base URL.`;
-    const credential = model.connection?.credential;
-    if (!credential || (!credential.none && !credential.env?.trim())) return `Model ${key} requires a credential reference or no-auth setting.`;
+    if (!key.trim() || !model?.connection?.trim() || !model?.model_id?.trim() || !model?.protocol?.trim()) return `Model ${key || "unnamed"} has incomplete fields.`;
+    const connection = connections[model.connection];
+    if (!connection) return `Model ${key} references unknown connection ${model.connection}.`;
+    if (!connection.protocols?.[model.protocol]) return `Model ${key} protocol is not configured by connection ${model.connection}.`;
     if (!model.capabilities?.limits) return `Model ${key} requires native capabilities.`;
   }
   if (!Object.keys(groups).length) return "Add at least one model group.";

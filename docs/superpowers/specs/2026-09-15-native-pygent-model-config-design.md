@@ -26,16 +26,25 @@ Approved direction: replace Lora's route-based model configuration with Pygent's
 The user configuration keeps Lora's non-model settings, but its model subtree is a native Pygent mapping:
 
 ```yaml
+connections:
+  deepseek-main:
+    provider: deepseek
+    credential: {env: DEEPSEEK_API_KEY}
+    protocols:
+      openai_chat_completions: {base_url: https://api.deepseek.com}
+    verify_ssl: true
+  private-main:
+    provider: deepseek
+    credential: {env: DEEPSEEK_API_KEY_2}
+    protocols:
+      openai_chat_completions: {base_url: http://113.46.219.251:8080/v1}
+    verify_ssl: true
+
 models:
   deepseek_primary:
-    provider: deepseek
+    connection: deepseek-main
     model_id: deepseek-v4-flash
     protocol: openai_chat_completions
-    connection:
-      base_url: https://api.deepseek.com
-      credential:
-        env: DEEPSEEK_API_KEY
-      verify_ssl: true
     provider_options: {}
     capabilities:
       modalities: {input: [text], output: [text]}
@@ -49,14 +58,9 @@ models:
       limits: {context_tokens: 1000000, max_output_tokens: 384000}
 
   private_secondary:
-    provider: deepseek
+    connection: private-main
     model_id: private-model-id
     protocol: openai_chat_completions
-    connection:
-      base_url: http://113.46.219.251:8080/v1
-      credential:
-        env: DEEPSEEK_API_KEY_2
-      verify_ssl: true
     provider_options: {}
     capabilities:
       modalities: {input: [text], output: [text]}
@@ -89,9 +93,9 @@ agents:
         backoff_multiplier: 2
 ```
 
-The `models` and `model_groups` values are passed unchanged to `ModelConfig.from_mapping()`. Pygent validates unknown fields, URLs, credentials, capabilities, duplicate entries, and group references. Lora validates only its surrounding application settings and that every agent's default references an existing model group.
+The `connections`, `models`, and `model_groups` values are passed unchanged to `ModelConfig.from_mapping()`. Pygent validates unknown fields, URLs, credentials, capabilities, duplicate entries, and group references. Lora validates only its surrounding application settings and that every agent's default references an existing model group.
 
-Pygent associates a `ModelConnection` with each named model. If multiple selected models use the same endpoint and credential, their native model entries repeat that connection value. The UI may visually group equal connection values, but neither the persisted config nor runtime introduces a reusable Lora connection object.
+Pygent 0.3.16 defines reusable top-level `ConnectionConfig` values. Multiple models reference one connection by key and independently select one of its protocol endpoints. Lora persists this contract directly and does not introduce a parallel connection abstraction.
 
 ## Cutover and unconfigured state
 
@@ -144,7 +148,7 @@ The general Settings summary displays the configured groups and their ordered `m
 
 At the deployment boundary Lora:
 
-- resolves each `ModelConnection.credential` through the existing credential sources;
+- resolves each referenced `ConnectionConfig.credential` through the existing credential sources;
 - creates one native Pygent client per model key using its protocol and connection;
 - creates one adapter per used protocol;
 - constructs `DefaultModelInvoker`/the existing event-projection subclass with those maps;

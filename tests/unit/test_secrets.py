@@ -99,7 +99,7 @@ class SecretsTests(unittest.TestCase):
             from tests.unit.test_model_configuration import native_mapping
 
             mapping = native_mapping()
-            mapping["models"]["a"]["connection"]["credential"] = {
+            mapping["connections"]["shared"]["credential"] = {
                 "env": "DEV_API_KEY"
             }
             replace_user_model_config(

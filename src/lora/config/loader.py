@@ -246,6 +246,7 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
             "mcp",
             "delegation",
             "eternal_conversation",
+            "connections",
             "models",
             "model_groups",
         },
@@ -427,7 +428,7 @@ def _parse_model_config(
 ]:
     mapping = {
         key: config_data[key]
-        for key in ("models", "model_groups")
+        for key in ("connections", "models", "model_groups")
         if key in config_data
     }
     if _contains_legacy_model_fields(config_data):
@@ -435,7 +436,7 @@ def _parse_model_config(
             mapping,
             None,
             "legacy",
-            "legacy_model_configuration: configure native models and model_groups",
+            "legacy_model_configuration: configure native connections, models and model_groups",
         )
     if not mapping:
         return {}, None, "unconfigured", "model_configuration_required"

@@ -87,8 +87,7 @@ def test_update_settings_saves_api_key_and_reloads_runtime_config(
     workspace.mkdir()
     write_user_config(home, ["runtime:", "  approvals:", "    enabled: true"])
     mapping = native_mapping(group=("main", "backup"))
-    for model in mapping["models"].values():
-        model["connection"]["credential"] = {"env": "GUI_TEST_KEY"}
+    mapping["connections"]["shared"]["credential"] = {"env": "GUI_TEST_KEY"}
 
     with patch("lora.config.loader.Path.home", return_value=home):
         context = ApiContext(workspace_root=str(workspace))
@@ -119,10 +118,10 @@ def test_update_settings_saves_api_key_and_reloads_runtime_config(
     assert response.max_steps == 7
     assert response.context_window == 64000
     assert response.default_model_group == "coding"
-    assert response.models["main"]["connection"]["credential"] == {
+    assert response.connections["shared"]["credential"] == {
         "env": "GUI_TEST_KEY"
     }
-    assert response.models["main"]["connection"]["credential_source"] == (
+    assert response.connections["shared"]["credential_source"] == (
         "user-file:GUI_TEST_KEY"
     )
     assert "secret-from-gui" not in response.model_dump_json()
@@ -290,12 +289,7 @@ def test_update_settings_persists_native_groups_and_model_order(
     )
 
     mapping = native_mapping(group=("primary", "backup"))
-    mapping["models"]["primary"]["connection"]["credential"] = {
-        "env": "MAIN_KEY"
-    }
-    mapping["models"]["backup"]["connection"]["credential"] = {
-        "env": "BACKUP_KEY"
-    }
+    mapping["connections"]["shared"]["credential"] = {"env": "BACKUP_KEY"}
     request = UpdateSettingsRequest(
         agent_alias="dev",
         model_config=mapping,
@@ -370,8 +364,13 @@ def test_model_discovery_uses_transient_credential_without_echoing_it(
     request = DiscoverModelsRequest(
         protocol="openai_chat_completions",
         connection={
-            "base_url": "https://example.test/v1",
+            "provider": "test",
             "credential": {"env": "DISCOVERY_KEY"},
+            "protocols": {
+                "openai_chat_completions": {
+                    "base_url": "https://example.test/v1"
+                }
+            },
         },
         credential_value="temporary-secret",
     )

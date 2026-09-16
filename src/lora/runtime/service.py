@@ -728,10 +728,7 @@ class LoraRuntimeService:
                     (
                         agent.model_group_name,
                         group.models,
-                        tuple(
-                            (key, native.connections[key])
-                            for key in native.models
-                        ),
+                        tuple(native.connections.items()),
                     )
                 ).encode("utf-8")
             ).hexdigest()

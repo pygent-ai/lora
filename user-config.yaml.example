@@ -1,13 +1,29 @@
+connections:
+  deepseek-main:
+    provider: deepseek
+    credential:
+      env: DEEPSEEK_API_KEY
+    protocols:
+      openai_chat_completions:
+        base_url: https://api.deepseek.com
+    verify_ssl: true
+
+  openai-main:
+    provider: openai
+    credential:
+      env: OPENAI_API_KEY
+    protocols:
+      openai_responses:
+        base_url: https://api.openai.com/v1
+      openai_chat_completions:
+        base_url: https://api.openai.com/v1
+    verify_ssl: true
+
 models:
   deepseek-chat:
-    provider: deepseek
+    connection: deepseek-main
     model_id: deepseek-chat
     protocol: openai_chat_completions
-    connection:
-      base_url: https://api.deepseek.com
-      credential:
-        env: DEEPSEEK_API_KEY
-      verify_ssl: true
     provider_options: {}
     capabilities:
       modalities:
@@ -30,14 +46,9 @@ models:
         max_output_tokens: 8192
 
   openai-codex:
-    provider: openai
+    connection: openai-main
     model_id: gpt-5.1-codex
     protocol: openai_responses
-    connection:
-      base_url: https://api.openai.com/v1
-      credential:
-        env: OPENAI_API_KEY
-      verify_ssl: true
     provider_options: {}
     capabilities:
       modalities:

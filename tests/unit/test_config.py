@@ -19,16 +19,20 @@ agents:
       default_model_group: coding
       retry:
         max_attempts_per_model: 3
+connections:
+  primary:
+    provider: openai
+    credential:
+      env: TEST_ROUTE_KEY
+    protocols:
+      openai_chat_completions:
+        base_url: https://example.test/v1
+    verify_ssl: true
 models:
   main:
-    provider: openai
+    connection: primary
     model_id: model-a
     protocol: openai_chat_completions
-    connection:
-      base_url: https://example.test/v1
-      credential:
-        env: TEST_ROUTE_KEY
-      verify_ssl: true
     provider_options: {}
     capabilities:
       modalities:
@@ -119,7 +123,7 @@ def test_unknown_model_request_field_is_rejected(tmp_path: Path) -> None:
 
 
 def test_native_model_fields_are_validated_by_pygent(tmp_path: Path) -> None:
-    invalid = NATIVE_CONFIG.replace("    connection:\n      base_url: https://example.test/v1\n      credential:\n        env: TEST_ROUTE_KEY\n      verify_ssl: true\n", "")
+    invalid = NATIVE_CONFIG.replace("    connection: primary\n", "")
     home = write_user_config(tmp_path, invalid)
     with patch("lora.config.loader.Path.home", return_value=home), pytest.raises(ValueError, match="missing model fields: connection"):
         load_run_config(workspace_root=tmp_path)
@@ -163,7 +167,7 @@ def test_user_model_config_is_shared_across_project_workspaces(tmp_path: Path) -
         for config in configs:
             assert config.model_config is not None
             assert config.model_config.models["main"].spec.model_id == "user-model"
-            assert config.model_config.connections["main"].credential.resolve() == "user-secret"
+            assert config.model_config.connections["primary"].credential.resolve() == "user-secret"
     finally:
         os.environ.pop("USER_MODEL_KEY", None)
 
@@ -203,10 +207,11 @@ def test_replace_user_model_config_preserves_non_model_settings(tmp_path: Path) 
     path = user_root / "config.yaml"
     path.write_text("runtime:\n  approvals:\n    enabled: false\n", encoding="utf-8")
     native = parse_yaml_subset(NATIVE_CONFIG)
-    model_config = {"models": native["models"], "model_groups": native["model_groups"]}
+    model_config = {"connections": native["connections"], "models": native["models"], "model_groups": native["model_groups"]}
     replace_user_model_config(user_root, model_config=model_config, agents=native["agents"])
     saved = parse_yaml_subset(path.read_text(encoding="utf-8"))
     assert saved["runtime"]["approvals"]["enabled"] is False
+    assert saved["connections"] == model_config["connections"]
     assert saved["models"] == model_config["models"]
     assert saved["model_groups"] == model_config["model_groups"]
     assert "routes" not in path.read_text(encoding="utf-8")

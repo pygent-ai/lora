@@ -342,11 +342,11 @@ test("context inspector renders original and compressed versions as variable row
 
 test("native model validation requires groups to reference configured children", () => {
   const model = {
-    provider: "openai", model_id: "main", protocol: "openai_chat_completions",
-    connection: { base_url: "https://main.test", credential: { env: "MAIN_KEY" } },
+    connection: "shared", model_id: "main", protocol: "openai_chat_completions",
     capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
   };
   const valid = {
+    connections: { shared: { provider: "openai", credential: { env: "MAIN_KEY" }, protocols: { openai_chat_completions: { base_url: "https://main.test" } } } },
     models: { primary: model, backup: { ...model, model_id: "backup" } },
     modelGroups: { coding: { models: ["primary", "backup"] } },
     defaultModelGroup: "coding",
@@ -986,11 +986,11 @@ test("history preserves reasoning from the final assistant message", () => {
 
 test("model-id changes remain saveable with an existing credential reference", () => {
   const model = {
-    provider: "openai", model_id: "pool_0021", protocol: "openai_chat_completions",
-    connection: { base_url: "https://example.test/v1", credential: { env: "MODEL_API_KEY" }, credential_source: "user-file:MODEL_API_KEY" },
+    connection: "primary", model_id: "pool_0021", protocol: "openai_chat_completions",
     provider_options: {}, capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
   };
-  const settings = { models: { primary: model }, model_groups: { coding: { models: ["primary"] } }, default_model_group: "coding" };
+  const connections = { primary: { provider: "openai", credential: { env: "MODEL_API_KEY" }, credential_source: "user-file:MODEL_API_KEY", protocols: { openai_chat_completions: { base_url: "https://example.test/v1" } } } };
+  const settings = { connections, models: { primary: model }, model_groups: { coding: { models: ["primary"] } }, default_model_group: "coding" };
   for (const saving of [false, true]) {
     const html = renderToStaticMarkup(React.createElement(appModule.SettingsPanel, {
       settings, disabled: saving, onClose() {}, onSave() {},
@@ -999,7 +999,7 @@ test("model-id changes remain saveable with an existing credential reference", (
     assert.equal(save.includes("disabled"), saving);
     assert.equal(html.includes("正在保存…"), saving);
   }
-  const draft = { models: { primary: model }, modelGroups: { coding: { models: ["primary"] } }, defaultModelGroup: "coding", credentialValues: {} };
+  const draft = { connections, models: { primary: model }, modelGroups: { coding: { models: ["primary"] } }, defaultModelGroup: "coding", credentialValues: {} };
   assert.equal(appModule.modelGroupValidationError(draft), "");
   const payload = settingsPayload(draft);
   assert.equal(payload.model_config.models.primary.model_id, "pool_0021");
@@ -1011,20 +1011,22 @@ test("model-id changes remain saveable with an existing credential reference", (
 
 test("settings separate native model identity from connection fields", () => {
   const model = {
-    provider: "openai", model_id: "gpt-test", protocol: "openai_responses",
-    connection: { base_url: "https://api.openai.com/v1", credential: { env: "OPENAI_API_KEY" }, verify_ssl: true },
+    connection: "openai-main", model_id: "gpt-test", protocol: "openai_responses",
     provider_options: {}, capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
   };
+  const connections = { "openai-main": { provider: "openai", credential: { env: "OPENAI_API_KEY" }, protocols: { openai_responses: { base_url: "https://api.openai.com/v1" } }, verify_ssl: true } };
   const html = renderToStaticMarkup(React.createElement(appModule.SettingsPanel, {
-    settings: { models: { primary: model }, model_groups: { coding: { models: ["primary"] } }, default_model_group: "coding" },
+    settings: { connections, models: { primary: model }, model_groups: { coding: { models: ["primary"] } }, default_model_group: "coding" },
     disabled: false, onClose() {}, onSave() {},
   }));
 
   assert.match(html, /模型信息/);
   assert.match(html, /决定调用谁、使用哪种 API 格式；不属于连接/);
-  assert.match(html, /连接/);
-  assert.match(html, /只包含网络地址、认证、代理和 TLS/);
-  assert.match(html, /<select[^>]*><option value="openai" selected="">openai<\/option><\/select>/);
+  assert.match(html, /1 · Connections/);
+  assert.match(html, /同一个 Connection 可被多个模型复用/);
+  assert.match(html, /Provider 属于 Connection/);
+  assert.match(html, /2 · 模型目录/);
+  assert.match(html, /openai-main · openai/);
   assert.match(html, /OpenAI Responses/);
   assert.match(html, /本地名称/);
   assert.match(html, /仅供 Lora 的模型组引用/);

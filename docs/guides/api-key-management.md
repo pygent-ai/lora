@@ -1,6 +1,6 @@
 # API Key 管理
 
-Lora 只接受 Pygent 原生 `connection.credential.env` 引用，不接受在配置文件中直接写入 API key。
+Lora 只接受 Pygent 原生顶层 `connections.<key>.credential.env` 引用，不接受在配置文件中直接写入 API key。
 
 ## 支持的凭证来源
 
@@ -14,23 +14,27 @@ Lora 只接受 Pygent 原生 `connection.credential.env` 引用，不接受在�
 
 ## 用户模型配置
 
-模型和凭据引用统一写入 `~/.lora/config.yaml`：
+Connection、模型和凭据引用统一写入 `~/.lora/config.yaml`：
 
 ```yaml
+connections:
+  deepseek-main:
+    provider: deepseek
+    credential:
+      env: DEEPSEEK_API_KEY
+    protocols:
+      openai_chat_completions:
+        base_url: https://api.deepseek.com
+    verify_ssl: true
 models:
   deepseek-chat:
-    provider: deepseek
+    connection: deepseek-main
     model_id: deepseek-chat
     protocol: openai_chat_completions
-    connection:
-      base_url: https://api.deepseek.com
-      credential:
-        env: DEEPSEEK_API_KEY
-      verify_ssl: true
     # provider_options 和 capabilities 见 user-config.yaml.example
 ```
 
-需要认证的 connection 必须通过 `credential.env` 指定凭证变量；本地免认证服务使用
+需要认证的 Connection 必须通过 `credential.env` 指定凭证变量；本地免认证服务使用
 `credential: {none: true}`。未知配置字段会直接导致配置加载失败。
 
 ## CLI 管理
@@ -60,6 +64,6 @@ DEEPSEEK_API_KEY=replace-with-real-key
 当凭据状态为 `missing` 时，依次检查：
 
 1. 当前 agent alias、模型组和子模型是否正确。
-2. `~/.lora/config.yaml` 中 `connection.credential.env` 指向的变量名是否正确。
+2. `~/.lora/config.yaml` 中模型引用的 Connection 及其 `credential.env` 是否正确。
 3. `~/.lora/credentials.env`、进程环境或系统 keyring 是否提供该变量。
 4. 使用 OS 凭据库时，`keyring` 后端是否可用。

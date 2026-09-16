@@ -120,7 +120,7 @@ async def test_credential_reference_change_creates_a_new_generation_without_secr
 
     def configured(env_name: str) -> RunConfig:
         mapping = native_mapping()
-        mapping["models"]["a"]["connection"]["credential"] = {"env": env_name}
+        mapping["connections"]["shared"]["credential"] = {"env": env_name}
         config = _config(tmp_path)
         config.model_config_mapping = mapping
         config.model_config = None

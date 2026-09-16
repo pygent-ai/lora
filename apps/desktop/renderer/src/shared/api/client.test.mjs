@@ -242,25 +242,28 @@ test("api client sends the exact native Pygent model subtree", async () => {
     },
   });
 
+  const connections = {
+    main: { provider: "openai", credential: { env: "MAIN_KEY" }, credential_source: "user-file:MAIN_KEY", protocols: { openai_chat_completions: { base_url: "https://main.test/v1" } } },
+    backup: { provider: "openai", credential: { env: "BACKUP_KEY" }, protocols: { openai_chat_completions: { base_url: "https://backup.test/v1" } } },
+  };
   const models = {
     primary: {
-      provider: "openai",
+      connection: "main",
       model_id: "gpt-main",
       protocol: "openai_chat_completions",
-      connection: { base_url: "https://main.test/v1", credential: { env: "MAIN_KEY" } },
       provider_options: {}, capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
     },
     backup: {
-      provider: "openai",
+      connection: "backup",
       model_id: "gpt-backup",
       protocol: "openai_chat_completions",
-      connection: { base_url: "https://backup.test/v1", credential: { env: "BACKUP_KEY" } },
       provider_options: {}, capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
     },
   };
   await client.updateSettings({
     workspaceRoot: "E:/Projects/lora",
     agent: "dev",
+    connections,
     models,
     modelGroups: { coding: { models: ["primary", "backup"] } },
     defaultModelGroup: "coding",
@@ -276,6 +279,10 @@ test("api client sends the exact native Pygent model subtree", async () => {
 
   const payload = JSON.parse(calls[0].init.body);
   assert.deepEqual(payload.model_config, {
+    connections: {
+      main: { provider: "openai", credential: { env: "MAIN_KEY" }, protocols: { openai_chat_completions: { base_url: "https://main.test/v1" } } },
+      backup: connections.backup,
+    },
     models,
     model_groups: { coding: { models: ["primary", "backup"] } },
   });

@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from pygent.llm import ModelConfig, ModelConnection, ModelInfo
+from pygent.llm import ConnectionConfig, ModelConfig, ModelInfo
 
 from lora.schema import ResolvedAgentConfig, RunConfig
 from lora.runtime.model_configuration import (
@@ -32,16 +32,21 @@ def native_mapping(
         "limits": {"context_tokens": 1000, "max_output_tokens": 100},
     }
     return {
+        "connections": {
+            "shared": {
+                "provider": "test",
+                "credential": {"env": "TEST_KEY"},
+                "protocols": {
+                    protocol: {"base_url": "https://example.test/v1"}
+                },
+                "verify_ssl": True,
+            }
+        },
         "models": {
             key: {
-                "provider": "test",
+                "connection": "shared",
                 "model_id": f"model-{key}",
                 "protocol": protocol,
-                "connection": {
-                    "base_url": "https://example.test/v1",
-                    "credential": {"env": "TEST_KEY"},
-                    "verify_ssl": True,
-                },
                 "provider_options": {},
                 "capabilities": capabilities,
             }
@@ -53,8 +58,7 @@ def native_mapping(
 
 def native_runtime_config(root, *, group: tuple[str, ...] = ("main", "backup")):
     mapping = native_mapping(group=group)
-    for model in mapping["models"].values():
-        model["connection"]["credential"] = {"none": True}
+    mapping["connections"]["shared"]["credential"] = {"none": True}
     config = RunConfig(
         workspace_root=str(root),
         lora_root=str(root / ".lora"),
@@ -118,13 +122,15 @@ async def test_discovery_uses_native_catalog_and_closes_client(monkeypatch) -> N
     monkeypatch.setitem(
         CLIENT_FACTORIES, "openai_chat_completions", lambda **kwargs: client
     )
-    connection = ModelConnection.from_mapping(
+    connection = ConnectionConfig.from_mapping(
         {
-            "base_url": "https://example.test/v1",
+            "provider": "test",
             "credential": {"env": "TEST_KEY"},
+            "protocols": {"openai_chat_completions": {"base_url": "https://example.test/v1"}},
         }
     )
     result = await discover_models(
+        connection_name="test",
         protocol="openai_chat_completions",
         connection=connection,
         credential_environ={"TEST_KEY": "secret"},
@@ -144,11 +150,12 @@ async def test_discovery_closes_client_when_catalog_fails(monkeypatch) -> None:
     monkeypatch.setitem(
         CLIENT_FACTORIES, "openai_chat_completions", lambda **kwargs: client
     )
-    connection = ModelConnection.from_mapping(
-        {"base_url": "https://example.test/v1", "credential": {"none": True}}
+    connection = ConnectionConfig.from_mapping(
+        {"provider": "test", "credential": {"none": True}, "protocols": {"openai_chat_completions": {"base_url": "https://example.test/v1"}}}
     )
     with pytest.raises(TimeoutError, match="slow"):
         await discover_models(
+            connection_name="test",
             protocol="openai_chat_completions",
             connection=connection,
             credential_environ={},
@@ -167,11 +174,12 @@ async def test_discovery_closes_client_when_cancelled(monkeypatch) -> None:
     monkeypatch.setitem(
         CLIENT_FACTORIES, "openai_chat_completions", lambda **kwargs: client
     )
-    connection = ModelConnection.from_mapping(
-        {"base_url": "https://example.test/v1", "credential": {"none": True}}
+    connection = ConnectionConfig.from_mapping(
+        {"provider": "test", "credential": {"none": True}, "protocols": {"openai_chat_completions": {"base_url": "https://example.test/v1"}}}
     )
     with pytest.raises(asyncio.CancelledError):
         await discover_models(
+            connection_name="test",
             protocol="openai_chat_completions",
             connection=connection,
             credential_environ={},
@@ -183,11 +191,12 @@ async def test_discovery_closes_client_when_cancelled(monkeypatch) -> None:
 async def test_discovery_rejects_protocol_without_catalog_and_closes(monkeypatch) -> None:
     client = SimpleNamespace(aclose=AsyncMock())
     monkeypatch.setitem(CLIENT_FACTORIES, "openai_responses", lambda **kwargs: client)
-    connection = ModelConnection.from_mapping(
-        {"base_url": "https://example.test/v1", "credential": {"none": True}}
+    connection = ConnectionConfig.from_mapping(
+        {"provider": "test", "credential": {"none": True}, "protocols": {"openai_responses": {"base_url": "https://example.test/v1"}}}
     )
     with pytest.raises(ValueError, match="does not provide native model discovery"):
         await discover_models(
+            connection_name="test",
             protocol="openai_responses",
             connection=connection,
             credential_environ={},
@@ -216,7 +225,7 @@ def test_proxy_http_client_is_owned_by_invoker(monkeypatch) -> None:
         lambda **kwargs: native_client,
     )
     mapping = native_mapping()
-    mapping["models"]["a"]["connection"]["proxy"] = "https://proxy.test"
+    mapping["connections"]["shared"]["proxy"] = "https://proxy.test"
     invoker = build_model_invoker(
         ModelConfig.from_mapping(mapping),
         credential_environ={"TEST_KEY": "secret"},

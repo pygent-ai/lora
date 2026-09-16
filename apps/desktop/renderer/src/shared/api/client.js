@@ -169,14 +169,15 @@ export function settingsPayload(settings) {
 }
 
 function nativeModelConfigPayload(settings) {
-  if (!settings.models || !settings.modelGroups) {
+  if (!settings.connections || !settings.models || !settings.modelGroups) {
     return undefined;
   }
   return {
-    models: Object.fromEntries(Object.entries(settings.models).map(([key, model]) => {
-      const { credential_source: _source, ...connection } = model.connection || {};
-      return [key, { ...model, connection }];
+    connections: Object.fromEntries(Object.entries(settings.connections).map(([key, connection]) => {
+      const { credential_source: _source, ...nativeConnection } = connection;
+      return [key, nativeConnection];
     })),
+    models: settings.models,
     model_groups: settings.modelGroups,
   };
 }

@@ -110,7 +110,11 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
         }
     entry = native.model_groups[resolved.default_model_group].models[0]
     raw_model = config.model_config_mapping["models"][entry.name]
-    credential = raw_model.get("connection", {}).get("credential", {})
+    connection_name = raw_model.get("connection")
+    raw_connection = config.model_config_mapping["connections"].get(
+        connection_name, {}
+    )
+    credential = raw_connection.get("credential", {})
     if credential.get("none") is True:
         return {
             "status": "ok",

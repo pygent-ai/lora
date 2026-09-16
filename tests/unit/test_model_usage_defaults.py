@@ -21,8 +21,7 @@ from tests.unit.test_model_configuration import native_mapping
 
 def model_agent(tmp_path):
     mapping = native_mapping(group=("main", "backup"))
-    for model in mapping["models"].values():
-        model["connection"]["credential"] = {"none": True}
+    mapping["connections"]["shared"]["credential"] = {"none": True}
     config = RunConfig(
         workspace_root=tmp_path,
         lora_root=tmp_path / ".lora",

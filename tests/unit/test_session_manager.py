@@ -92,7 +92,7 @@ class SessionManagerTests(unittest.TestCase):
             self.assertIsNotNone(restored.model_config)
             assert restored.model_config is not None
             self.assertEqual(
-                restored.model_config.connections["main"].credential.resolve(
+                restored.model_config.connections["shared"].credential.resolve(
                     {"TEST_KEY": secret}
                 ),
                 secret,

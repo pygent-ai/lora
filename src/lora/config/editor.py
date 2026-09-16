@@ -43,6 +43,7 @@ def replace_user_model_config(
     root = Path(user_lora_root).expanduser().resolve()
     path = root / USER_CONFIG_FILENAME
     data = parse_yaml_subset(path.read_text(encoding="utf-8")) if path.exists() else {}
+    data["connections"] = model_config["connections"]
     data["models"] = model_config["models"]
     data["model_groups"] = model_config.get("model_groups", {})
     data["agents"] = normalized_agents
@@ -59,7 +60,7 @@ def clear_user_model_config(user_lora_root: str | Path) -> Path:
 
     path = Path(user_lora_root).expanduser().resolve() / USER_CONFIG_FILENAME
     data = parse_yaml_subset(path.read_text(encoding="utf-8")) if path.exists() else {}
-    for key in ("models", "model_groups", "agents", "agent"):
+    for key in ("connections", "models", "model_groups", "agents", "agent"):
         data.pop(key, None)
     return _write_config(path, data)
 

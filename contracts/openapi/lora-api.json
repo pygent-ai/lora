@@ -1985,6 +1985,14 @@
             ],
             "title": "Model Configuration Error"
           },
+          "connections": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Connections"
+          },
           "models": {
             "additionalProperties": {
               "additionalProperties": true,
@@ -2049,6 +2057,7 @@
           "agent",
           "model_configuration_status",
           "model_configuration_error",
+          "connections",
           "models",
           "model_groups",
           "default_model_group",

@@ -31,8 +31,7 @@ def load_run_config(*, workspace_root: Path) -> RunConfig:
     config = native_run_config(workspace_root)
     mapping = config.model_config_mapping
     assert mapping is not None
-    for model in mapping["models"].values():
-        model["connection"]["credential"] = {"none": True}
+    mapping["connections"]["shared"]["credential"] = {"none": True}
     config.model_config = ModelConfig.from_mapping(mapping)
     return config
 

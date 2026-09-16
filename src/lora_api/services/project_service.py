@@ -59,6 +59,24 @@ def remove_project(context: ApiContext, scope_id: str) -> bool:
 
 def config_response(config: RunConfig) -> RuntimeConfigResponse:
     mapping = deepcopy(config.model_config_mapping or {})
+    connections = mapping.get("connections", {})
+    if not isinstance(connections, dict):
+        connections = {}
+    safe_connections: dict[str, dict] = {}
+    for key, raw_connection in connections.items():
+        if not isinstance(key, str) or not isinstance(raw_connection, dict):
+            continue
+        connection = deepcopy(raw_connection)
+        credential = connection.get("credential")
+        env_name = credential.get("env") if isinstance(credential, dict) else None
+        if isinstance(env_name, str):
+            _, source = lookup_credential(
+                env_name, user_lora_root=config.user_lora_root
+            )
+            connection["credential_source"] = source
+        else:
+            connection["credential_source"] = "none"
+        safe_connections[key] = connection
     models = mapping.get("models", {})
     if not isinstance(models, dict):
         models = {}
@@ -66,19 +84,7 @@ def config_response(config: RunConfig) -> RuntimeConfigResponse:
     for key, raw_model in models.items():
         if not isinstance(key, str) or not isinstance(raw_model, dict):
             continue
-        model = deepcopy(raw_model)
-        connection = model.get("connection")
-        if isinstance(connection, dict):
-            credential = connection.get("credential")
-            env_name = credential.get("env") if isinstance(credential, dict) else None
-            if isinstance(env_name, str):
-                _, source = lookup_credential(
-                    env_name, user_lora_root=config.user_lora_root
-                )
-                connection["credential_source"] = source
-            else:
-                connection["credential_source"] = "none"
-        safe_models[key] = model
+        safe_models[key] = deepcopy(raw_model)
     groups = mapping.get("model_groups", {})
     if not isinstance(groups, dict):
         groups = {}
@@ -90,6 +96,7 @@ def config_response(config: RunConfig) -> RuntimeConfigResponse:
         agent=config.agent_alias,
         model_configuration_status=config.model_configuration_status,
         model_configuration_error=config.model_configuration_error,
+        connections=safe_connections,
         models=safe_models,
         model_groups=deepcopy(groups),
         default_model_group=(

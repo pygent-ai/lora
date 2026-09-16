@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pygent.llm import ModelConfig, ModelConnection
+from pygent.llm import ConnectionConfig, ModelConfig
 
 from lora.config import replace_user_model_config, update_user_approvals
 from lora.core.io import non_empty_string
@@ -72,7 +72,7 @@ async def discover_connection_models(
     context: ApiContext = Depends(get_api_context),
 ) -> dict[str, Any]:
     try:
-        connection = ModelConnection.from_mapping(request.connection)
+        connection = ConnectionConfig.from_mapping(request.connection)
         credential = request.connection.get("credential")
         env_name = credential.get("env") if isinstance(credential, dict) else None
         transient = (
@@ -81,6 +81,7 @@ async def discover_connection_models(
             else {}
         )
         models = await discover_models(
+            connection_name="discovery",
             protocol=request.protocol,
             connection=connection,
             credential_environ=CredentialEnvironment(
@@ -119,9 +120,8 @@ def _replace_native_model_settings(
         _guard_persisted_session_selections(context, parsed)
         referenced_credentials = {
             credential["env"]
-            for model in request.native_model_config.get("models", {}).values()
-            if isinstance(model, dict)
-            and isinstance((connection := model.get("connection")), dict)
+            for connection in request.native_model_config.get("connections", {}).values()
+            if isinstance(connection, dict)
             and isinstance((credential := connection.get("credential")), dict)
             and isinstance(credential.get("env"), str)
         }

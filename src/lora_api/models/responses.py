@@ -17,6 +17,7 @@ class RuntimeConfigResponse(BaseModel):
     agent: str
     model_configuration_status: str
     model_configuration_error: str | None
+    connections: dict[str, dict[str, Any]]
     models: dict[str, dict[str, Any]]
     model_groups: dict[str, dict[str, Any]]
     default_model_group: str | None

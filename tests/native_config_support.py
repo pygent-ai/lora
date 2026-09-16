@@ -11,16 +11,20 @@ def native_model_config_yaml(
     eternal_conversation: bool = False,
 ) -> str:
     enabled = "true" if eternal_conversation else "false"
-    return f"""models:
-  {model_key}:
+    return f"""connections:
+  test-connection:
     provider: test
+    credential:
+      env: {credential_env}
+    protocols:
+      openai_chat_completions:
+        base_url: {base_url}
+    verify_ssl: true
+models:
+  {model_key}:
+    connection: test-connection
     model_id: {model_id}
     protocol: openai_chat_completions
-    connection:
-      base_url: {base_url}
-      credential:
-        env: {credential_env}
-      verify_ssl: true
     provider_options: {{}}
     capabilities:
       modalities:
