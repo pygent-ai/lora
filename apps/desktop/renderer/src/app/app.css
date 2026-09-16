@@ -2482,6 +2482,166 @@ input:focus,
   padding: 10px;
 }
 
+.model-config-sections {
+  display: grid;
+  gap: 0;
+}
+
+.model-config-block {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.model-config-block.connection-block {
+  background: color-mix(in srgb, var(--surface-2) 54%, transparent);
+}
+
+.model-config-block-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.model-config-block-heading strong {
+  color: var(--text);
+  font-size: 12px;
+  letter-spacing: .02em;
+}
+
+.model-config-block-heading span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.model-config-block .model-route-grid,
+.connection-advanced .model-route-grid,
+.model-capability-advanced .model-route-grid {
+  padding: 0;
+}
+
+.model-route-grid label,
+.group-name-field {
+  align-content: start;
+}
+
+.model-route-grid label > small,
+.group-name-field > small {
+  display: block;
+  margin-top: 6px;
+  color: var(--soft);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.discover-action {
+  align-self: end;
+  justify-self: start;
+  min-height: 40px;
+}
+
+.connection-advanced,
+.model-capability-advanced {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.connection-advanced summary,
+.model-capability-advanced summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.connection-advanced[open] summary,
+.model-capability-advanced[open] summary {
+  margin-bottom: 14px;
+}
+
+.model-capability-advanced {
+  padding: 14px 18px 18px;
+  background: var(--surface-glass);
+}
+
+.model-group-card {
+  display: grid;
+  grid-template-columns: minmax(170px, .42fr) minmax(280px, 1fr);
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-glass);
+}
+
+.group-model-picker {
+  display: grid;
+  gap: 6px;
+}
+
+.group-model-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.group-model-option.selected {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+.group-model-option > label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.group-model-option > label input {
+  width: 15px;
+  min-height: 15px;
+  flex: 0 0 15px;
+}
+
+.group-model-option > label > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.group-model-option strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.group-model-option small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-model-rank {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--accent-deep);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  font: 750 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
 .fallback-row {
   min-height: 42px;
   justify-content: space-between;
@@ -2623,11 +2783,14 @@ input:focus,
 .settings-permissions p { margin:0; font-size:12px; line-height:1.8; color:var(--muted); }
 .model-group-editor { padding:0; border:0; background:transparent; }
 .model-group-heading { margin-bottom:12px; }
-.model-route-grid { padding:18px; gap:16px; }
+.model-route-grid { gap:16px; }
 .model-route-title { padding:14px 18px; background:#f8f9fb; }
 .settings-actions { padding:18px 28px; }
 .settings-form input, .settings-form select { border-radius:8px; min-height:40px; }
 @media (max-width: 900px) {
+  .model-group-card { grid-template-columns: 1fr; }
+  .model-config-block-heading { align-items: flex-start; flex-direction: column; gap:4px; }
+  .model-config-block-heading span { text-align:left; }
   .composer-hint { display:none !important; }
   .transcript, .composer { padding-left:18px; padding-right:18px; }
   .chat-header { padding:16px 18px; }

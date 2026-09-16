@@ -2093,6 +2093,72 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
     });
   }
 
+  function setModelProvider(modelKey, provider) {
+    setDraft((current) => {
+      const model = current.models[modelKey];
+      if (!model) return current;
+      const providerCatalog = catalogs?.providers?.[provider];
+      const protocol = providerCatalog?.default_protocol || Object.keys(providerCatalog?.protocols || {})[0] || model.protocol;
+      const protocolCatalog = providerCatalog?.protocols?.[protocol];
+      const credentialEnv = protocolCatalog?.api_key_env || model.connection?.credential?.env;
+      return {
+        ...current,
+        models: {
+          ...current.models,
+          [modelKey]: {
+            ...model,
+            provider,
+            protocol,
+            connection: {
+              ...model.connection,
+              ...(protocolCatalog?.base_url ? { base_url: protocolCatalog.base_url } : {}),
+              credential: credentialEnv ? { env: credentialEnv } : { none: true },
+            },
+          },
+        },
+      };
+    });
+  }
+
+  function setModelProtocol(modelKey, protocol) {
+    setDraft((current) => {
+      const model = current.models[modelKey];
+      if (!model) return current;
+      const protocolCatalog = catalogs?.providers?.[model.provider]?.protocols?.[protocol];
+      const credentialEnv = protocolCatalog?.api_key_env || model.connection?.credential?.env;
+      return {
+        ...current,
+        models: {
+          ...current.models,
+          [modelKey]: {
+            ...model,
+            protocol,
+            connection: {
+              ...model.connection,
+              ...(protocolCatalog?.base_url ? { base_url: protocolCatalog.base_url } : {}),
+              credential: credentialEnv ? { env: credentialEnv } : { none: true },
+            },
+          },
+        },
+      };
+    });
+  }
+
+  function setModelId(modelKey, modelId) {
+    setDraft((current) => {
+      const model = current.models[modelKey];
+      if (!model) return current;
+      const known = catalogs?.model_capabilities?.find((item) => item.provider === model.provider && item.protocol === model.protocol && item.model_id === modelId);
+      return { ...current, models: { ...current.models, [modelKey]: { ...model, model_id: modelId, ...(known?.capabilities ? { capabilities: structuredClone(known.capabilities) } : {}) } } };
+    });
+  }
+
+  function setAuthentication(modelKey, mode) {
+    const model = draft.models[modelKey];
+    const suggested = catalogs?.providers?.[model?.provider]?.protocols?.[model?.protocol]?.api_key_env;
+    setModel(modelKey, "credential_env", mode === "api-key" ? (model?.connection?.credential?.env || suggested || `${modelKey.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`) : "");
+  }
+
   function renameModel(previousKey, nextKey) {
     setDraft((current) => {
       const key = nextKey.trim();
@@ -2119,9 +2185,21 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
     });
   }
 
-  function setGroupModels(groupName, value) {
+  function toggleGroupModel(groupName, modelKey) {
     setDraft((current) => {
-      const models = value.split(",").map((item) => item.trim()).filter(Boolean);
+      const previous = current.modelGroups[groupName]?.models || [];
+      const models = previous.includes(modelKey) ? previous.filter((item) => item !== modelKey) : [...previous, modelKey];
+      return { ...current, modelGroups: { ...current.modelGroups, [groupName]: { models } } };
+    });
+  }
+
+  function moveGroupModel(groupName, modelKey, offset) {
+    setDraft((current) => {
+      const models = [...(current.modelGroups[groupName]?.models || [])];
+      const from = models.indexOf(modelKey);
+      const to = from + offset;
+      if (from < 0 || to < 0 || to >= models.length) return current;
+      [models[from], models[to]] = [models[to], models[from]];
       return { ...current, modelGroups: { ...current.modelGroups, [groupName]: { models } } };
     });
   }
@@ -2195,8 +2273,8 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
           <section className="model-group-editor" aria-label="Native Pygent models">
             <div className="model-group-heading">
               <div>
-                <strong>Pygent 模型与连接</strong>
-                <span>每个模型直接保存原生协议、能力和 connection；密钥只保存到凭据库。</span>
+                <strong>模型目录</strong>
+                <span>先选择服务商和协议，再填写该服务商实际提供的模型 ID。连接参数单独配置。</span>
               </div>
               <button className="route-add" type="button" onClick={addModel}>
                 <Plus aria-hidden="true" /> 添加模型
@@ -2207,6 +2285,9 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
                 const credentialEnv = model.connection?.credential?.env || "";
                 const referenced = Object.values(draft.modelGroups).some((group) => group.models.includes(modelKey));
                 const providerProtocols = catalogs?.providers?.[model.provider]?.protocols || {};
+                const providers = Object.entries(catalogs?.providers || {});
+                const protocols = Object.entries(providerProtocols);
+                const authMode = model.connection?.credential?.none ? "none" : "api-key";
                 return <article className="model-route-card" key={modelKey}>
                   <div className="model-route-title">
                     <span className="route-rank">{String(index + 1).padStart(2, "0")}</span>
@@ -2222,41 +2303,58 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
                       <Trash2 aria-hidden="true" />
                     </button>
                   </div>
-                  <div className="model-route-grid">
-                    <label><span>模型键 · Model key</span><input defaultValue={modelKey} onBlur={(event) => renameModel(modelKey, event.target.value)} /></label>
-                    <label><span>模型 ID</span><input list={`models-${modelKey}`} value={model.model_id || ""} onChange={(event) => setModel(modelKey, "model_id", event.target.value)} /></label>
-                    <datalist id={`models-${modelKey}`}>{(discovered[modelKey] || []).map((item) => <option key={item.id} value={item.id} />)}</datalist>
-                    <label><span>Provider</span><input value={model.provider || ""} onChange={(event) => setModel(modelKey, "provider", event.target.value)} /></label>
-                    <label><span>协议</span><input list={`protocols-${modelKey}`} value={model.protocol || ""} onChange={(event) => setModel(modelKey, "protocol", event.target.value)} /></label>
-                    <datalist id={`protocols-${modelKey}`}>{Object.keys(providerProtocols).map((protocol) => <option key={protocol} value={protocol} />)}</datalist>
-                    <label><span>服务地址 · Base URL</span><input value={model.connection?.base_url || ""} onChange={(event) => setModel(modelKey, "base_url", event.target.value)} /></label>
-                    <label><span>代理（可选）</span><input value={model.connection?.proxy || ""} onChange={(event) => setModel(modelKey, "proxy", event.target.value)} /></label>
-                    <label><span>密钥环境变量（留空为 no-auth）</span><input value={credentialEnv} onChange={(event) => setModel(modelKey, "credential_env", event.target.value)} /></label>
-                    <label><span>能力预设</span><select defaultValue="" onChange={(event) => applyCapabilityPreset(modelKey, event.target.value)}><option value="">保留当前能力</option>{Object.keys(catalogs?.capability_presets || {}).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
-                    <label><span>上下文 tokens</span><input type="number" min="1" value={model.capabilities?.limits?.context_tokens || ""} onChange={(event) => setModel(modelKey, "context_tokens", event.target.value)} /></label>
-                    <label><span>最大输出 tokens</span><input type="number" min="1" value={model.capabilities?.limits?.max_output_tokens || ""} onChange={(event) => setModel(modelKey, "max_output_tokens", event.target.value)} /></label>
-                    <label><span>TLS 验证</span><select value={model.connection?.verify_ssl === false ? "off" : "on"} onChange={(event) => setModel(modelKey, "verify_ssl", event.target.value === "on")}><option value="on">开启</option><option value="off">关闭</option></select></label>
-                    <label className="route-secret">
-                      <span>新的 API 密钥</span>
-                      <input disabled={!credentialEnv} type="password" autoComplete="off" placeholder={model.connection?.credential_source === "missing" ? "尚未配置" : "留空保留已有密钥"} value={draft.credentialValues[credentialEnv] || ""} onChange={(event) => setDraft((current) => ({ ...current, credentialValues: { ...current.credentialValues, [credentialEnv]: event.target.value } }))} />
-                    </label>
-                    <button className="plain-action" type="button" onClick={() => discoverModelIds(modelKey)}>从连接发现模型</button>
+                  <div className="model-config-sections">
+                    <section className="model-config-block" aria-label={`${modelKey} model identity`}>
+                      <div className="model-config-block-heading"><strong>模型信息</strong><span>决定调用谁、使用哪种 API 格式；不属于连接。</span></div>
+                      <div className="model-route-grid">
+                        <label><span>本地名称</span><input defaultValue={modelKey} onBlur={(event) => renameModel(modelKey, event.target.value)} /><small>仅供 Lora 的模型组引用，不会发送给服务商。</small></label>
+                        <label><span>服务商</span><select value={model.provider || ""} onChange={(event) => setModelProvider(modelKey, event.target.value)}>{!catalogs?.providers?.[model.provider] && <option value={model.provider}>{model.provider || "请选择"}</option>}{providers.map(([key, item]) => <option key={key} value={key}>{item.display_name || key}</option>)}</select><small>选择后会自动带出推荐协议、地址和凭据名称。</small></label>
+                        <label><span>API 协议</span><select value={model.protocol || ""} onChange={(event) => setModelProtocol(modelKey, event.target.value)}>{!providerProtocols[model.protocol] && <option value={model.protocol}>{protocolLabel(model.protocol)}</option>}{protocols.map(([key]) => <option key={key} value={key}>{protocolLabel(key)}</option>)}</select><small>必须与服务端实际兼容的请求格式一致。</small></label>
+                        <label><span>服务商模型 ID</span><input list={`models-${modelKey}`} placeholder="例如 gpt-5.1-codex" value={model.model_id || ""} onChange={(event) => setModelId(modelKey, event.target.value)} /><small>这是服务商文档或“发现模型”返回的真实 ID。</small></label>
+                        <datalist id={`models-${modelKey}`}>{(discovered[modelKey] || []).map((item) => <option key={item.id} value={item.id} />)}</datalist>
+                        <label><span>能力模板</span><select defaultValue="" onChange={(event) => applyCapabilityPreset(modelKey, event.target.value)}><option value="">使用当前能力</option>{Object.keys(catalogs?.capability_presets || {}).map((name) => <option key={name} value={name}>{capabilityPresetLabel(name)}</option>)}</select><small>已知模型会自动匹配；自定义模型可选择最接近的模板。</small></label>
+                      </div>
+                    </section>
+                    <section className="model-config-block connection-block" aria-label={`${modelKey} connection`}>
+                      <div className="model-config-block-heading"><strong>连接</strong><span>只包含网络地址、认证、代理和 TLS。</span></div>
+                      <div className="model-route-grid">
+                        <label><span>服务地址 · Base URL</span><input placeholder="https://api.example.com/v1" value={model.connection?.base_url || ""} onChange={(event) => setModel(modelKey, "base_url", event.target.value)} /><small>选择内置服务商时自动填写，私有部署时再修改。</small></label>
+                        <label><span>认证方式</span><select value={authMode} onChange={(event) => setAuthentication(modelKey, event.target.value)}><option value="api-key">API Key</option><option value="none">无需认证</option></select><small>本地 Ollama 等免认证服务可选择“无需认证”。</small></label>
+                        {authMode === "api-key" && <label><span>凭据名称</span><input value={credentialEnv} onChange={(event) => setModel(modelKey, "credential_env", event.target.value)} /><small>通常已自动填写，例如 OPENAI_API_KEY；这里只保存引用名称。</small></label>}
+                        {authMode === "api-key" && <label className="route-secret"><span>API Key</span><input disabled={!credentialEnv} type="password" autoComplete="off" placeholder={model.connection?.credential_source === "missing" ? "请输入并保存到本机凭据库" : "留空保留已有密钥"} value={draft.credentialValues[credentialEnv] || ""} onChange={(event) => setDraft((current) => ({ ...current, credentialValues: { ...current.credentialValues, [credentialEnv]: event.target.value } }))} /><small>密钥不会写进模型配置，也不会回显。</small></label>}
+                        <button className="plain-action discover-action" type="button" onClick={() => discoverModelIds(modelKey)}>连接并发现模型 ID</button>
+                      </div>
+                      <details className="connection-advanced"><summary>高级连接设置</summary><div className="model-route-grid">
+                        <label><span>代理（可选）</span><input placeholder="http://127.0.0.1:7890" value={model.connection?.proxy || ""} onChange={(event) => setModel(modelKey, "proxy", event.target.value)} /></label>
+                        <label><span>TLS 证书验证</span><select value={model.connection?.verify_ssl === false ? "off" : "on"} onChange={(event) => setModel(modelKey, "verify_ssl", event.target.value === "on")}><option value="on">开启（推荐）</option><option value="off">关闭</option></select></label>
+                      </div></details>
+                    </section>
+                    <details className="model-capability-advanced"><summary>高级模型能力</summary><div className="model-route-grid">
+                      <label><span>上下文 tokens</span><input type="number" min="1" value={model.capabilities?.limits?.context_tokens || ""} onChange={(event) => setModel(modelKey, "context_tokens", event.target.value)} /></label>
+                      <label><span>最大输出 tokens</span><input type="number" min="1" value={model.capabilities?.limits?.max_output_tokens || ""} onChange={(event) => setModel(modelKey, "max_output_tokens", event.target.value)} /></label>
+                    </div></details>
                   </div>
                 </article>;
               })}
             </div>
           </section>
-          <details className="settings-disclosure"><summary>高级运行设置 <span>回退顺序、重试与上下文</span></summary><div className="settings-disclosure-body">
           <section className="fallback-editor" aria-label="Model groups">
             <div className="model-group-heading">
               <div>
                 <strong>模型组</strong>
-                <span>逗号分隔的模型键顺序就是 Pygent 回退顺序。</span>
+                <span>勾选组内模型，并用箭头排列优先级；第一项为默认模型，其余按顺序回退。</span>
               </div>
             </div>
-            {Object.entries(draft.modelGroups).map(([groupName, group]) => <div className="fallback-row enabled" key={groupName}>
-              <label><span>组名</span><input defaultValue={groupName} onBlur={(event) => renameGroup(groupName, event.target.value)} /></label>
-              <label><span>模型顺序</span><input value={group.models.join(", ")} onChange={(event) => setGroupModels(groupName, event.target.value)} /></label>
+            {Object.entries(draft.modelGroups).map(([groupName, group]) => <div className="model-group-card" key={groupName}>
+              <label className="group-name-field"><span>组名</span><input defaultValue={groupName} onBlur={(event) => renameGroup(groupName, event.target.value)} /><small>新建对话时选择；创建后固定。</small></label>
+              <div className="group-model-picker" aria-label={`${groupName} models`}>{Object.entries(draft.models).map(([modelKey, model]) => {
+                const order = group.models.indexOf(modelKey);
+                const selected = order >= 0;
+                return <div className={`group-model-option${selected ? " selected" : ""}`} key={modelKey}>
+                  <label><input type="checkbox" checked={selected} onChange={() => toggleGroupModel(groupName, modelKey)} /><span><strong>{modelKey}</strong><small>{model.provider} · {model.model_id || "未填写模型 ID"}</small></span></label>
+                  {selected && <><span className="group-model-rank">{order + 1}</span><div className="fallback-order-actions"><button type="button" disabled={order === 0} onClick={() => moveGroupModel(groupName, modelKey, -1)} title="提高优先级"><ArrowUp /></button><button type="button" disabled={order === group.models.length - 1} onClick={() => moveGroupModel(groupName, modelKey, 1)} title="降低优先级"><ArrowDown /></button></div></>}
+                </div>;
+              })}</div>
             </div>)}
             <button className="plain-action" type="button" onClick={() => setDraft((current) => {
               let index = Object.keys(current.modelGroups).length + 1;
@@ -2266,6 +2364,7 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
             })}><Plus aria-hidden="true" /> 添加模型组</button>
             <label><span>Agent 默认模型组</span><select value={draft.defaultModelGroup} onChange={(event) => setField("defaultModelGroup", event.target.value)}>{Object.keys(draft.modelGroups).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
           </section>
+          <details className="settings-disclosure"><summary>高级运行设置 <span>重试与上下文</span></summary><div className="settings-disclosure-body">
           <div className="retry-grid">
             <label><span>Attempts / model</span><input min="1" type="number" value={draft.retry.max_attempts_per_model} onChange={(event) => setField("retry", { ...draft.retry, max_attempts_per_model: event.target.value })} /></label>
             <label><span>Idle timeout (seconds)</span><input min="0.1" step="0.1" type="number" value={draft.retry.attempt_idle_timeout_seconds} onChange={(event) => setField("retry", { ...draft.retry, attempt_idle_timeout_seconds: event.target.value })} /></label>
@@ -3005,6 +3104,21 @@ function sessionFromDetail(detail) {
     ...(detail?.session || {}),
     selectable_models: detail?.selectable_models || [],
   };
+}
+
+const PROTOCOL_LABELS = {
+  openai_chat_completions: "OpenAI Chat Completions",
+  openai_responses: "OpenAI Responses",
+  anthropic_messages: "Anthropic Messages",
+  gemini_generate_content: "Gemini Generate Content",
+};
+
+export function protocolLabel(protocol) {
+  return PROTOCOL_LABELS[protocol] || protocol || "请选择协议";
+}
+
+export function capabilityPresetLabel(name) {
+  return String(name || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function emptyNativeModel(id) {

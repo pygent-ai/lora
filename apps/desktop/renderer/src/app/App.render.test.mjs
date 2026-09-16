@@ -1009,6 +1009,29 @@ test("model-id changes remain saveable with an existing credential reference", (
   }), "");
 });
 
+test("settings separate native model identity from connection fields", () => {
+  const model = {
+    provider: "openai", model_id: "gpt-test", protocol: "openai_responses",
+    connection: { base_url: "https://api.openai.com/v1", credential: { env: "OPENAI_API_KEY" }, verify_ssl: true },
+    provider_options: {}, capabilities: { limits: { context_tokens: 1000, max_output_tokens: 100 } },
+  };
+  const html = renderToStaticMarkup(React.createElement(appModule.SettingsPanel, {
+    settings: { models: { primary: model }, model_groups: { coding: { models: ["primary"] } }, default_model_group: "coding" },
+    disabled: false, onClose() {}, onSave() {},
+  }));
+
+  assert.match(html, /模型信息/);
+  assert.match(html, /决定调用谁、使用哪种 API 格式；不属于连接/);
+  assert.match(html, /连接/);
+  assert.match(html, /只包含网络地址、认证、代理和 TLS/);
+  assert.match(html, /<select[^>]*><option value="openai" selected="">openai<\/option><\/select>/);
+  assert.match(html, /OpenAI Responses/);
+  assert.match(html, /本地名称/);
+  assert.match(html, /仅供 Lora 的模型组引用/);
+  assert.doesNotMatch(html, /逗号分隔/);
+  assert.match(html, /type="checkbox" checked=""/);
+});
+
 test("existing idle chat exposes only child models from its fixed group", () => {
   const html = renderToStaticMarkup(React.createElement(appModule.ChatPane, {
     activeSession: {
