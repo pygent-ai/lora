@@ -1022,9 +1022,12 @@ test("settings separate native model identity from connection fields", () => {
 
   assert.match(html, /模型信息/);
   assert.match(html, /决定调用谁、使用哪种 API 格式；不属于连接/);
-  assert.match(html, /1 · Connections/);
-  assert.match(html, /同一个 Connection 可被多个模型复用/);
-  assert.match(html, /Provider 属于 Connection/);
+  assert.match(html, /1 · 服务连接/);
+  assert.match(html, /同一个连接可被多个模型复用/);
+  assert.match(html, /连接名称/);
+  assert.match(html, /自定义服务商/);
+  assert.equal(appModule.providerSelectionValue("openai", null), "openai");
+  assert.equal(appModule.providerSelectionValue("company-gateway", { providers: { openai: {} } }), "__custom__");
   assert.match(html, /2 · 模型目录/);
   assert.match(html, /openai-main · openai/);
   assert.match(html, /OpenAI Responses/);

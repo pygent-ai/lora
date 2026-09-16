@@ -2277,36 +2277,38 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
           <section className="model-group-editor" aria-label="Native Pygent connections">
             <div className="model-group-heading">
               <div>
-                <strong>1 · Connections</strong>
-                <span>先配置可复用的服务连接。Provider、认证、协议端点、代理和 TLS 都属于 Connection。</span>
+                <strong>1 · 服务连接</strong>
+                <span>先配置可复用的服务连接。服务商、认证、协议端点、代理和 TLS 都在这里管理。</span>
               </div>
-              <button className="route-add" type="button" onClick={addConnection}><Plus aria-hidden="true" /> 添加 Connection</button>
+              <button className="route-add" type="button" onClick={addConnection}><Plus aria-hidden="true" /> 添加连接</button>
             </div>
             <div className="model-route-list">
               {Object.entries(draft.connections).map(([connectionKey, connection], index) => {
                 const referenced = Object.values(draft.models).some((model) => model.connection === connectionKey);
                 const providers = Object.entries(catalogs?.providers || {});
+                const providerSelection = providerSelectionValue(connection.provider, catalogs);
                 const credentialEnv = connection.credential?.env || "";
                 const authMode = connection.credential?.none ? "none" : "api-key";
                 return <article className="model-route-card connection-route-card" key={connectionKey}>
                   <div className="model-route-title">
                     <span className="route-rank">C{String(index + 1).padStart(2, "0")}</span>
                     <strong>{connectionKey}</strong>
-                    <button className="route-remove" disabled={referenced} type="button" onClick={() => removeConnection(connectionKey)} aria-label={`Remove ${connectionKey}`} title={referenced ? "先让模型改用其他 Connection" : "删除 Connection"}><Trash2 aria-hidden="true" /></button>
+                    <button className="route-remove" disabled={referenced} type="button" onClick={() => removeConnection(connectionKey)} aria-label={`Remove ${connectionKey}`} title={referenced ? "先让模型改用其他连接" : "删除连接"}><Trash2 aria-hidden="true" /></button>
                   </div>
                   <div className="model-config-sections">
                     <section className="model-config-block connection-block" aria-label={`${connectionKey} connection`}>
-                      <div className="model-config-block-heading"><strong>连接身份与认证</strong><span>同一个 Connection 可被多个模型复用。</span></div>
+                      <div className="model-config-block-heading"><strong>连接身份与认证</strong><span>同一个连接可被多个模型复用。</span></div>
                       <div className="model-route-grid">
-                        <label><span>Connection Key</span><input defaultValue={connectionKey} onBlur={(event) => renameConnection(connectionKey, event.target.value)} /><small>仅供模型引用，不会发给服务商。</small></label>
-                        <label><span>Provider</span><select value={connection.provider || ""} onChange={(event) => setConnectionProvider(connectionKey, event.target.value)}>{!catalogs?.providers?.[connection.provider] && <option value={connection.provider}>{connection.provider || "请选择"}</option>}{providers.map(([key, item]) => <option key={key} value={key}>{item.display_name || key}</option>)}</select><small>Provider 属于 Connection，由 Pygent 投影到模型。</small></label>
+                        <label><span>连接名称</span><input defaultValue={connectionKey} onBlur={(event) => renameConnection(connectionKey, event.target.value)} /><small>给自己看的名称，模型通过它选择连接。</small></label>
+                        <label><span>服务商</span><select value={providerSelection || ""} onChange={(event) => event.target.value === "__custom__" ? setConnection(connectionKey, "provider", "") : setConnectionProvider(connectionKey, event.target.value)}>{!catalogs && <option value={connection.provider}>{connection.provider || "请选择"}</option>}{providers.map(([key, item]) => <option key={key} value={key}>{item.display_name || key}</option>)}<option value="__custom__">自定义服务商</option></select><small>可选择内置服务商，也可填写自定义 Provider ID。</small></label>
+                        {providerSelection === "__custom__" && <label><span>自定义 Provider ID</span><input autoFocus={!connection.provider} placeholder="例如 company-gateway" value={connection.provider || ""} onChange={(event) => setConnection(connectionKey, "provider", event.target.value)} /><small>原样保存到 Pygent 的 provider 字段。</small></label>}
                         <label><span>认证方式</span><select value={authMode} onChange={(event) => setConnectionAuthentication(connectionKey, event.target.value)}><option value="api-key">API Key</option><option value="none">无需认证</option></select></label>
                         {authMode === "api-key" && <label><span>凭据名称</span><input value={credentialEnv} onChange={(event) => setConnection(connectionKey, "credential", event.target.value ? { env: event.target.value } : { none: true })} /><small>配置只保存名称，不保存密钥。</small></label>}
                         {authMode === "api-key" && <label className="route-secret"><span>API Key</span><input disabled={!credentialEnv} type="password" autoComplete="off" placeholder={connection.credential_source === "missing" ? "请输入并保存到本机凭据库" : "留空保留已有密钥"} value={draft.credentialValues[credentialEnv] || ""} onChange={(event) => setDraft((current) => ({ ...current, credentialValues: { ...current.credentialValues, [credentialEnv]: event.target.value } }))} /><small>不会写入配置，也不会回显。</small></label>}
                       </div>
                     </section>
                     <section className="model-config-block" aria-label={`${connectionKey} protocol endpoints`}>
-                      <div className="model-config-block-heading"><strong>协议端点</strong><span>一个 Connection 可同时提供多个协议，每个模型从这里选择。</span></div>
+                      <div className="model-config-block-heading"><strong>协议端点</strong><span>一个连接可同时提供多个协议，每个模型从这里选择。</span></div>
                       <div className="model-route-grid">
                         {Object.entries(connection.protocols || {}).map(([protocol, endpoint]) => <label key={protocol}><span>{protocolLabel(protocol)}</span><input placeholder="https://api.example.com/v1" value={endpoint?.base_url || ""} onChange={(event) => setConnectionProtocolUrl(connectionKey, protocol, event.target.value)} /><small>{protocol}</small></label>)}
                       </div>
@@ -2324,7 +2326,7 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
             <div className="model-group-heading">
               <div>
                 <strong>2 · 模型目录</strong>
-                <span>模型只选择 Connection、协议和真实 Model ID；连接参数不会重复保存。</span>
+                <span>模型只选择已有连接、协议和真实 Model ID；连接参数不会重复保存。</span>
               </div>
               <button className="route-add" type="button" disabled={!Object.keys(draft.connections).length} onClick={addModel}>
                 <Plus aria-hidden="true" /> 添加模型
@@ -2355,12 +2357,12 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
                       <div className="model-config-block-heading"><strong>模型信息</strong><span>决定调用谁、使用哪种 API 格式；不属于连接。</span></div>
                       <div className="model-route-grid">
                         <label><span>本地名称</span><input defaultValue={modelKey} onBlur={(event) => renameModel(modelKey, event.target.value)} /><small>仅供 Lora 的模型组引用，不会发送给服务商。</small></label>
-                        <label><span>Connection</span><select value={model.connection || ""} onChange={(event) => { const connection = event.target.value; const protocol = Object.keys(draft.connections[connection]?.protocols || {})[0] || ""; setDraft((current) => ({ ...current, models: { ...current.models, [modelKey]: { ...current.models[modelKey], connection, protocol } } })); }}>{Object.keys(draft.connections).map((key) => <option key={key} value={key}>{key} · {draft.connections[key].provider}</option>)}</select><small>选择上一步配置的可复用连接。</small></label>
-                        <label><span>API 协议</span><select value={model.protocol || ""} onChange={(event) => setModel(modelKey, "protocol", event.target.value)}>{!protocols.includes(model.protocol) && <option value={model.protocol}>{protocolLabel(model.protocol)}</option>}{protocols.map((key) => <option key={key} value={key}>{protocolLabel(key)}</option>)}</select><small>只能选择当前 Connection 提供的协议。</small></label>
+                        <label><span>使用连接</span><select value={model.connection || ""} onChange={(event) => { const connection = event.target.value; const protocol = Object.keys(draft.connections[connection]?.protocols || {})[0] || ""; setDraft((current) => ({ ...current, models: { ...current.models, [modelKey]: { ...current.models[modelKey], connection, protocol } } })); }}>{Object.keys(draft.connections).map((key) => <option key={key} value={key}>{key} · {draft.connections[key].provider}</option>)}</select><small>选择上一步配置的可复用连接。</small></label>
+                        <label><span>API 协议</span><select value={model.protocol || ""} onChange={(event) => setModel(modelKey, "protocol", event.target.value)}>{!protocols.includes(model.protocol) && <option value={model.protocol}>{protocolLabel(model.protocol)}</option>}{protocols.map((key) => <option key={key} value={key}>{protocolLabel(key)}</option>)}</select><small>只能选择当前连接提供的协议。</small></label>
                         <label><span>服务商模型 ID</span><input list={`models-${modelKey}`} placeholder="例如 gpt-5.1-codex" value={model.model_id || ""} onChange={(event) => setModelId(modelKey, event.target.value)} /><small>这是服务商文档或“发现模型”返回的真实 ID。</small></label>
                         <datalist id={`models-${modelKey}`}>{(discovered[modelKey] || []).map((item) => <option key={item.id} value={item.id} />)}</datalist>
                         <label><span>能力模板</span><select defaultValue="" onChange={(event) => applyCapabilityPreset(modelKey, event.target.value)}><option value="">使用当前能力</option>{Object.keys(catalogs?.capability_presets || {}).map((name) => <option key={name} value={name}>{capabilityPresetLabel(name)}</option>)}</select><small>已知模型会自动匹配；自定义模型可选择最接近的模板。</small></label>
-                        <button className="plain-action discover-action" type="button" onClick={() => discoverModelIds(modelKey)}>通过 Connection 发现模型 ID</button>
+                        <button className="plain-action discover-action" type="button" onClick={() => discoverModelIds(modelKey)}>通过连接发现模型 ID</button>
                       </div>
                     </section>
                     <details className="model-capability-advanced"><summary>高级模型能力</summary><div className="model-route-grid">
@@ -3152,6 +3154,11 @@ export function protocolLabel(protocol) {
   return PROTOCOL_LABELS[protocol] || protocol || "请选择协议";
 }
 
+export function providerSelectionValue(provider, catalogs) {
+  if (!catalogs || catalogs.providers?.[provider]) return provider || "";
+  return "__custom__";
+}
+
 export function capabilityPresetLabel(name) {
   return String(name || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -3201,20 +3208,20 @@ export function modelGroupValidationError(draft) {
   const connections = draft.connections || {};
   const models = draft.models || {};
   const groups = draft.modelGroups || {};
-  if (!Object.keys(connections).length) return "Add at least one connection.";
+  if (!Object.keys(connections).length) return "请至少添加一个连接。";
   for (const [key, connection] of Object.entries(connections)) {
-    if (!key.trim() || !connection?.provider?.trim()) return `Connection ${key || "unnamed"} has incomplete fields.`;
+    if (!key.trim() || !connection?.provider?.trim()) return `连接 ${key || "未命名"} 的信息不完整。`;
     const protocols = connection.protocols || {};
-    if (!Object.keys(protocols).length || Object.values(protocols).some((endpoint) => !endpoint?.base_url?.trim())) return `Connection ${key} requires at least one protocol endpoint with a Base URL.`;
+    if (!Object.keys(protocols).length || Object.values(protocols).some((endpoint) => !endpoint?.base_url?.trim())) return `连接 ${key} 至少需要一个填写了地址的协议端点。`;
     const credential = connection.credential;
-    if (!credential || (!credential.none && !credential.env?.trim())) return `Connection ${key} requires a credential reference or no-auth setting.`;
+    if (!credential || (!credential.none && !credential.env?.trim())) return `连接 ${key} 需要凭据名称或“无需认证”设置。`;
   }
   if (!Object.keys(models).length) return "Add at least one model.";
   for (const [key, model] of Object.entries(models)) {
     if (!key.trim() || !model?.connection?.trim() || !model?.model_id?.trim() || !model?.protocol?.trim()) return `Model ${key || "unnamed"} has incomplete fields.`;
     const connection = connections[model.connection];
-    if (!connection) return `Model ${key} references unknown connection ${model.connection}.`;
-    if (!connection.protocols?.[model.protocol]) return `Model ${key} protocol is not configured by connection ${model.connection}.`;
+    if (!connection) return `模型 ${key} 引用了不存在的连接 ${model.connection}。`;
+    if (!connection.protocols?.[model.protocol]) return `模型 ${key} 选择的协议未在连接 ${model.connection} 中配置。`;
     if (!model.capabilities?.limits) return `Model ${key} requires native capabilities.`;
   }
   if (!Object.keys(groups).length) return "Add at least one model group.";
