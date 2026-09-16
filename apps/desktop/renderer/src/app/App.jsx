@@ -2126,6 +2126,26 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
     });
   }
 
+  function addConnectionProtocol(connectionKey, protocol) {
+    if (!protocol) return;
+    setDraft((current) => {
+      const connection = current.connections[connectionKey];
+      if (!connection || connection.protocols?.[protocol]) return current;
+      const baseUrl = catalogs?.providers?.[connection.provider]?.protocols?.[protocol]?.base_url || "";
+      return { ...current, connections: { ...current.connections, [connectionKey]: { ...connection, protocols: { ...connection.protocols, [protocol]: { base_url: baseUrl } } } } };
+    });
+  }
+
+  function removeConnectionProtocol(connectionKey, protocol) {
+    setDraft((current) => {
+      if (Object.values(current.models).some((model) => model.connection === connectionKey && model.protocol === protocol)) return current;
+      const connection = current.connections[connectionKey];
+      if (!connection) return current;
+      const { [protocol]: _removed, ...protocols } = connection.protocols || {};
+      return { ...current, connections: { ...current.connections, [connectionKey]: { ...connection, protocols } } };
+    });
+  }
+
   function setConnectionAuthentication(connectionKey, mode) {
     const connection = draft.connections[connectionKey];
     const protocol = Object.keys(connection?.protocols || {})[0];
@@ -2289,6 +2309,7 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
                 const providerSelection = providerSelectionValue(connection.provider, catalogs);
                 const credentialEnv = connection.credential?.env || "";
                 const authMode = connection.credential?.none ? "none" : "api-key";
+                const addableProtocols = protocolChoicesForConnection(connection.provider, catalogs).filter((protocol) => !connection.protocols?.[protocol]);
                 return <article className="model-route-card connection-route-card" key={connectionKey}>
                   <div className="model-route-title">
                     <span className="route-rank">C{String(index + 1).padStart(2, "0")}</span>
@@ -2308,10 +2329,18 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
                       </div>
                     </section>
                     <section className="model-config-block" aria-label={`${connectionKey} protocol endpoints`}>
-                      <div className="model-config-block-heading"><strong>协议端点</strong><span>一个连接可同时提供多个协议，每个模型从这里选择。</span></div>
-                      <div className="model-route-grid">
-                        {Object.entries(connection.protocols || {}).map(([protocol, endpoint]) => <label key={protocol}><span>{protocolLabel(protocol)}</span><input placeholder="https://api.example.com/v1" value={endpoint?.base_url || ""} onChange={(event) => setConnectionProtocolUrl(connectionKey, protocol, event.target.value)} /><small>{protocol}</small></label>)}
+                      <div className="model-config-block-heading"><strong>API 接口</strong><span>内置服务商按 Pygent 默认顺序展示；自定义服务商可以增删接口。</span></div>
+                      <div className="protocol-interface-list">
+                        {Object.entries(connection.protocols || {}).map(([protocol, endpoint]) => {
+                          const referenced = Object.values(draft.models).some((model) => model.connection === connectionKey && model.protocol === protocol);
+                          return <div className="protocol-interface-row" key={protocol}>
+                            <label><span>接口类型</span><strong>{protocolLabel(protocol)}</strong><small>{protocol}</small></label>
+                            <label><span>服务地址</span><input placeholder="https://api.example.com/v1" value={endpoint?.base_url || ""} onChange={(event) => setConnectionProtocolUrl(connectionKey, protocol, event.target.value)} /><small>该接口接收请求的 Base URL</small></label>
+                            <button className="route-remove" disabled={referenced} type="button" onClick={() => removeConnectionProtocol(connectionKey, protocol)} aria-label={`Remove ${protocol}`} title={referenced ? "有模型正在使用此接口" : "删除接口"}><Trash2 aria-hidden="true" /></button>
+                          </div>;
+                        })}
                       </div>
+                      {addableProtocols.length > 0 && <label className="protocol-interface-add"><span>添加 API 接口</span><select value="" onChange={(event) => addConnectionProtocol(connectionKey, event.target.value)}><option value="">选择接口类型…</option>{addableProtocols.map((protocol) => <option key={protocol} value={protocol}>{protocolLabel(protocol)}</option>)}</select><small>只列出当前运行时支持、且尚未添加的接口类型。</small></label>}
                       <details className="connection-advanced"><summary>高级连接设置</summary><div className="model-route-grid">
                         <label><span>代理（可选）</span><input placeholder="http://127.0.0.1:7890" value={connection.proxy || ""} onChange={(event) => setConnection(connectionKey, "proxy", event.target.value)} /></label>
                         <label><span>TLS 证书验证</span><select value={connection.verify_ssl === false ? "off" : "on"} onChange={(event) => setConnection(connectionKey, "verify_ssl", event.target.value === "on")}><option value="on">开启（推荐）</option><option value="off">关闭</option></select></label>
@@ -3157,6 +3186,21 @@ export function protocolLabel(protocol) {
 export function providerSelectionValue(provider, catalogs) {
   if (!catalogs || catalogs.providers?.[provider]) return provider || "";
   return "__custom__";
+}
+
+export function protocolChoicesForConnection(provider, catalogs) {
+  const known = catalogs?.providers?.[provider]?.protocols;
+  if (known) return Object.keys(known);
+  const protocols = [];
+  for (const item of Object.values(catalogs?.providers || {})) {
+    for (const protocol of Object.keys(item.protocols || {})) {
+      if (!protocols.includes(protocol)) protocols.push(protocol);
+    }
+  }
+  for (const protocol of Object.keys(PROTOCOL_LABELS)) {
+    if (!protocols.includes(protocol)) protocols.push(protocol);
+  }
+  return protocols;
 }
 
 export function capabilityPresetLabel(name) {

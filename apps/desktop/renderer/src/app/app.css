@@ -2524,6 +2524,48 @@ input:focus,
   padding: 0;
 }
 
+.protocol-interface-list {
+  display: grid;
+  gap: 10px;
+}
+
+.protocol-interface-row {
+  align-items: end;
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(160px, .75fr) minmax(260px, 1.5fr) 32px;
+  padding: 12px;
+}
+
+.protocol-interface-row label,
+.protocol-interface-add {
+  display: grid;
+  gap: 6px;
+}
+
+.protocol-interface-row label > span,
+.protocol-interface-add > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.protocol-interface-row label > small,
+.protocol-interface-add > small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.protocol-interface-add {
+  margin-top: 12px;
+  max-width: 360px;
+}
+
 .model-route-grid label,
 .group-name-field {
   align-content: start;
@@ -2789,6 +2831,9 @@ input:focus,
 .settings-form input, .settings-form select { border-radius:8px; min-height:40px; }
 @media (max-width: 900px) {
   .model-group-card { grid-template-columns: 1fr; }
+  .protocol-interface-row { grid-template-columns: 1fr 32px; }
+  .protocol-interface-row label:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  .protocol-interface-row .route-remove { grid-column: 2; grid-row: 1; }
   .model-config-block-heading { align-items: flex-start; flex-direction: column; gap:4px; }
   .model-config-block-heading span { text-align:left; }
   .composer-hint { display:none !important; }

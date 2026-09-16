@@ -1026,8 +1026,16 @@ test("settings separate native model identity from connection fields", () => {
   assert.match(html, /同一个连接可被多个模型复用/);
   assert.match(html, /连接名称/);
   assert.match(html, /自定义服务商/);
+  assert.match(html, /API 接口/);
+  assert.match(html, /添加 API 接口/);
   assert.equal(appModule.providerSelectionValue("openai", null), "openai");
   assert.equal(appModule.providerSelectionValue("company-gateway", { providers: { openai: {} } }), "__custom__");
+  const catalogs = { providers: {
+    openai: { protocols: { openai_responses: {}, openai_chat_completions: {} } },
+    anthropic: { protocols: { anthropic_messages: {} } },
+  } };
+  assert.deepEqual(appModule.protocolChoicesForConnection("openai", catalogs), ["openai_responses", "openai_chat_completions"]);
+  assert.deepEqual(appModule.protocolChoicesForConnection("company-gateway", catalogs), ["openai_responses", "openai_chat_completions", "anthropic_messages", "gemini_generate_content"]);
   assert.match(html, /2 · 模型目录/);
   assert.match(html, /openai-main · openai/);
   assert.match(html, /OpenAI Responses/);
