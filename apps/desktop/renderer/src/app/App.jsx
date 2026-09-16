@@ -2164,7 +2164,7 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
     setDraft((current) => {
       const key = nextKey.trim();
       if (!key || key === previousKey || Object.hasOwn(current.connections, key)) return current;
-      const connections = Object.fromEntries(Object.entries(current.connections).map(([name, connection]) => [name === previousKey ? key : name, connection]));
+      const connections = Object.fromEntries(Object.entries(current.connections).map(([name, connection]) => [name === previousKey ? key : name, name === previousKey ? renamedConnectionValue(connection, previousKey, key, catalogs) : connection]));
       const models = Object.fromEntries(Object.entries(current.models).map(([name, model]) => [name, model.connection === previousKey ? { ...model, connection: key } : model]));
       return { ...current, connections, models };
     });
@@ -2321,8 +2321,7 @@ export function SettingsPanel({ settings, disabled, onClose, onSave, api }) {
                       <div className="model-config-block-heading"><strong>连接身份与认证</strong><span>同一个连接可被多个模型复用。</span></div>
                       <div className="model-route-grid">
                         <label><span>连接名称</span><input defaultValue={connectionKey} onBlur={(event) => renameConnection(connectionKey, event.target.value)} /><small>给自己看的名称，模型通过它选择连接。</small></label>
-                        <label><span>服务商</span><select value={providerSelection || ""} onChange={(event) => event.target.value === "__custom__" ? setConnection(connectionKey, "provider", "") : setConnectionProvider(connectionKey, event.target.value)}>{!catalogs && <option value={connection.provider}>{connection.provider || "请选择"}</option>}{providers.map(([key, item]) => <option key={key} value={key}>{item.display_name || key}</option>)}<option value="__custom__">自定义服务商</option></select><small>可选择内置服务商，也可填写自定义 Provider ID。</small></label>
-                        {providerSelection === "__custom__" && <label><span>自定义 Provider ID</span><input autoFocus={!connection.provider} placeholder="例如 company-gateway" value={connection.provider || ""} onChange={(event) => setConnection(connectionKey, "provider", event.target.value)} /><small>原样保存到 Pygent 的 provider 字段。</small></label>}
+                        <label><span>服务商</span><select value={providerSelection || ""} onChange={(event) => event.target.value === "__custom__" ? setConnection(connectionKey, "provider", connectionKey) : setConnectionProvider(connectionKey, event.target.value)}>{!catalogs && <option value={connection.provider}>{connection.provider || "请选择"}</option>}{providers.map(([key, item]) => <option key={key} value={key}>{item.display_name || key}</option>)}<option value="__custom__">自定义服务商</option></select><small>自定义服务商直接使用连接名称，不需要再填写 ID。</small></label>
                         <label><span>认证方式</span><select value={authMode} onChange={(event) => setConnectionAuthentication(connectionKey, event.target.value)}><option value="api-key">API Key</option><option value="none">无需认证</option></select></label>
                         {authMode === "api-key" && <label><span>凭据名称</span><input value={credentialEnv} onChange={(event) => setConnection(connectionKey, "credential", event.target.value ? { env: event.target.value } : { none: true })} /><small>配置只保存名称，不保存密钥。</small></label>}
                         {authMode === "api-key" && <label className="route-secret"><span>API Key</span><input disabled={!credentialEnv} type="password" autoComplete="off" placeholder={connection.credential_source === "missing" ? "请输入并保存到本机凭据库" : "留空保留已有密钥"} value={draft.credentialValues[credentialEnv] || ""} onChange={(event) => setDraft((current) => ({ ...current, credentialValues: { ...current.credentialValues, [credentialEnv]: event.target.value } }))} /><small>不会写入配置，也不会回显。</small></label>}
@@ -3186,6 +3185,11 @@ export function protocolLabel(protocol) {
 export function providerSelectionValue(provider, catalogs) {
   if (!catalogs || catalogs.providers?.[provider]) return provider || "";
   return "__custom__";
+}
+
+export function renamedConnectionValue(connection, previousKey, nextKey, catalogs) {
+  const customProvider = connection.provider === previousKey || Boolean(catalogs && !catalogs.providers?.[connection.provider]);
+  return customProvider ? { ...connection, provider: nextKey } : connection;
 }
 
 export function protocolChoicesForConnection(provider, catalogs) {

@@ -1026,10 +1026,14 @@ test("settings separate native model identity from connection fields", () => {
   assert.match(html, /同一个连接可被多个模型复用/);
   assert.match(html, /连接名称/);
   assert.match(html, /自定义服务商/);
+  assert.match(html, /自定义服务商直接使用连接名称/);
+  assert.doesNotMatch(html, /自定义 Provider ID/);
   assert.match(html, /API 接口/);
   assert.match(html, /添加 API 接口/);
   assert.equal(appModule.providerSelectionValue("openai", null), "openai");
   assert.equal(appModule.providerSelectionValue("company-gateway", { providers: { openai: {} } }), "__custom__");
+  assert.deepEqual(appModule.renamedConnectionValue({ provider: "gateway" }, "gateway", "office-gateway", { providers: { openai: {} } }), { provider: "office-gateway" });
+  assert.deepEqual(appModule.renamedConnectionValue({ provider: "openai" }, "gateway", "office-gateway", { providers: { openai: {} } }), { provider: "openai" });
   const catalogs = { providers: {
     openai: { protocols: { openai_responses: {}, openai_chat_completions: {} } },
     anthropic: { protocols: { anthropic_messages: {} } },
