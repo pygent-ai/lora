@@ -444,6 +444,8 @@ export function App() {
       const startedWithoutSession = !streamSessionId;
       let finalStatus = "Ready";
       let streamError = "";
+      // Track the active assistant message id to support split-on-steering.
+      let activeAssistantId = assistantId;
 
       const isStreamSessionVisible = () => {
         const currentSessionId = activeSessionIdRef.current;
@@ -520,7 +522,7 @@ export function App() {
               }
               const terminalEvent = ["execution.completed", "execution.failed", "execution.deadline_exceeded", "execution.cancelled", "lora.transport.error"].includes(eventKind);
               if (streamSessionId && data.execution_id && !terminalEvent) {
-                activeExecutionsRef.current.set(streamSessionId, { executionId: data.execution_id, assistantId });
+                activeExecutionsRef.current.set(streamSessionId, { executionId: data.execution_id, assistantId: activeAssistantId });
                 setSteeringSessionIds((items) => items[streamSessionId] ? items : { ...items, [streamSessionId]: true });
               } else if (streamSessionId && terminalEvent) {
                 activeExecutionsRef.current.delete(streamSessionId);
@@ -538,7 +540,19 @@ export function App() {
               if (eventKind === "lora.context.snapshot" && isStreamSessionVisible()) {
                 setContextSnapshots((current) => mergeContextSnapshots(current, [eventData]));
               }
-              projectLiveExecutionEvent(updateVisibleMessages, assistantId, data);
+              // Split assistant message when user steering is received by runtime as a conversation.user_message
+              if (eventKind === "lora.runtime.message" && eventData.role === "user" && eventData.kind === "lora.user.steering") {
+                const newAssistantId = `assistant-${Date.now()}`;
+                const split = (items) => splitAssistantForSteering(items, activeAssistantId, String(eventData.data?.input_id || ""), String(eventData.content || ""), newAssistantId);
+                updateVisibleMessages(split);
+                activeAssistantId = newAssistantId;
+                // Re-bind active execution assistantId if present
+                const currentExec = activeExecutionsRef.current.get(streamSessionId);
+                if (currentExec) {
+                  activeExecutionsRef.current.set(streamSessionId, { ...currentExec, assistantId: activeAssistantId });
+                }
+              }
+              projectLiveExecutionEvent(updateVisibleMessages, activeAssistantId, data);
               if (eventKind === "lora.approval.requested") {
                 setApprovals((items) => [
                   ...items.filter((item) => item.approval_id !== eventData.approval_id),
@@ -648,11 +662,15 @@ export function App() {
       throw new Error("执行尚未连接或已经结束，请稍后重试。");
     }
     await api.steerChat(execution.executionId, { sessionId, inputId, message });
-    const update = (items) => insertSteeringMessage(items, execution.assistantId, inputId, message);
+    // Immediately split the assistant activity so subsequent output appears after the steering input.
+    const newAssistantId = `assistant-${Date.now()}`;
+    const split = (items) => splitAssistantForSteering(items, execution.assistantId, inputId, message, newAssistantId);
     const cached = pendingSessionMessagesRef.current.get(sessionId);
-    if (cached) pendingSessionMessagesRef.current.set(sessionId, update(cached));
+    if (cached) pendingSessionMessagesRef.current.set(sessionId, split(cached));
+    // Re-bind active execution to the new assistant message id so projections continue to the new block.
+    activeExecutionsRef.current.set(sessionId, { ...execution, assistantId: newAssistantId });
     if (activeSessionIdRef.current === sessionId) {
-      setMessages(update);
+      setMessages(split);
       setNotice("指令已送达，将在下一处理边界生效。");
     }
   }, [api]);
@@ -2205,7 +2223,43 @@ export function insertSteeringMessage(items, assistantId, inputId, content) {
   if (items.some((item) => item.id === id || item.steeringInputId === inputId)) return items;
   const user = { id, role: "user", content, steeringInputId: inputId };
   const index = items.findIndex((item) => item.id === assistantId);
-  return index < 0 ? [...items, user] : [...items.slice(0, index), user, ...items.slice(index)];
+  // Insert the steering input after the current assistant activity so the transcript reflects time order:
+  // user (start) -> assistant (so far) -> user (steer) -> assistant (continues)
+  return index < 0 ? [...items, user] : [...items.slice(0, index + 1), user, ...items.slice(index + 1)];
+}
+
+export function splitAssistantForSteering(items, assistantId, inputId, content, newAssistantId, now = Date.now()) {
+  // Deduplicate steering receipts
+  if (items.some((item) => item.steeringInputId === inputId || item.id === `steering-${inputId}`)) return items;
+  const user = { id: `steering-${inputId}`, role: "user", content, steeringInputId: inputId };
+  const index = items.findIndex((item) => item.id === assistantId);
+  const newAssistant = {
+    id: newAssistantId,
+    role: "assistant",
+    content: "",
+    status: "running",
+    startedAt: now,
+    endedAt: null,
+    sections: [],
+  };
+  if (index < 0) {
+    return [...items, user, newAssistant];
+  }
+  const previous = items[index] || {};
+  const finalizedPrevious = {
+    ...previous,
+    // Freeze current partial content and activity
+    endedAt: now,
+    status: previous.status === "error" ? "error" : "success",
+    sections: finalizeToolSections(previous.sections || []),
+  };
+  return [
+    ...items.slice(0, index),
+    finalizedPrevious,
+    user,
+    newAssistant,
+    ...items.slice(index + 1),
+  ];
 }
 
 function projectLiveExecutionEvent(setMessages, assistantId, event) {
@@ -3047,12 +3101,26 @@ export function eventSummary(event) {
     return payload.delta;
   }
   if (payload.error) {
-    return payload.error;
+    const diagnostic = modelFailureDiagnostic(payload.model_failure);
+    return diagnostic ? `${payload.error}  ·  ${diagnostic}` : payload.error;
   }
   if (payload.content) {
     return String(payload.content).slice(0, 180);
   }
   return limitText(safeJsonStringify(payload), 180);
+}
+
+function modelFailureDiagnostic(failure) {
+  const attempts = Array.isArray(failure?.details?.attempts) ? failure.details.attempts : [];
+  const attempt = attempts.at(-1);
+  if (!attempt || typeof attempt !== "object") {
+    return "";
+  }
+  const parts = [];
+  if (attempt.reason_code) parts.push(String(attempt.reason_code));
+  if (attempt.http_status) parts.push(`HTTP ${attempt.http_status}`);
+  if (attempt.model_key) parts.push(String(attempt.model_key));
+  return parts.join("  ·  ");
 }
 
 export function eventTitle(event) {

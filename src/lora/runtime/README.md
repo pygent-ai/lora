@@ -37,7 +37,7 @@ re-exports are intentionally not provided.
 
 ## Media file tools
 
-Pygent 0.3.18 `read(file_path, limit=None, offset=None, pages=None)` is registered
+Pygent 0.3.19 `read(file_path, limit=None, offset=None, pages=None)` is registered
 in both the default Agent toolkit and Runtime executor registry. It reads text,
 extracts PDF text (or renders selected `pages`), and returns native structured
 media blocks for images and MP4 video. Separate `read_image` / `read_video`

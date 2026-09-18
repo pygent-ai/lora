@@ -19,6 +19,9 @@ from pygent import (
     freeze_json_object,
 )
 from pygent.llm import (
+    ModelAttempt,
+    ModelCallError,
+    ModelFailureReason,
     ModelProviderError,
     ModelProviderRequest,
     OpenAICompatibleAdapter,
@@ -30,6 +33,7 @@ from lora.runtime.agent.core import (
     MODEL_RETRYABLE_ERROR_KINDS,
     LoraAgent,
     _actual_model_key,
+    _error_trace_payload,
     _model_trace_payload,
 )
 from lora.runtime.agent.pipeline import (
@@ -144,6 +148,36 @@ def test_trace_actual_model_comes_from_response_metadata() -> None:
         AIMessage(content="ok", metadata={"model_key": "backup"})
     ) == "backup"
     assert _actual_model_key(AIMessage(content="missing metadata")) is None
+
+
+def test_model_call_error_trace_preserves_sanitized_attempt_diagnostics() -> None:
+    error = ModelCallError(
+        "model call failed",
+        kind=ModelErrorKind.INVALID_REQUEST,
+        attempts=(
+            ModelAttempt(
+                "primary",
+                "failed",
+                ModelErrorKind.INVALID_REQUEST,
+                reason_code=ModelFailureReason.INVALID_PARAMETER,
+                http_status=400,
+            ),
+        ),
+    )
+
+    payload = _error_trace_payload(error)
+
+    assert payload["error_type"] == "ModelCallError"
+    assert payload["model_failure"]["details"]["attempts"] == [
+        {
+            "model_key": "primary",
+            "status": "failed",
+            "error_kind": "invalid_request",
+            "attempt": 1,
+            "reason_code": "invalid_parameter",
+            "http_status": 400,
+        }
+    ]
 
 
 def test_file_editing_guidance_comes_from_pygent_tool_definitions(

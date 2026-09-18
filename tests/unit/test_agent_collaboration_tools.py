@@ -10,7 +10,9 @@ from pygent import AIMessage, ToolCall, ToolMessage, UserMessage
 from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
+from lora.core.io import plain_data
 from tests.unit.test_model_configuration import native_runtime_config
+from lora.runtime.agent_collaboration import AGENT_WAIT_TOOL_SPEC
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import (
     AgentMessage,
@@ -19,6 +21,22 @@ from lora.sessions import (
     CollaborationState,
     SessionManager,
 )
+
+
+def test_agent_wait_schema_is_openai_compatible() -> None:
+    parameters = plain_data(AGENT_WAIT_TOOL_SPEC.definition.parameters)
+
+    assert isinstance(parameters, dict)
+    assert parameters["type"] == "object"
+    assert "oneOf" not in parameters
+    assert "anyOf" not in parameters
+    properties = parameters["properties"]
+    assert isinstance(properties, dict)
+    assert set(properties) == {
+        "collaboration_id",
+        "collaboration_ids",
+        "timeout_seconds",
+    }
 
 
 def _operation(

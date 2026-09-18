@@ -96,7 +96,14 @@ async def test_default_read_reaches_provider_with_native_content(
         assert isinstance(result["content"], str)
         assert "native text read evidence" in result["content"]
         return
-    block = next(item for item in result["content"] if item["type"] == wire_type)
+    assert isinstance(result["content"], str)
+    assert filename in result["content"]
+    media_message = next(
+        item
+        for item in requests[1]["messages"]
+        if item["role"] == "user" and isinstance(item["content"], list)
+    )
+    block = next(item for item in media_message["content"] if item["type"] == wire_type)
     url = block[wire_type]["url"]
     if kind == "large_image":
         import io

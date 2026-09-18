@@ -107,7 +107,7 @@ export function ProjectPicker({ projects, currentPath, disabled, onSelect, onClo
       </div>
       <footer className="project-picker-footer">
         {error ? <p className="project-picker-error" role="alert">{error}</p> :
-          <p role="status">{busy ? "正在打开项目…" : disabled ? "当前任务结束后即可切换项目。" : <><span>选择项目即可切换</span><span className="project-key-hints"><kbd>Enter</kbd> 打开 <kbd>Esc</kbd> 关闭</span></>}</p>}
+          <p role="status">{busy ? "正在打开项目…" : <><span>选择项目即可切换</span><span className="project-key-hints"><kbd>Enter</kbd> 打开 <kbd>Esc</kbd> 关闭</span></>}</p>}
       </footer>
     </dialog>
   );

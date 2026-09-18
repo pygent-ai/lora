@@ -15,6 +15,7 @@ from pygent.llm import (
     ModelCapabilityCatalog,
     ModelConfig,
     ConnectionConfig,
+    MediaTransportCapabilities,
     ModelEntry,
     ModelInfo,
     ModelLimits,
@@ -22,7 +23,6 @@ from pygent.llm import (
     ModelSpec,
     OpenAICompatibleClient,
     OpenAICompatibleAdapter,
-    ToolResultContentCapabilities,
     OpenAIResponsesClient,
     ProviderCatalog,
     ResolvedModelConnection,
@@ -137,7 +137,7 @@ def build_model_invoker(
         raise ValueError("unsupported model protocols: " + ", ".join(sorted(unsupported)))
     adapters: dict[str, Any] = {
         "openai_chat_completions": OpenAICompatibleAdapter(
-            tool_result_content=ToolResultContentCapabilities(
+            media_transport=MediaTransportCapabilities(
                 enabled=True,
                 modalities=("image", "video"),
                 source_kinds=("inline",),

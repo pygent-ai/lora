@@ -1,6 +1,6 @@
 # Lora
 
-Lora 是基于 Pygent 0.3.16 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
+Lora 是基于 Pygent 0.3.19 的本地 Agent 开发与评测工具。前台推理由原生 `PygentAgent` 驱动，上下文窗口压缩由原生 compressor `Module` 承担；API、CLI、case runner 共用 workspace 级 `LoraRuntimeService`，执行、并发、持久化、模型路由、工具任务和审批均由 Pygent Runtime 管理。
 
 Runtime journal 直接使用当前 PyPI Pygent 管理的 SQLite schema 和配置路径。
 
@@ -137,9 +137,9 @@ npm --prefix apps/desktop run build
 
 更多说明见 [CLI](docs/cli/lora-session.md)、[本地 API](docs/api/local-service.md) 和[开发指南](docs/guides/development-guide.md)。
 
-运行时依赖锁定为官方 PyPI 发布的 `pygent-ai==0.3.16`（对应 [官方 v0.3.16](https://github.com/pygent-ai/pygent/releases/tag/v0.3.16)），`uv.lock` 记录下载地址和校验值，不使用 `../pygent` 本地源码覆盖。模型配置直接采用 Pygent 的 `connections`、`models`、`model_groups` 三层契约：先定义可复用 Connection，再由模型引用并选择该连接提供的协议。
+运行时依赖锁定为官方 PyPI 发布的 `pygent-ai==0.3.19`（对应 [官方 v0.3.19](https://github.com/pygent-ai/pygent/releases/tag/v0.3.19)），`uv.lock` 记录下载地址和校验值，不使用 `../pygent` 本地源码覆盖。模型配置直接采用 Pygent 的 `connections`、`models`、`model_groups` 三层契约：先定义可复用 Connection，再由模型引用并选择该连接提供的协议。
 
-重试直接使用 Pygent 0.3.16 的 `RetryPolicy.max_attempts_per_model`；旧 `routes` / `fallback` 以及 0.3.15 的模型内嵌 connection 结构不会继续执行。
+重试直接使用 Pygent 0.3.19 的 `RetryPolicy.max_attempts_per_model`；旧 `routes` / `fallback` 以及 0.3.15 的模型内嵌 connection 结构不会继续执行。
 
 ### Bash 后台任务
 

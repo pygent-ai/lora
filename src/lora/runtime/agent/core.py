@@ -21,7 +21,7 @@ from pygent import (
     UserMessage,
 )
 from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
-from pygent.llm import ModelCallPolicy
+from pygent.llm import ModelCallError, ModelCallPolicy
 from pygent.runtime.codec import context_to_dict
 from pygent.tool import StandardTools, ToolSpec
 
@@ -99,6 +99,16 @@ def _actual_model_key(answer: AIMessage | None) -> str | None:
     metadata = dict(answer.metadata)
     model_key = metadata.get("model_key")
     return model_key if isinstance(model_key, str) else None
+
+
+def _error_trace_payload(error: BaseException) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "error": str(error),
+        "error_type": type(error).__name__,
+    }
+    if isinstance(error, ModelCallError):
+        payload["model_failure"] = error.failure.to_dict()
+    return payload
 
 
 class LoraForegroundAgent(PygentAgent):
@@ -380,6 +390,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
         )
         status = "passed"
         error: str | None = None
+        error_payload: dict[str, Any] | None = None
         answer: AIMessage | None = None
         try:
             visible = replace(execution_context, tools=self.tool_definitions)
@@ -428,10 +439,11 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             raise
         except Exception as exc:
             status, error = "error", str(exc)
+            error_payload = _error_trace_payload(exc)
             store.append(
                 "runtime.error",
                 actor="system",
-                payload={"error": error, "error_type": type(exc).__name__},
+                payload=error_payload,
                 turn_id=turn_id,
             )
             raise
@@ -482,6 +494,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                     ),
                     "status": status,
                     "error": error,
+                    **(error_payload or {}),
                 },
                 turn_id=turn_id,
             )

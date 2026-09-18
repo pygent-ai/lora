@@ -107,7 +107,7 @@ AGENT_LIST_TOOL_SPEC = _spec(
 
 AGENT_WAIT_TOOL_SPEC = _spec(
     "agent_wait",
-    "Wait until one or more related Agent operations finish or messages are delivered, with a bounded timeout.",
+    "Wait until related Agent work is ready. Provide exactly one of collaboration_id or collaboration_ids.",
     {
         "type": "object",
         "properties": {
@@ -128,10 +128,6 @@ AGENT_WAIT_TOOL_SPEC = _spec(
                 "description": "Maximum wait; a timeout returns the latest state instead of failing.",
             },
         },
-        "oneOf": [
-            {"required": ["collaboration_id"]},
-            {"required": ["collaboration_ids"]},
-        ],
         "additionalProperties": False,
     },
     side_effect=ToolSideEffect.READ,

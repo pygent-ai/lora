@@ -72,8 +72,9 @@ test("reconnecting sessions allow drafting but cannot steer until connected", ()
 test("steering projection deduplicates receipts and restored history", () => {
   const original = [{ id: "assistant-1", role: "assistant", content: "working" }];
   const updated = appModule.insertSteeringMessage(original, "assistant-1", "input-1", "focus on tests");
-  assert.equal(updated[0].content, "focus on tests");
-  assert.equal(updated[1], original[0]);
+  // Steering appears after the current assistant activity to reflect time order.
+  assert.equal(updated[0], original[0]);
+  assert.equal(updated[1].content, "focus on tests");
   assert.equal(appModule.insertSteeringMessage(updated, "assistant-1", "input-1", "focus on tests"), updated);
   const restored = appModule.historyToMessages([
     { role: "user", content: "focus on tests", kind: "lora.user.steering", data: { input_id: "input-1" } },
@@ -146,6 +147,42 @@ test("trace events without content expand to their complete payload", () => {
 
   assert.match(expanded, /&quot;model&quot;: &quot;primary&quot;/);
   assert.match(expanded, /&quot;messages&quot;/);
+});
+
+test("model failures show normalized provider diagnostics in the trace summary", () => {
+  const event = {
+    id: "event-model-error",
+    type: "runtime.error",
+    payload: {
+      error: "model stream failed after retry and fallback",
+      error_type: "ModelCallError",
+      model_failure: {
+        details: {
+          attempts: [{
+            model_key: "model-1",
+            status: "failed",
+            error_kind: "invalid_request",
+            attempt: 1,
+            reason_code: "invalid_parameter",
+            http_status: 400,
+          }],
+        },
+      },
+    },
+  };
+
+  const collapsed = renderToStaticMarkup(
+    React.createElement(appModule.TraceEventRow, { event, tab: "Events" }),
+  );
+  const expanded = renderToStaticMarkup(
+    React.createElement(appModule.TraceEventRow, { event, tab: "Events", expanded: true }),
+  );
+
+  assert.match(collapsed, /invalid_parameter/);
+  assert.match(collapsed, /HTTP 400/);
+  assert.match(collapsed, /model-1/);
+  assert.match(expanded, /&quot;model_failure&quot;/);
+  assert.match(expanded, /&quot;reason_code&quot;: &quot;invalid_parameter&quot;/);
 });
 
 test("trace panel starts with an overview and retains raw-event navigation", () => {
