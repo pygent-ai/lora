@@ -211,4 +211,3 @@ def test_pygent_adapter_classifies_invalid_tool_calls_for_model_retry() -> None:
 
     assert caught.value.kind is ModelErrorKind.INVALID_RESPONSE
     assert caught.value.kind in MODEL_RETRYABLE_ERROR_KINDS
-
