@@ -19,6 +19,7 @@ from pygent import (
     ToolCallLayer,
     ToolDefinition,
     ToolMessage,
+    ToolResultMedia,
     freeze_json_object,
     thaw_json,
 )
@@ -654,6 +655,14 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
                     replace(
                         result,
                         output=_serialize_tool_payload_for_model(payload),
+                        # Keep media blocks native; text reads retain Lora's audited,
+                        # bounded output and compatibility with text-only codecs.
+                        content=(
+                            ()
+                            if result.name == "read"
+                            and not any(isinstance(block, ToolResultMedia) for block in result.content)
+                            else result.content
+                        ),
                     )
                 )
             return freeze_json(

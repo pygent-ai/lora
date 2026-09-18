@@ -105,7 +105,7 @@ class SessionService:
             return []
         return [
             ModelSummaryResponse(
-                model_key=entry.name,
+                model_key=entry.key,
                 provider=entry.spec.provider,
                 model_id=entry.spec.model_id,
             )

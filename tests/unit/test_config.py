@@ -89,7 +89,7 @@ def test_native_pygent_model_config_is_loaded_without_route_translation(tmp_path
         config = load_run_config(workspace_root=tmp_path)
     assert config.model_config is not None
     assert tuple(config.model_config.models) == ("main",)
-    assert tuple(entry.name for entry in config.model_config.model_groups["coding"].models) == ("main",)
+    assert tuple(entry.key for entry in config.model_config.model_groups["coding"].models) == ("main",)
     assert config.resolved_agent is not None
     assert config.resolved_agent.default_model_group == "coding"
     assert config.resolved_agent.retry.max_attempts_per_model == 3

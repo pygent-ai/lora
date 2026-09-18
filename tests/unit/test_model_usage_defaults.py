@@ -39,7 +39,7 @@ def test_all_model_entries_enable_streaming_and_leave_usage_to_client(tmp_path):
     assert entries
     for entry in entries:
         request = ModelProviderRequest(
-            model_key=entry.name,
+            model_key=entry.key,
             model=entry.spec,
             message=UserMessage(content="OK"),
             context=Context(),
@@ -49,7 +49,7 @@ def test_all_model_entries_enable_streaming_and_leave_usage_to_client(tmp_path):
         assert "stream_options" not in OpenAICompatibleAdapter().build_request(
             request
         ).to_dict()
-    entries_by_name = {entry.name: entry for entry in agent._model_entries()}
+    entries_by_name = {entry.key: entry for entry in agent._model_entries()}
     assert entries_by_name["main"].spec.provider_options.to_dict() == {}
 
 
@@ -73,7 +73,7 @@ async def test_managed_binding_uses_same_usage_routes(tmp_path):
         "preferred:main",
         "preferred:backup",
     ]
-    assert [entry.name for entry in calls[1].kwargs["models"]] == [
+    assert [entry.key for entry in calls[1].kwargs["models"]] == [
         "backup",
         "main",
     ]
@@ -160,7 +160,7 @@ async def test_usage_after_finish_survives_native_session_storage(tmp_path):
     adapter = OpenAICompatibleAdapter()
     entry = LoraAgent(config)._model_entries()[0]
     request = ModelProviderRequest(
-        model_key=entry.name,
+        model_key=entry.key,
         model=entry.spec,
         message=UserMessage(content="OK"),
         context=Context(),
@@ -172,7 +172,7 @@ async def test_usage_after_finish_survives_native_session_storage(tmp_path):
             await accumulator.consume(
                 ModelProviderStreamPart(
                     part.kind,
-                    {**part.data.to_dict(), "model_key": entry.name, "attempt": 1},
+                    {**part.data.to_dict(), "model_key": entry.key, "attempt": 1},
                 ),
                 None,
             )

@@ -87,7 +87,7 @@ def _model_trace_payload(
         }
     return {
         "model_group": group_name,
-        "model_key": entry.name,
+        "model_key": entry.key,
         "provider": entry.spec.provider,
         "model_id": entry.spec.model_id,
     }
@@ -220,9 +220,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                     multiplier=retry.backoff_multiplier,
                 ),
             ),
-            generation=GenerationConfig(
-                tool_choice="auto",
-            ),
+            generation=GenerationConfig(),
             tools=self.tool_definitions,
             invoker=None if self.managed_model else self.llm,
         )
@@ -356,7 +354,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
             replacement_count = len(context.messages) + 1
         selected_model_key = context.metadata.get("selected_model_key")
         if not isinstance(selected_model_key, str):
-            selected_model_key = self._model_entries()[0].name
+            selected_model_key = self._model_entries()[0].key
         store.append(
             "model.request",
             actor="system",
@@ -368,7 +366,7 @@ class LoraAgent(Agent[UserMessage, AIMessage]):
                     group_name=self.model_group_name,
                     model_key=selected_model_key,
                 ),
-                "model_fallback": [entry.name for entry in self._model_entries()],
+                "model_fallback": [entry.key for entry in self._model_entries()],
                 "max_steps": self.config.max_steps,
                 "history_message_count": replacement_count,
                 "latest_user_input": raw_content,

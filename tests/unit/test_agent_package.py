@@ -108,6 +108,25 @@ def test_coding_agent_uses_provider_generation_defaults(tmp_path: Path) -> None:
     assert generation.max_output_tokens is None
 
 
+def test_compressor_can_build_request_without_visible_tools(tmp_path: Path) -> None:
+    agent = model_agent(tmp_path)
+    model = agent.foreground.react.model.compressor.model
+    entry = agent._model_entries()[0]
+    request = ModelProviderRequest(
+        model_key=entry.key,
+        model=entry.spec,
+        message=UserMessage(content="Summarize the conversation"),
+        context=Context(tools=()),
+        generation=model.generation,
+        tools=(),
+    )
+
+    payload = OpenAICompatibleAdapter().build_request(request)
+
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
+
+
 def test_trace_payload_uses_native_model_identity(tmp_path: Path) -> None:
     config = model_agent(tmp_path).config
     assert _model_trace_payload(
@@ -168,7 +187,7 @@ def test_pygent_adapter_classifies_invalid_tool_calls_for_model_retry() -> None:
         ),
     )
     request = ModelProviderRequest(
-        model_key=entry.name,
+        model_key=entry.key,
         model=entry.spec,
         message=UserMessage(content="inspect the workspace"),
         context=Context(),

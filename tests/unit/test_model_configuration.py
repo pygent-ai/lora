@@ -74,7 +74,7 @@ def native_runtime_config(root, *, group: tuple[str, ...] = ("main", "backup")):
 
 def test_preferred_models_moves_only_selected_child_to_front() -> None:
     config = ModelConfig.from_mapping(native_mapping(group=("a", "b", "c")))
-    assert tuple(item.name for item in preferred_models(config, "coding", "b")) == (
+    assert tuple(item.key for item in preferred_models(config, "coding", "b")) == (
         "b",
         "a",
         "c",

@@ -35,6 +35,24 @@ Owns model execution, tool execution, context management, and the high-level run
 Runtime callers import concrete owning modules; package-level compatibility
 re-exports are intentionally not provided.
 
+## Media file tools
+
+Pygent 0.3.18 `read(file_path, limit=None, offset=None, pages=None)` is registered
+in both the default Agent toolkit and Runtime executor registry. It reads text,
+extracts PDF text (or renders selected `pages`), and returns native structured
+media blocks for images and MP4 video. Separate `read_image` / `read_video`
+tools are not exposed. Text-only `limit` / `offset` cannot be used with media.
+Lora's audit projection keeps ordinary text reads on its existing bounded text
+output path, while preserving structured blocks for media reads.
+The OpenAI Chat Completions adapter enables inline image/video tool results with
+a 20 MiB per-media limit; the selected model must also declare the corresponding
+input modality. Endpoint support still depends on the configured provider.
+Other protocols retain Pygent's unsupported-content handling.
+Native image processing corrects orientation and bounds the delivered image to
+2048 px on its longest edge and 3,500,000 bytes. The video extra supplies PyAV;
+native video processing enforces a 120-second, 12,000,000-byte, 1280-px and
+15-FPS delivery budget. History media is not automatically evicted.
+
 ## Runtime-state boundary
 
 `LoraAgent` is a reusable, run-independent Pygent module graph. It must not retain

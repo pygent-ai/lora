@@ -735,9 +735,9 @@ class LoraRuntimeService:
             self.model_resolver.register(revision, agent.llm)
             for index, entry in enumerate(group.models):
                 await handle.ensure_profile(
-                    profile=preferred_profile_name(entry.name),
+                    profile=preferred_profile_name(entry.key),
                     models=preferred_models(
-                        native, agent.model_group_name, entry.name
+                        native, agent.model_group_name, entry.key
                     ),
                     invoker=agent.llm,
                     resource_ref=ModelResourceRef(

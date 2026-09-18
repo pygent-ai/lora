@@ -197,7 +197,7 @@ def _guard_persisted_session_selections(
                     detail=f"Model group {group_name!r} is used by an existing session",
                 )
             if isinstance(model_key, str) and model_key not in {
-                entry.name for entry in group.models
+                entry.key for entry in group.models
             }:
                 raise HTTPException(
                     status_code=409,

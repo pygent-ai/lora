@@ -103,7 +103,7 @@ class SessionManager:
             raise ValueError(
                 f"unknown fixed model group {session.model_group_name!r}"
             )
-        if model_key not in {entry.name for entry in group.models}:
+        if model_key not in {entry.key for entry in group.models}:
             raise ValueError(
                 f"model {model_key!r} is not in fixed model group "
                 f"{session.model_group_name!r}"
@@ -460,7 +460,7 @@ class SessionManager:
         group = native.model_groups.get(selected_group)
         if group is None:
             raise ValueError(f"unknown model group {selected_group!r}")
-        return selected_group, group.models[0].name
+        return selected_group, group.models[0].key
 
     def _resolve_missing_selection(self, session: AgentSession) -> None:
         if session.model_group_name and session.selected_model_key:

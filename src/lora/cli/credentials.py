@@ -109,7 +109,7 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
             "hint": "Configure native models and model_groups before validating credentials.",
         }
     entry = native.model_groups[resolved.default_model_group].models[0]
-    raw_model = config.model_config_mapping["models"][entry.name]
+    raw_model = config.model_config_mapping["models"][entry.key]
     connection_name = raw_model.get("connection")
     raw_connection = config.model_config_mapping["connections"].get(
         connection_name, {}
@@ -120,7 +120,7 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
             "status": "ok",
             "agent_alias": config.agent_alias,
             "model_group": resolved.default_model_group,
-            "model_key": entry.name,
+            "model_key": entry.key,
             "api_key_env": None,
             "api_key_source": "none",
         }
@@ -130,7 +130,7 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
             "status": "missing",
             "agent_alias": config.agent_alias,
             "model_group": resolved.default_model_group,
-            "model_key": entry.name,
+            "model_key": entry.key,
             "hint": "The selected model has no native credential reference.",
         }
     api_key, lookup_source = lookup_credential(
@@ -141,7 +141,7 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
             "status": "ok",
             "agent_alias": config.agent_alias,
             "model_group": resolved.default_model_group,
-            "model_key": entry.name,
+            "model_key": entry.key,
             "api_key_env": env_name,
             "api_key_source": lookup_source,
         }
@@ -149,7 +149,7 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
         "status": "missing",
         "agent_alias": config.agent_alias,
         "model_group": resolved.default_model_group,
-        "model_key": entry.name,
+        "model_key": entry.key,
         "api_key_env": env_name,
         "api_key_source": "missing",
         "hint": (

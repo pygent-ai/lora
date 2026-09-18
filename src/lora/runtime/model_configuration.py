@@ -21,12 +21,13 @@ from pygent.llm import (
     ModelProviderClient,
     ModelSpec,
     OpenAICompatibleClient,
+    OpenAICompatibleAdapter,
+    ToolResultContentCapabilities,
     OpenAIResponsesClient,
     ProviderCatalog,
     ResolvedModelConnection,
     anthropic_messages_adapters,
     gemini_generate_content_adapters,
-    openai_compatible_adapters,
     openai_responses_adapters,
 )
 
@@ -116,14 +117,14 @@ def preferred_models(
         group = config.model_groups[group_name]
     except KeyError:
         raise ValueError(f"unknown model group {group_name!r}") from None
-    by_name = {entry.name: entry for entry in group.models}
+    by_name = {entry.key: entry for entry in group.models}
     if preferred_model_key not in by_name:
         raise ValueError(
             f"model {preferred_model_key!r} is not in group {group_name!r}"
         )
     return (
         by_name[preferred_model_key],
-        *(entry for entry in group.models if entry.name != preferred_model_key),
+        *(entry for entry in group.models if entry.key != preferred_model_key),
     )
 
 
@@ -134,9 +135,17 @@ def build_model_invoker(
     unsupported = protocols - set(CLIENT_FACTORIES)
     if unsupported:
         raise ValueError("unsupported model protocols: " + ", ".join(sorted(unsupported)))
-    adapters: dict[str, Any] = {}
+    adapters: dict[str, Any] = {
+        "openai_chat_completions": OpenAICompatibleAdapter(
+            tool_result_content=ToolResultContentCapabilities(
+                enabled=True,
+                modalities=("image", "video"),
+                source_kinds=("inline",),
+                max_media_bytes=20 * 1024 * 1024,
+            ),
+        ),
+    }
     for factory in (
-        openai_compatible_adapters,
         openai_responses_adapters,
         anthropic_messages_adapters,
         gemini_generate_content_adapters,
@@ -195,7 +204,7 @@ async def discover_models(
 ) -> tuple[ModelInfo, ...]:
     client = _create_client(
         connection=ResolvedModelConnection(
-            name=connection_name,
+            connection_key=connection_name,
             provider=connection.provider,
             protocol=protocol,
             base_url=connection.protocols[protocol],
