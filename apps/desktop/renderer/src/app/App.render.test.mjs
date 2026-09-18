@@ -353,8 +353,8 @@ test("native model validation requires groups to reference configured children",
   };
 
   assert.equal(appModule.modelGroupValidationError(valid), "");
-  assert.match(appModule.modelGroupValidationError({ ...valid, modelGroups: { coding: { models: ["missing"] } } }), /unknown model/i);
-  assert.match(appModule.modelGroupValidationError({ ...valid, defaultModelGroup: "missing" }), /default model group/i);
+  assert.match(appModule.modelGroupValidationError({ ...valid, modelGroups: { coding: { models: ["missing"] } } }), /不存在的模型 missing/);
+  assert.match(appModule.modelGroupValidationError({ ...valid, defaultModelGroup: "missing" }), /默认模型组/);
 });
 
 test("new chat stays enabled while another session is running", () => {
@@ -1023,13 +1023,14 @@ test("settings separate native model identity from connection fields", () => {
   assert.match(html, /模型信息/);
   assert.match(html, /决定调用谁、使用哪种 API 格式；不属于连接/);
   assert.match(html, /1 · 服务连接/);
-  assert.match(html, /同一个连接可被多个模型复用/);
   assert.match(html, /连接名称/);
-  assert.match(html, /自定义服务商/);
-  assert.match(html, /自定义服务商直接使用连接名称/);
+  assert.match(html, /供应商/);
+  assert.match(html, /Pygent 内置/);
+  assert.match(html, /自定义供应商/);
   assert.doesNotMatch(html, /自定义 Provider ID/);
-  assert.match(html, /API 接口/);
-  assert.match(html, /添加 API 接口/);
+  assert.match(html, /接口地址/);
+  assert.match(html, /添加接口/);
+  assert.ok(html.indexOf("Base URL") < html.indexOf("接口协议"));
   assert.equal(appModule.providerSelectionValue("openai", null), "openai");
   assert.equal(appModule.providerSelectionValue("company-gateway", { providers: { openai: {} } }), "__custom__");
   assert.deepEqual(appModule.renamedConnectionValue({ provider: "gateway" }, "gateway", "office-gateway", { providers: { openai: {} } }), { provider: "office-gateway" });
@@ -1116,3 +1117,19 @@ function turnView(message) {
     })),
   };
 }
+
+test("essential connection and model fields remain visible before optional details", () => {
+  const settings = {
+    connections: { service: { provider: "openai", credential: { env: "API_KEY" }, credential_source: "missing", protocols: { openai_responses: { base_url: "https://example.test/v1" } } } },
+    models: { primary: { connection: "service", protocol: "openai_responses", model_id: "example", capabilities: { limits: { context_tokens: 1000 } } } },
+    model_groups: { coding: { models: ["primary"] } }, default_model_group: "coding",
+  };
+  const html = renderToStaticMarkup(React.createElement(appModule.SettingsPanel, { settings, disabled: false, onClose() {}, onSave() {} }));
+  const connection = html.slice(html.indexOf('connection-route-card'), html.indexOf('aria-label="Native Pygent models"'));
+  const model = html.slice(html.indexOf('aria-label="Native Pygent models"'), html.indexOf('aria-label="Model groups"'));
+  for (const field of ['连接名称', 'API Key', 'Base URL']) assert.ok(connection.indexOf(field) >= 0 && connection.indexOf(field) < connection.indexOf('<details'));
+  for (const field of ['使用连接', '服务商模型 ID', '所属模型组']) assert.ok(model.indexOf(field) >= 0 && model.indexOf(field) < model.indexOf('<details'));
+  assert.match(html, /连接未验证|请填写 API Key/);
+  assert.match(html.match(/<button[^>]*aria-label="Save and Reload"[^>]*>/)[0], /disabled/);
+  assert.match(html, /默认模型组 · /);
+});

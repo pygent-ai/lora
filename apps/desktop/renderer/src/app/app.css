@@ -2869,9 +2869,11 @@ input:focus,
 .composer-surface { max-width:840px; margin:0 auto; border:1px solid var(--line-strong); border-radius:14px; background:var(--bg-content); }
 .composer-surface:focus-within { border-color:#96a9c1; }
 .composer-surface .composer-box { grid-template-columns:minmax(0,1fr); border:0; border-radius:14px 14px 0 0; background:transparent; box-shadow:none; padding:18px 18px 12px; }
-.composer-send-actions { min-width:0; width:100%; display:flex; justify-content:flex-end; align-items:center; gap:12px; }
+.composer-send-actions { flex:1 1 240px; min-width:0; width:auto; display:flex; justify-content:flex-end; align-items:center; gap:12px; margin-left:auto; }
 .composer-surface .composer-box:focus-within { box-shadow:none; }
-.composer-surface .composer-context { display:grid; grid-template-columns:auto auto minmax(32px,1fr); width:100%; max-width:none; margin:0; padding:8px 12px; gap:6px 12px; border-top:0; background:transparent; border-radius:0 0 14px 14px; }
+.composer-surface .composer-context { display:flex; flex-wrap:wrap; align-items:center; width:100%; max-width:none; margin:0; padding:8px 12px; gap:6px 12px; border-top:0; background:transparent; border-radius:0 0 14px 14px; }
+.composer-surface .composer-context > .composer-menu,
+.composer-surface .composer-context > .composer-option { flex:0 1 auto; min-width:0; }
 .composer-send-actions .composer-hint { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .composer-send-actions .send { flex-shrink:0; }
 .composer-menu { position:relative; min-width:0; }
@@ -2945,3 +2947,7 @@ input:focus,
 .resizing-panels { cursor:col-resize; user-select:none; transition:none; }
 .resizing-panels .panel-divider::after { transition:none; }
 .resizing-panels iframe { pointer-events:none; }
+
+
+.workbench-content { display:contents; }
+.workbench-content[hidden] { display:none; }
