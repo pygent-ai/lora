@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -266,9 +265,9 @@ async def test_model_tools_share_the_injected_session_collaboration_service(
         "succeeded",
         "succeeded",
     ], repr(tool_message.results)
-    listed = json.loads(str(tool_message.results[3].output))["result"]
+    listed = plain_data(tool_message.results[3].output)
     assert [item["operation_id"] for item in listed["operations"]] == ["op-related"]
-    waited = json.loads(str(tool_message.results[5].output))["result"]
+    waited = plain_data(tool_message.results[5].output)
     assert [item["operation_id"] for item in waited["ready"]] == ["op-ready"]
     assert [item["operation_id"] for item in waited["pending"]] == ["op-related"]
     assert waited["timed_out"] is False

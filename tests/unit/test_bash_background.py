@@ -136,8 +136,9 @@ async def test_background_completion_finalizes_audit_and_late_file_writes(tmp_pa
         audited, _ = await service.runtime.bind(audit, binding=service.binding).invoke(
             answer, context + message,
         )
-        assert isinstance(audited.results[0].output, str)
-        assert json.loads(audited.results[0].output)["status"] == "running"
+        # Audit records the framework result without rewriting the model-visible
+        # output; the audited status is asserted from tool_results.jsonl below.
+        assert audited.results[0].output == answer.results[0].output
         if finish == "restore":
             previous = service.bash_tasks
             previous._closed = True

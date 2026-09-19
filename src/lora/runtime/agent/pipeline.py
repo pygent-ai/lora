@@ -654,9 +654,9 @@ class ToolAuditModule(Module[ToolMessage, ToolMessage]):
                 projected.append(
                     replace(
                         result,
-                        output=_serialize_tool_payload_for_model(payload),
-                        # Keep media blocks native; text reads retain Lora's audited,
-                        # bounded output and compatibility with text-only codecs.
+                        # Keep media blocks native; text reads stay on the
+                        # provider's plain output path instead of requiring
+                        # structured tool-result content support.
                         content=(
                             ()
                             if result.name == "read"

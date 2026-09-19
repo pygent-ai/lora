@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,7 @@ from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
 from tests.unit.test_model_configuration import native_runtime_config
+from lora.core.io import plain_data
 from lora.orchestration import LocalExecutionHost, WorkspaceRuntimePool
 from lora.runtime.service import LoraRuntimeService
 from lora.sessions import (
@@ -23,9 +23,10 @@ from lora.sessions import (
 
 def _result(message: ToolMessage, call_id: str) -> dict[str, Any]:
     result = next(item for item in message.results if item.call_id == call_id)
-    payload = json.loads(str(result.output))
-    assert payload["status"] == "success", payload
-    return dict(payload["result"])
+    assert result.status == "succeeded", result.status
+    payload = plain_data(result.output)
+    assert isinstance(payload, dict), payload
+    return payload
 
 
 class _OrchestrationInvoker:
