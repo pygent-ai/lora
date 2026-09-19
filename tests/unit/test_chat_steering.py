@@ -4,12 +4,13 @@ import asyncio
 from pathlib import Path
 import time
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from pygent import AIMessage
+from pygent import AIMessage, ToolCall, thaw_json
 from pygent.llm import ModelExecution, ModelProviderResponse
 
 from lora.config import load_run_config
@@ -87,4 +88,88 @@ async def test_http_steering_reaches_running_react_and_persists_once(tmp_path: P
         assert [item["content"] for item in steering] == ["focus on tests", "use Chinese"]
     finally:
         release.set()
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_steering_announces_its_react_boundary_once(tmp_path: Path) -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+    requests = []
+
+    class Invoker:
+        def validate_model(self, model):
+            pass
+
+        def execute(self, *, message, context, **kwargs):
+            requests.append((message, context))
+            index = len(requests)
+
+            async def invoke(emit):
+                if index == 1:
+                    started.set()
+                    await release.wait()
+                    return ModelProviderResponse(message=AIMessage(content="answer-1"), usage={})
+                if index == 2:
+                    # A tool call keeps the ReAct loop running past the boundary
+                    # that consumed the steering input.
+                    return ModelProviderResponse(
+                        message=AIMessage(tool_calls=(ToolCall(
+                            call_id="call-1", name="bash",
+                            arguments={"command": "echo boundary"},
+                        ),)),
+                        usage={},
+                    )
+                return ModelProviderResponse(message=AIMessage(content="answer-3"), usage={})
+            return ModelExecution(invoke)
+
+        async def aclose(self):
+            pass
+
+    config = native_runtime_config(tmp_path)
+    config.eternal_conversation.enabled = False
+    manager = SessionManager(config)
+    session = manager.create("chat", mode="chat")
+    run = manager.start_case_run(session.session_id, "chat", run_config=config)
+    service = LoraRuntimeService(config)
+    invoker = Invoker()
+    assert config.resolved_agent is not None
+    service._model_invokers[config.resolved_agent.alias] = invoker
+    for agent in service._agent_definitions.values():
+        agent.llm = invoker
+    streamed: list[tuple[str, Any]] = []
+
+    async def collect(execution_handle: Any) -> None:
+        async with execution_handle.subscribe(after=0) as events:
+            async for raw in events:
+                streamed.append((str(raw.kind), thaw_json(raw.data)))
+
+    collector: asyncio.Task[None] | None = None
+    try:
+        handle = await service.start_turn(
+            manager=manager, message="original task", run_ref=run, turn_id="steering-boundary",
+            interactive_approvals=False, deadline=time.monotonic() + 30,
+        )
+        collector = asyncio.create_task(collect(handle))
+        await asyncio.wait_for(started.wait(), 10)
+        await service.send_steering(
+            handle.execution_id, input_id="input-1", message="focus on tests",
+            case_run_id=run.case_run_id,
+        )
+        release.set()
+        await asyncio.wait_for(handle.result(), 30)
+        await asyncio.wait_for(collector, 10)
+        boundaries = [
+            data for kind, data in streamed
+            if kind == "lora.runtime.message"
+            and data.get("role") == "user"
+            and data.get("kind") == "lora.user.steering"
+        ]
+        assert [(item["content"], item["data"]["input_id"]) for item in boundaries] == [
+            ("focus on tests", "input-1"),
+        ]
+    finally:
+        release.set()
+        if collector is not None:
+            collector.cancel()
+            await asyncio.gather(collector, return_exceptions=True)
         await service.close()

@@ -183,7 +183,8 @@ async def checkpoint_conversation_message(
     message: PygentMessage,
     *,
     boundary: str,
-) -> None:
+) -> bool:
+    """Persist one conversation boundary; report whether this call inserted it."""
     checkpoint_id = f"{context.case_run_id}:{context.turn_id}:{boundary}"
     payload = message_to_dict(message)
     metadata = plain_data(context.metadata)
@@ -248,13 +249,12 @@ async def checkpoint_conversation_message(
 
     infrastructure = active_infrastructure()
     if infrastructure is None:
-        persist()
-        return
+        return persist()
 
     async def operation():
         return freeze_json({"inserted": persist()})
 
-    await infrastructure.execute_effect(
+    effect = await infrastructure.execute_effect(
         spec=EffectSpec(
             effect_type="lora.conversation.checkpoint",
             side_effect=EffectSideEffect.WRITE,
@@ -270,6 +270,8 @@ async def checkpoint_conversation_message(
         ),
         operation=operation,
     )
+    value = thaw_json(effect.value)
+    return bool(value.get("inserted")) if isinstance(value, dict) else False
 
 
 def _message_boundary(
@@ -567,10 +569,25 @@ class ConversationCheckpointModelModule(Module[PygentMessage, AIMessage]):
             data = plain_data(candidate.data)
             if data.get("case_run_id") != context.case_run_id:
                 continue
-            await checkpoint_conversation_message(
+            inserted = await checkpoint_conversation_message(
                 self.config, context, candidate,
                 boundary=f"steering-{data['input_id']}",
             )
+            if inserted:
+                # ReAct drains steering inputs at a step boundary, so this is the
+                # boundary the transcript must split on. Announce it once, with
+                # the same event family the tool audit uses.
+                await self.emit(
+                    kind="lora.runtime.message",
+                    data={
+                        "role": "user",
+                        "kind": "lora.user.steering",
+                        "content": candidate.content,
+                        "message_type": "conversation.user_message",
+                        "data": {"input_id": data["input_id"]},
+                        "is_delta": False,
+                    },
+                )
         answer, next_context = await self.inner(message, context)
         await checkpoint_conversation_message(
             self.config,
