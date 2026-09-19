@@ -1,13 +1,14 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 
+import { ErrorBoundary } from "./app/ErrorBoundary.jsx";
 import { waitForDesktopBackend } from "./app/startup.js";
 
 // Leave the HTML startup surface visible while both tasks run in parallel.
 Promise.all([import("./app/App.jsx"), import("./app/app.css"), waitForDesktopBackend()])
   .then(([{ App }]) => {
     createRoot(document.getElementById("root")).render(
-      <React.StrictMode><App /></React.StrictMode>,
+      <React.StrictMode><ErrorBoundary><App /></ErrorBoundary></React.StrictMode>,
     );
   })
   .catch((error) => {

@@ -11,6 +11,7 @@ import { settingsPayload } from "../shared/api/client.js";
 
 const desktopRoot = fileURLToPath(new URL("../../../", import.meta.url));
 let appModule;
+let errorBoundaryModule;
 let vite;
 
 test("completion, replay, and history replacement share the durable run duration", () => {
@@ -40,10 +41,23 @@ before(async () => {
     server: { middlewareMode: true },
   });
   appModule = await vite.ssrLoadModule("/renderer/src/app/App.jsx");
+  errorBoundaryModule = await vite.ssrLoadModule("/renderer/src/app/ErrorBoundary.jsx");
 });
 
 after(async () => {
   await vite?.close();
+});
+
+test("a render error surfaces a message instead of a blank window", () => {
+  const { ErrorBoundary } = errorBoundaryModule;
+  // SSR cannot recover from a throwing child, so drive the boundary directly:
+  // healthy children pass through, a caught error becomes the failure surface.
+  assert.equal(new ErrorBoundary({ children: "fine" }).render(), "fine");
+  const failed = new ErrorBoundary({ children: "fine" });
+  failed.state = ErrorBoundary.getDerivedStateFromError(new Error("render exploded"));
+  const html = renderToStaticMarkup(failed.render());
+  assert.match(html, /界面出错，已停止渲染：render exploded/);
+  assert.match(html, /重新加载/);
 });
 
 test("running chat allows editing and offers steering", () => {

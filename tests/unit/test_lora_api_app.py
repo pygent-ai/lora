@@ -194,6 +194,25 @@ def test_trace_response_includes_session_context_snapshots(tmp_path) -> None:
     assert [item["snapshot_id"] for item in response.context_snapshots] == ["context-1"]
 
 
+def test_get_trace_events_rejects_a_run_without_a_directory(tmp_path) -> None:
+    context = ApiContext(
+        workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json")
+    )
+    manager = context.manager
+    session = manager.create("chat", mode="chat")
+
+    # The renderer asks for the trace while a turn is starting, so a missing run
+    # directory must stay a client error: an unhandled 500 leaves the CORS
+    # middleware and the renderer only reports "failed to fetch".
+    with pytest.raises(HTTPException) as missing:
+        get_trace_events(session.session_id, "run-does-not-exist", context)
+    assert missing.value.status_code == 404
+
+    with pytest.raises(HTTPException) as unknown:
+        get_trace_events("chat-does-not-exist", "run-does-not-exist", context)
+    assert unknown.value.status_code == 404
+
+
 def test_get_tool_result_accepts_model_tool_call_id(tmp_path) -> None:
     context = ApiContext(
         workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json")

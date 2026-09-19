@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from lora.runtime.context_snapshots import ContextSnapshotStore
 from lora.tracing import EventStore
@@ -16,7 +16,15 @@ def get_trace_events(
     case_run_id: str,
     context: ApiContext = Depends(get_api_context),
 ) -> TraceEventsResponse:
-    run_ref = context.manager.find_case_run(session_id, case_run_id)
+    # A run directory can be missing while a turn is starting up. Report that as
+    # a client error: an unhandled 500 is produced outside the CORS middleware,
+    # so the renderer only sees an opaque "failed to fetch".
+    try:
+        run_ref = context.manager.find_case_run(session_id, case_run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     store = EventStore(run_ref)
     return TraceEventsResponse(
         session_id=session_id,

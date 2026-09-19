@@ -200,8 +200,17 @@ export function App() {
         }
         return;
       }
-      const response = await api.getTraceEvents(session.session_id, session.last_case_run_id);
-      if (token === traceLoadTokenRef.current) {
+      const response = await api
+        .getTraceEvents(session.session_id, session.last_case_run_id)
+        .catch((err) => {
+          // A turn that just started has no run directory yet; the periodic
+          // refresh retries, so a missing trace is not a user-facing error.
+          if (err?.status === 404) {
+            return null;
+          }
+          throw err;
+        });
+      if (response && token === traceLoadTokenRef.current) {
         setTraceEvents(response.events || []);
         setContextSnapshots((current) => mergeContextSnapshots(response.context_snapshots || [], current));
       }
