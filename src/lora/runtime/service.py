@@ -1102,7 +1102,7 @@ class LoraRuntimeService:
                 f"{reminder}\n\n{dynamic_reminder}" if reminder else dynamic_reminder
             )
         if reminder:
-            wrapped = f"{wrapped}\n\n{format_context(reminder)}"
+            wrapped = f"{wrapped}\n\n{reminder}"
         history, _ = _initial_lora_context(
             context=lora_context,
             history=session.history,
