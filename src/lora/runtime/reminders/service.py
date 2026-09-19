@@ -3,14 +3,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from pygent import InjectionKind
-from pygent.agent import (
-    REACT_PROJECTION_OPERATION_KIND,
-    AppendToolResultContent,
-    encode_react_projection_operation,
-)
-from pygent.runtime import LocalRuntime
-
 from lora.core.io import read_json
 from lora.schema import RunConfig
 from lora.sessions import AgentMessage, SessionCollaborationStore
@@ -25,7 +17,7 @@ from .store import ReminderStateStore
 
 
 class ReminderService:
-    """Collect runtime context and deliver it through native Pygent projection operations."""
+    """Session bootstrap, runtime observations, and the Agent-message inbox."""
 
     def __init__(
         self,
@@ -35,7 +27,6 @@ class ReminderService:
         message_store: SessionCollaborationStore | None = None,
     ) -> None:
         self.config = config
-        self.runtime: LocalRuntime | None = None
         self.store = store or ReminderStateStore()
         self.message_store = message_store or SessionCollaborationStore(
             config.lora_root
@@ -45,24 +36,6 @@ class ReminderService:
         self._queued_observations: set[str] = set()
         self._locks: dict[str, asyncio.Lock] = {}
         self._closed = False
-
-    async def deliver_tool_context(
-        self, execution_id: str, *, input_id: str, content: str
-    ) -> None:
-        if self.runtime is None:
-            raise RuntimeError(
-                "ReminderService requires its owning runtime for delivery"
-            )
-        handle = await self.runtime.get_execution_handle(execution_id)
-        receipt = await handle.send_input(
-            input_id=input_id,
-            kind=REACT_PROJECTION_OPERATION_KIND,
-            value=encode_react_projection_operation(
-                AppendToolResultContent(content, kind=InjectionKind.RUNTIME_CONTEXT)
-            ),
-        )
-        if receipt.status not in {"accepted", "duplicate"}:
-            raise RuntimeError(f"runtime context delivery failed: {receipt.status}")
 
     def scope(self, session_id: str) -> ReminderScope:
         session_dir = Path(self.config.lora_root) / "sessions" / session_id

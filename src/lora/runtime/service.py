@@ -34,7 +34,6 @@ from pygent.agent import (
     REACT_PROJECTION_OPERATION_KIND,
     ReplaceMessageProjection,
     encode_react_projection_operation,
-    format_context,
 )
 from pygent.llm import ModelResourceRef
 from pygent.runtime import (
@@ -274,7 +273,6 @@ class LoraRuntimeService:
             deployment_namespace=str(Path(config.workspace_root).resolve()),
             context_codecs=(LORA_CONTEXT_CODEC,),
         )
-        self.reminders.runtime = self.runtime
         self.runtime.attach_executor_registry(self.executor_registry)
         self._diff_executor = _DiffExecutor(self)
         standard = StandardTools(

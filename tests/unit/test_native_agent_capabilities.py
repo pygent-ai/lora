@@ -349,11 +349,7 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
     assert len(invoker.requests) == 2
     first_message, first_context = invoker.requests[0]
     initial_projection = first_message.content
-    initial_projection = (
-        ElementTree.fromstring("<root>" + initial_projection + "</root>")
-        .find("runtime-context")
-        .text
-    )
+    ElementTree.fromstring("<root>" + initial_projection + "</root>")
     assert "<skills-context>" in initial_projection
     assert "existing-skill" in initial_projection
     assert "<available-bash-cli>" in initial_projection
@@ -361,14 +357,19 @@ async def test_native_react_preserves_skill_cli_and_file_detection(
 
     followup, _ = invoker.requests[1]
     assert isinstance(followup, ToolMessage)
-    tool_projection = ElementTree.fromstring(followup.content).text
+    tool_projection = followup.content
+    assert tool_projection is not None
+    ElementTree.fromstring("<root>" + tool_projection + "</root>")
     assert all(
         "<runtime-context>" not in str(result.output) for result in followup.results
     )
+    assert "<time>\n" in tool_projection
     assert "<new-skills>" in tool_projection
     assert "native-created" in tool_projection
     assert "<new-bash-cli>" in tool_projection
     assert "rg --version" in tool_projection
+    assert "&lt;time&gt;" not in tool_projection
+    assert "&lt;new-skills&gt;" not in tool_projection
 
     file_events = list(
         EventStore.iter_jsonl(

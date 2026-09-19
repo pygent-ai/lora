@@ -17,13 +17,12 @@ Owns model execution, tool execution, context management, and the high-level run
   model projection, complete persisted history, and deferred file-effect jobs.
 - `context_compression.py`: model-context compaction.
 - `reminders/`: session bootstrap, Git/CLI/Skill observations, and the persistent
-  Agent-message inbox. Pygent 0.3.10
-  `Reminder` / `format_context` render native runtime context. Tool updates use
-  v2 `AppendToolResultContent` operations with stable input IDs; raw ToolResults
-  remain unchanged. Agent messages require nested XML, so the reminder module
-  appends their escaped `<runtime-context><agent-message>` envelope directly to
-  `ToolMessage.content`; the outer conversation checkpoint persists that exact
-  projection. There is no legacy system-reminder renderer or v1 adapter.
+  Agent-message inbox. Rendered runtime context and Agent messages are nested XML,
+  so the reminder module appends both directly to `ToolMessage.content`; Pygent's
+  `format_context` envelope would escape that markup into inert text. Raw
+  ToolResults remain unchanged, and the outer conversation checkpoint persists the
+  exact projection the model receives. There is no legacy system-reminder renderer
+  or v1 adapter.
 - `tools.py`: tool observation and file-effect discovery.
 - `file_effect_models.py`: dependency-light file-effect contracts.
 - `file_effects.py`: deferred file-effect persistence and execution.

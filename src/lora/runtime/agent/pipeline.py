@@ -9,10 +9,8 @@ from typing import Any
 
 from pygent import (
     AIMessage,
-    InjectionKind,
     ModelCallLayer,
     Module,
-    Reminder,
     ToolAuthorizationDecision,
     ToolAuthorizationRequest,
     ToolCall,
@@ -737,7 +735,6 @@ class RuntimeReminderModule(Module[ToolMessage, ToolMessage]):
     def __init__(self, reminders: ReminderService) -> None:
         super().__init__()
         self.reminders = reminders
-        self.reminder = Reminder()
 
     async def forward(
         self, message: ToolMessage, context: LoraContext
@@ -822,18 +819,8 @@ class RuntimeReminderModule(Module[ToolMessage, ToolMessage]):
         if not isinstance(replayed, dict):
             raise TypeError("replayed runtime context is invalid")
         content = replayed.get("content")
-        if content:
-            piece, _ = await self.reminder(
-                PygentMessage(
-                    content=content, kind=InjectionKind.RUNTIME_CONTEXT.value
-                ),
-                context,
-            )
-            await self.reminders.deliver_tool_context(
-                execution_id,
-                input_id=f"runtime-context:{identity}",
-                content=piece.content,
-            )
+        if content is not None and not isinstance(content, str):
+            raise TypeError("replayed runtime context content is invalid")
         raw_agent_messages = replayed.get("agent_messages", [])
         if not isinstance(raw_agent_messages, list):
             raise TypeError("replayed agent messages are invalid")
@@ -882,6 +869,16 @@ class RuntimeReminderModule(Module[ToolMessage, ToolMessage]):
                         claim_id=claim_id,
                     )
                 raise
+        if content:
+            # Pygent's runtime-context envelope escapes its payload, which would
+            # flatten this nested XML body into inert text. Append it like the
+            # agent messages so the model sees the rendered markup itself.
+            message = replace(
+                message,
+                content=(
+                    content if not message.content else f"{message.content}\n{content}"
+                ),
+            )
         return message, context
 
 
