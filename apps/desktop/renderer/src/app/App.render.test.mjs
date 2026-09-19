@@ -274,21 +274,33 @@ test("conversation tool messages show each actual result without the duplicated 
       results: [
         {
           call_id: "call-1",
-          name: "bash",
+          name: "read",
           status: "succeeded",
-          output: JSON.stringify({
-            status: "success",
-            result: JSON.stringify({ status: "success", result: "actual stdout", error: null }),
-            error: null,
-            tool_call_id: "call-1",
-          }),
+          output: '{"result": "file content"}',
         },
+        {
+          call_id: "call-2",
+          name: "agent_list",
+          status: "succeeded",
+          output: { operations: [] },
+        },
+        { call_id: "call-3", name: "bash", status: "failed", error: "exit code 1" },
       ],
     },
   };
 
-  assert.equal(appModule.eventSummary(event), "bash  success");
-  assert.equal(appModule.traceEventDetails(event, "Events"), "bash  ·  success  ·  call-1\nactual stdout");
+  assert.equal(
+    appModule.eventSummary(event),
+    "read  succeeded  ·  agent_list  succeeded  ·  bash  failed",
+  );
+  assert.equal(
+    appModule.traceEventDetails(event, "Events"),
+    [
+      'read  ·  succeeded  ·  call-1\n{"result": "file content"}',
+      'agent_list  ·  succeeded  ·  call-2\n{\n  "operations": []\n}',
+      "bash  ·  failed  ·  call-3\nexit code 1",
+    ].join("\n\n"),
+  );
 });
 
 test("trace config formats model routes without object coercion", () => {

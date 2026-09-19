@@ -42,8 +42,9 @@ in both the default Agent toolkit and Runtime executor registry. It reads text,
 extracts PDF text (or renders selected `pages`), and returns native structured
 media blocks for images and MP4 video. Separate `read_image` / `read_video`
 tools are not exposed. Text-only `limit` / `offset` cannot be used with media.
-Lora's audit projection keeps ordinary text reads on its existing bounded text
-output path, while preserving structured blocks for media reads.
+Lora's audit projection leaves Pygent's `ToolResult.output` untouched: ordinary
+text reads reach the model as the file text over the provider's plain output
+path, while media reads keep their native structured blocks.
 The OpenAI Chat Completions adapter enables inline image/video tool results with
 a 20 MiB per-media limit; the selected model must also declare the corresponding
 input modality. Endpoint support still depends on the configured provider.

@@ -3164,33 +3164,12 @@ function conversationToolMessageResults(payload) {
   return results.filter((result) => result && typeof result === "object");
 }
 
-function conversationToolResultEnvelope(result) {
-  return parseJsonObject(result?.output);
-}
-
 function conversationToolResultStatus(result) {
-  const envelope = conversationToolResultEnvelope(result);
-  return String(envelope.status || result?.status || (envelope.error || result?.error ? "error" : "result"));
+  return String(result?.status || (result?.error ? "error" : "result"));
 }
 
 function conversationToolResultValue(result) {
-  const envelope = conversationToolResultEnvelope(result);
-  let value;
-  if (envelope.error) {
-    value = envelope.error;
-  } else if (Object.prototype.hasOwnProperty.call(envelope, "result")) {
-    value = envelope.result;
-  } else {
-    value = result?.error || result?.output || "";
-  }
-  const nested = parseJsonObject(value);
-  if (nested.error) {
-    return nested.error;
-  }
-  if (Object.prototype.hasOwnProperty.call(nested, "result")) {
-    return nested.result;
-  }
-  return value;
+  return result?.error || result?.output || "";
 }
 
 function conversationToolMessageDetails(payload) {

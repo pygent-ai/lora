@@ -327,37 +327,19 @@ def tool_result_to_message(result: AgentToolResult) -> AgentMessage:
     ...
 ```
 
-建议规则：
+规则：
 
 - `role="tool"`
 - `tool_call_id=result.tool_call_id`
-- `content` 为 JSON 字符串或稳定文本协议。
-- 成功时包含：
-
-```json
-{
-  "status": "success",
-  "result": "...",
-  "metadata": {}
-}
-```
-
-- 失败时包含：
-
-```json
-{
-  "status": "error",
-  "error": "File does not exist",
-  "error_type": "FileNotFoundError",
-  "metadata": {}
-}
-```
+- 状态由 `ToolResult` 字段承载：`status`（`succeeded` / `failed` / `detached`）、`error`、`error_kind`，调用方不解析模型可见正文判断状态。
+- 模型可见正文是工具自身的原生输出：文本工具直接给出文本，带结构化内容的工具使用 `content` blocks，业务返回值保留在 `output`。
+- 工具失败时正文回退为 `result.error`；`tool.result` 事件同样带 `status` / `error` / `error_type`。
 
 要求：
 
-- 失败不能只靠 `"错误：..."` 或 `"error: ..."` 这样的自然语言字符串表达。
-- 如果 result 本身是字符串，也应包进结构化对象，避免调用方无法判断状态。
-- 为兼容旧模型上下文，可以允许 `content` 是字符串，但必须有可解析的结构化字段。
+- 失败不能只靠 `"错误：..."` 或 `"error: ..."` 这样的自然语言字符串表达，也不需要把结果重新包进 JSON 信封。
+- Agent runtime、审计投影与 Desktop trace 通过 `ToolResult` 字段和 `tool.result` 事件判断状态，不做字符串匹配。
+- 不为历史信封格式提供解包兼容：消费方直接读取 `status` / `output` / `error`，旧版信封式数据按原样文本显示。
 
 ### 7. Final result 协议
 
@@ -871,7 +853,7 @@ AgentToolResult(
 验收：
 
 - 发出 `tool.result(status="error")`。
-- tool message content 中包含结构化 `status="error"`。
+- tool result 的 `status="error"` 与 `error_type` 结构化可见（`ToolResult` 字段与 `tool.result` 事件），不依赖正文文本。
 - agent runtime 可以继续请求模型，让模型看到工具失败。
 - Lora 不需要通过字符串匹配判断错误。
 
