@@ -50,12 +50,21 @@ test("running chat allows editing and offers steering", () => {
   const html = renderToStaticMarkup(React.createElement(appModule.ChatPane, {
     activeSession: { session_id: "session-1", scope_id: "conversation" },
     messages: [{ id: "user-1", role: "user", content: "hello" }],
+    pendingSteerings: [
+      { inputId: "input-1", text: "focus on tests", stale: false },
+      { inputId: "input-2", text: "use Chinese", stale: true },
+    ],
     settings: {}, status: "Running", running: true, steeringReady: true, approvals: [],
   }));
   const textarea = html.match(/<textarea[^>]*>/)[0];
   assert.doesNotMatch(textarea, /disabled/);
   assert.match(html, /aria-label="追加指令"/);
   assert.match(html, /下一处理边界生效/);
+  // A sent steering input stays visibly pending until the runtime reports its boundary.
+  assert.match(html, /待生效 · 下一处理边界/);
+  assert.match(html, /未生效 · 本轮已结束/);
+  assert.match(html, /focus on tests/);
+  assert.match(html, /use Chinese/);
 });
 
 test("reconnecting sessions allow drafting but cannot steer until connected", () => {
@@ -69,17 +78,70 @@ test("reconnecting sessions allow drafting but cannot steer until connected", ()
   assert.doesNotMatch(html, /aria-label="追加指令"/);
 });
 
-test("steering projection deduplicates receipts and restored history", () => {
-  const original = [{ id: "assistant-1", role: "assistant", content: "working" }];
-  const updated = appModule.insertSteeringMessage(original, "assistant-1", "input-1", "focus on tests");
-  // Steering appears after the current assistant activity to reflect time order.
-  assert.equal(updated[0], original[0]);
-  assert.equal(updated[1].content, "focus on tests");
-  assert.equal(appModule.insertSteeringMessage(updated, "assistant-1", "input-1", "focus on tests"), updated);
+test("a steering boundary already rendered from history does not split twice", () => {
   const restored = appModule.historyToMessages([
     { role: "user", content: "focus on tests", kind: "lora.user.steering", data: { input_id: "input-1" } },
+    { role: "assistant", content: "working on tests" },
   ]);
-  assert.equal(appModule.insertSteeringMessage(restored, "assistant-1", "input-1", "focus on tests"), restored);
+  assert.equal(restored[0].steeringInputId, "input-1");
+  assert.equal(
+    appModule.splitAssistantForSteering(restored, restored[1].id, "input-1", "focus on tests", "assistant-2"),
+    restored,
+  );
+  const split = appModule.splitAssistantForSteering(restored, restored[1].id, "input-2", "use Chinese", "assistant-3");
+  assert.equal(split.length, restored.length + 2);
+  assert.equal(split[2].content, "use Chinese");
+  assert.equal(split.at(-1).id, "assistant-3");
+});
+
+test("steering waits for the react boundary, then moves new activity below it", () => {
+  const running = {
+    id: "assistant-1",
+    role: "assistant",
+    content: "",
+    status: "running",
+    startedAt: 1,
+    endedAt: null,
+    sections: [{
+      id: "tools-1",
+      type: "tools",
+      status: "running",
+      calls: [{ id: "call-1", name: "read", status: "running", result: "" }],
+    }],
+  };
+
+  // Sent while call-1 is still running: the input is pending, the transcript is untouched.
+  const entry = { inputId: "input-1", text: "focus on tests" };
+  let pending = appModule.addPendingSteering({}, "session-1", entry);
+  assert.deepEqual(pending["session-1"], [{ ...entry, stale: false }]);
+  assert.equal(appModule.addPendingSteering(pending, "session-1", entry), pending);
+
+  // The runtime reports the boundary it consumed the input on: the input enters
+  // the transcript and the activity splits there.
+  const split = appModule.splitAssistantForSteering([running], "assistant-1", "input-1", "focus on tests", "assistant-2");
+  assert.equal(split.length, 3);
+  assert.equal(split[1].content, "focus on tests");
+  assert.equal(split[2].id, "assistant-2");
+  assert.equal(split[0].status, "success");
+  assert.deepEqual(pending = appModule.resolvePendingSteering(pending, "session-1", "input-1"), {});
+
+  // Output emitted after the boundary lands in the new block, not above it.
+  const projected = split.map((item) => (
+    item.id === "assistant-2"
+      ? appModule.projectLiveAssistantEvent(item, { kind: "tool.started", data: { call_id: "call-2", name: "bash" } })
+      : item
+  ));
+  assert.equal(projected[0], split[0]);
+  assert.deepEqual(projected[0].sections[0].calls.map((call) => call.id), ["call-1"]);
+  assert.deepEqual(projected[2].sections[0].calls.map((call) => call.id), ["call-2"]);
+
+  // A turn that ends before the boundary never applied the input.
+  const stale = appModule.stalePendingSteerings(
+    appModule.addPendingSteering({}, "session-1", { inputId: "input-2", text: "use Chinese" }),
+    "session-1",
+  );
+  assert.deepEqual(stale["session-1"], [{ inputId: "input-2", text: "use Chinese", stale: true }]);
+  assert.equal(appModule.stalePendingSteerings(stale, "session-1"), stale);
 });
 
 test("settings displays the saved tool permission mode", () => {

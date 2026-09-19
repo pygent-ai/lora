@@ -120,6 +120,7 @@ export function App() {
   const [activeSession, setActiveSession] = useState(null);
   const [messages, setMessages] = useState([]);
   const [activityCollapseToken, setActivityCollapseToken] = useState(0);
+  const [pendingSteerings, setPendingSteerings] = useState({});
   const [traceEvents, setTraceEvents] = useState([]);
   const [liveEvents, setLiveEvents] = useState([]);
   const [contextSnapshots, setContextSnapshots] = useState([]);
@@ -522,7 +523,7 @@ export function App() {
               }
               const terminalEvent = ["execution.completed", "execution.failed", "execution.deadline_exceeded", "execution.cancelled", "lora.transport.error"].includes(eventKind);
               if (streamSessionId && data.execution_id && !terminalEvent) {
-                activeExecutionsRef.current.set(streamSessionId, { executionId: data.execution_id, assistantId: activeAssistantId });
+                activeExecutionsRef.current.set(streamSessionId, { executionId: data.execution_id });
                 setSteeringSessionIds((items) => items[streamSessionId] ? items : { ...items, [streamSessionId]: true });
               } else if (streamSessionId && terminalEvent) {
                 activeExecutionsRef.current.delete(streamSessionId);
@@ -540,17 +541,23 @@ export function App() {
               if (eventKind === "lora.context.snapshot" && isStreamSessionVisible()) {
                 setContextSnapshots((current) => mergeContextSnapshots(current, [eventData]));
               }
-              // Split assistant message when user steering is received by runtime as a conversation.user_message
+              // The runtime announces the ReAct boundary it drained a steering
+              // input on: that is where the transcript splits and the input stops
+              // being pending.
               if (eventKind === "lora.runtime.message" && eventData.role === "user" && eventData.kind === "lora.user.steering") {
+                const inputId = String(eventData.data?.input_id || "");
                 const newAssistantId = `assistant-${Date.now()}`;
-                const split = (items) => splitAssistantForSteering(items, activeAssistantId, String(eventData.data?.input_id || ""), String(eventData.content || ""), newAssistantId);
-                updateVisibleMessages(split);
-                activeAssistantId = newAssistantId;
-                // Re-bind active execution assistantId if present
-                const currentExec = activeExecutionsRef.current.get(streamSessionId);
-                if (currentExec) {
-                  activeExecutionsRef.current.set(streamSessionId, { ...currentExec, assistantId: activeAssistantId });
+                const nextMessages = splitAssistantForSteering(
+                  streamMessages, activeAssistantId, inputId, String(eventData.content || ""), newAssistantId,
+                );
+                if (nextMessages !== streamMessages) {
+                  streamMessages = nextMessages;
+                  updateCachedMessages(() => nextMessages);
+                  messagesRef.current = nextMessages;
+                  if (isStreamSessionVisible()) setMessages(() => nextMessages);
+                  activeAssistantId = newAssistantId;
                 }
+                setPendingSteerings((items) => resolvePendingSteering(items, streamSessionId, inputId));
               }
               projectLiveExecutionEvent(updateVisibleMessages, activeAssistantId, data);
               if (eventKind === "lora.approval.requested") {
@@ -577,6 +584,8 @@ export function App() {
               }
               if (["execution.completed", "execution.failed", "execution.deadline_exceeded", "execution.cancelled"].includes(eventKind)) {
                 setApprovals((items) => items.filter((item) => item.session_id !== streamSessionId));
+                // No boundary reported for these inputs: the turn ended first.
+                setPendingSteerings((items) => stalePendingSteerings(items, streamSessionId));
               }
             },
           },
@@ -601,7 +610,7 @@ export function App() {
           setStatus("Error");
         }
         setError(readableError(err));
-        projectLiveExecutionEvent(updateVisibleMessages, assistantId, {
+        projectLiveExecutionEvent(updateVisibleMessages, activeAssistantId, {
           kind: "lora.transport.error",
           data: { error: readableError(err) },
         });
@@ -662,15 +671,11 @@ export function App() {
       throw new Error("执行尚未连接或已经结束，请稍后重试。");
     }
     await api.steerChat(execution.executionId, { sessionId, inputId, message });
-    // Immediately split the assistant activity so subsequent output appears after the steering input.
-    const newAssistantId = `assistant-${Date.now()}`;
-    const split = (items) => splitAssistantForSteering(items, execution.assistantId, inputId, message, newAssistantId);
-    const cached = pendingSessionMessagesRef.current.get(sessionId);
-    if (cached) pendingSessionMessagesRef.current.set(sessionId, split(cached));
-    // Re-bind active execution to the new assistant message id so projections continue to the new block.
-    activeExecutionsRef.current.set(sessionId, { ...execution, assistantId: newAssistantId });
+    // Show the input right away, but keep it pending: the runtime decides where
+    // the ReAct boundary falls, and only its boundary event moves the activity
+    // and places the input into the transcript.
+    setPendingSteerings((items) => addPendingSteering(items, sessionId, { inputId, text: message }));
     if (activeSessionIdRef.current === sessionId) {
-      setMessages(split);
       setNotice("指令已送达，将在下一处理边界生效。");
     }
   }, [api]);
@@ -804,6 +809,7 @@ export function App() {
         running={running}
         steeringReady={Boolean(steeringSessionIds[activeSessionId])}
         approvals={approvals.filter((item) => item.session_id === activeSessionId)}
+        pendingSteerings={pendingSteerings[activeSessionId] || []}
         api={api}
         onSendMessage={handleSendMessage}
         onSteering={handleSteering}
@@ -1093,7 +1099,7 @@ function SessionRow({
   );
 }
 
-export function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, steeringReady = false, approvals, api, onSendMessage, onSteering, onApproval, projects = [], onSelectProject, onChooseProject, onChangePermissions, pendingNewModelGroup = "", onChangeNewModelGroup = () => {}, onChangeModel = () => {} }) {
+export function ChatPane({ activeSession, messages, activityCollapseToken, settings, status, running, steeringReady = false, approvals, pendingSteerings = [], api, onSendMessage, onSteering, onApproval, projects = [], onSelectProject, onChooseProject, onChangePermissions, pendingNewModelGroup = "", onChangeNewModelGroup = () => {}, onChangeModel = () => {} }) {
   const [draft, setDraft] = useState("");
   const [configuring, setConfiguring] = useState(false);
   const [configError, setConfigError] = useState("");
@@ -1179,6 +1185,14 @@ export function ChatPane({ activeSession, messages, activityCollapseToken, setti
       }}>
         {messages.map((message) => (
           <MessageRow key={message.id} message={message} activityCollapseToken={activityCollapseToken} api={api} />
+        ))}
+        {pendingSteerings.map((item) => (
+          <article className="message user pending-steering" key={`pending-${item.inputId}`}>
+            <div className="bubble">
+              <span className="pending-steering-label">{item.stale ? "未生效 · 本轮已结束" : "待生效 · 下一处理边界"}</span>
+              {item.text}
+            </div>
+          </article>
         ))}
       </div>
 
@@ -2192,8 +2206,9 @@ function renderTurnSegment(segment, idPrefix, timing = segment.find((message) =>
 }
 
 function apiEventToTraceEvent(event) {
+  const seq = Number.isFinite(event.sequence) ? event.sequence : Date.now() + Math.random();
   return {
-    id: `${event.execution_id || "execution"}-${event.sequence || 0}`,
+    id: `${event.execution_id || "execution"}-${seq}`,
     type: event.kind || "runtime.event",
     timestamp: "",
     actor: "runtime",
@@ -2218,18 +2233,8 @@ function tracePreviewPayload(payload) {
   return preview;
 }
 
-export function insertSteeringMessage(items, assistantId, inputId, content) {
-  const id = `steering-${inputId}`;
-  if (items.some((item) => item.id === id || item.steeringInputId === inputId)) return items;
-  const user = { id, role: "user", content, steeringInputId: inputId };
-  const index = items.findIndex((item) => item.id === assistantId);
-  // Insert the steering input after the current assistant activity so the transcript reflects time order:
-  // user (start) -> assistant (so far) -> user (steer) -> assistant (continues)
-  return index < 0 ? [...items, user] : [...items.slice(0, index + 1), user, ...items.slice(index + 1)];
-}
-
 export function splitAssistantForSteering(items, assistantId, inputId, content, newAssistantId, now = Date.now()) {
-  // Deduplicate steering receipts
+  // Deduplicate steering boundaries already rendered from history or an earlier event.
   if (items.some((item) => item.steeringInputId === inputId || item.id === `steering-${inputId}`)) return items;
   const user = { id: `steering-${inputId}`, role: "user", content, steeringInputId: inputId };
   const index = items.findIndex((item) => item.id === assistantId);
@@ -2260,6 +2265,39 @@ export function splitAssistantForSteering(items, assistantId, inputId, content, 
     newAssistant,
     ...items.slice(index + 1),
   ];
+}
+
+// A steering input is shown as soon as it is sent, but it only belongs to the
+// transcript once the runtime reports the ReAct boundary that consumed it.
+export function addPendingSteering(pending, sessionId, entry) {
+  if (!sessionId) {
+    return pending;
+  }
+  const current = pending[sessionId] || [];
+  if (current.some((item) => item.inputId === entry.inputId)) {
+    return pending;
+  }
+  return { ...pending, [sessionId]: [...current, { ...entry, stale: false }] };
+}
+
+export function resolvePendingSteering(pending, sessionId, inputId) {
+  const current = pending[sessionId];
+  if (!current?.length) {
+    return pending;
+  }
+  const next = current.filter((item) => item.inputId !== inputId);
+  if (next.length === current.length) {
+    return pending;
+  }
+  return next.length ? { ...pending, [sessionId]: next } : omitKey(pending, sessionId);
+}
+
+export function stalePendingSteerings(pending, sessionId) {
+  const current = pending[sessionId];
+  if (!current?.length || current.every((item) => item.stale)) {
+    return pending;
+  }
+  return { ...pending, [sessionId]: current.map((item) => ({ ...item, stale: true })) };
 }
 
 function projectLiveExecutionEvent(setMessages, assistantId, event) {
