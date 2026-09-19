@@ -69,7 +69,9 @@ class SessionService:
             Path(ref.session_dir), metadata, scope_id=self.scope_id
         )
 
-    def load_detail(self, session_id: str) -> SessionDetailResponse:
+    def load_detail(
+        self, session_id: str, *, history_limit: int | None = None
+    ) -> SessionDetailResponse:
         session = self.manager.load(session_id)
         metadata = read_json(Path(session.session_dir) / "metadata.json")
         run_metadata = {}
@@ -79,11 +81,16 @@ class SessionService:
         ):
             ref = self.manager.find_case_run(session_id, metadata["last_case_run_id"])
             run_metadata = read_json(Path(ref.run_dir) / "run_metadata.json")
+        history = self.manager.history_with_run_timing(session)
+        history_total = len(history)
+        history = _latest_items(history, history_limit)
         return SessionDetailResponse(
             session=_record_from_metadata(
                 Path(session.session_dir), metadata, scope_id=self.scope_id
             ),
-            history=self.manager.history_with_run_timing(session),
+            history=history,
+            history_total=history_total,
+            history_truncated=len(history) < history_total,
             metadata=session.metadata,
             runtime_execution_id=run_metadata.get("runtime_execution_id"),
             run_history_start_index=run_metadata.get("history_start_index", 0),
@@ -319,6 +326,12 @@ def _clean_title(value: str) -> str:
 
 def _optional_str(value: Any) -> str | None:
     return str(value) if value is not None else None
+
+
+def _latest_items(items: list[Any], limit: int | None) -> list[Any]:
+    if limit is None or limit <= 0 or len(items) <= limit:
+        return items
+    return items[-limit:]
 
 
 def _delete_tree(path: Path) -> None:

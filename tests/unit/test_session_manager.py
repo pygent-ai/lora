@@ -246,6 +246,27 @@ def test_running_session_exposes_current_run_and_recovery_checkpoint(tmp_path):
     )
 
 
+def test_session_detail_can_limit_large_history_windows(tmp_path: Path) -> None:
+    from lora_api.services.session_service import SessionService
+
+    manager = SessionManager(native_run_config(tmp_path))
+    session = manager.create("chat", mode="chat")
+    run = manager.start_case_run(session.session_id, "chat")
+    for index in range(5):
+        manager.append_history_checkpoint(
+            run,
+            turn_id=f"turn-{index}",
+            checkpoint_id=f"checkpoint-{index}",
+            message={"role": "user", "content": f"message {index}"},
+        )
+
+    detail = SessionService(manager).load_detail(session.session_id, history_limit=2)
+
+    assert detail.history_total == 5
+    assert detail.history_truncated is True
+    assert [item["content"] for item in detail.history] == ["message 3", "message 4"]
+
+
 def test_session_persists_fixed_group_and_preferred_model(tmp_path: Path) -> None:
     config = native_run_config(tmp_path)
     manager = SessionManager(config)

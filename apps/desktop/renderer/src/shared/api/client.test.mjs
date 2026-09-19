@@ -155,6 +155,23 @@ test("api client creates and loads a conversation-scoped chat", async () => {
   assert.equal(calls[1].url, "http://127.0.0.1:8765/sessions/chat%20one?scope_id=conversation");
 });
 
+test("api client requests bounded session and trace windows", async () => {
+  const calls = [];
+  const client = createApiClient({
+    baseUrl: "http://127.0.0.1:8765",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  await client.getSession("chat one", { scopeId: "conversation", historyLimit: 200 });
+  await client.getTraceEvents("chat one", "run one", { eventLimit: 500, contextSnapshotLimit: 50 });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8765/sessions/chat%20one?scope_id=conversation&history_limit=200");
+  assert.equal(calls[1].url, "http://127.0.0.1:8765/traces/chat%20one/run%20one?event_limit=500&context_snapshot_limit=50");
+});
+
 test("api client removes a project from the sidebar by scope", async () => {
   const calls = [];
   const client = createApiClient({

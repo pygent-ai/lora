@@ -70,10 +70,14 @@ async def update_session_model(
 def get_session(
     session_id: str,
     scope_id: str | None = None,
+    history_limit: int | None = None,
     context: ApiContext = Depends(get_api_context),
 ) -> SessionDetailResponse:
     try:
-        return session_service_for_scope(context, scope_id).load_detail(session_id)
+        return session_service_for_scope(context, scope_id).load_detail(
+            session_id,
+            history_limit=history_limit,
+        )
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(
             status_code=404,

@@ -24,7 +24,12 @@ import {
 
 import { createApiClient } from "../shared/api/client.js";
 import { createSessionGroupSync, startBackgroundRefresh } from "./sessionGroupSync.js";
-import { refreshActiveSession } from "./activeSessionSync.js";
+import {
+  CONTEXT_SNAPSHOT_LIMIT,
+  SESSION_HISTORY_LIMIT,
+  TRACE_EVENT_LIMIT,
+  refreshActiveSession,
+} from "./activeSessionSync.js";
 import { loadWorkbenchPreferences, saveWorkbenchPreferences } from "./workbenchPreferences.js";
 import { DEFAULT_PANEL_WIDTHS, PANEL_LIMITS, normalizePanelWidths, fitPanelWidths } from "./panelWidths.js";
 import { projectPathKey } from "../features/projects/projectPaths.js";
@@ -144,6 +149,10 @@ export function App() {
   const sessionLoadTokenRef = useRef(0);
   const resumeSessionRef = useRef(null);
   const traceLoadTokenRef = useRef(0);
+  const activeSessionSignatureRef = useRef("");
+  const traceEventsSignatureRef = useRef("");
+  const contextSnapshotsSignatureRef = useRef("");
+  const messagesHistorySignatureRef = useRef("");
 
   const activeSessionId = activeSession?.session_id || "";
   const running = Boolean(activeSessionId && runningSessionIds[activeSessionId]);
@@ -201,7 +210,10 @@ export function App() {
         return;
       }
       const response = await api
-        .getTraceEvents(session.session_id, session.last_case_run_id)
+        .getTraceEvents(session.session_id, session.last_case_run_id, {
+          eventLimit: TRACE_EVENT_LIMIT,
+          contextSnapshotLimit: CONTEXT_SNAPSHOT_LIMIT,
+        })
         .catch((err) => {
           // A turn that just started has no run directory yet; the periodic
           // refresh retries, so a missing trace is not a user-facing error.
@@ -240,7 +252,10 @@ export function App() {
       setContextSnapshots(contextSnapshotsFromEvents(previewLiveEvents));
       let detail;
       try {
-        detail = await api.getSession(sessionId, { scopeId: previewSession?.scope_id });
+        detail = await api.getSession(sessionId, {
+          scopeId: previewSession?.scope_id,
+          historyLimit: SESSION_HISTORY_LIMIT,
+        });
       } catch (err) {
         if (sessionToken !== sessionLoadTokenRef.current) {
           return;
@@ -658,13 +673,27 @@ export function App() {
         onSnapshot: (detail, trace) => {
           traceLoadTokenRef.current += 1;
           const loadedSession = sessionFromDetail(detail);
-          setActiveSession((current) => JSON.stringify(current) === JSON.stringify(loadedSession) ? current : loadedSession);
-          setTraceEvents((current) => JSON.stringify(current) === JSON.stringify(trace.events || []) ? current : trace.events || []);
-          setContextSnapshots((current) => JSON.stringify(current) === JSON.stringify(trace.context_snapshots || []) ? current : trace.context_snapshots || []);
+          const activeSessionSignature = sessionDetailSignature(loadedSession);
+          if (activeSessionSignatureRef.current !== activeSessionSignature) {
+            activeSessionSignatureRef.current = activeSessionSignature;
+            setActiveSession(loadedSession);
+          }
+          const traceEventsSignature = traceResponseSignature(trace, "events");
+          if (traceEventsSignatureRef.current !== traceEventsSignature) {
+            traceEventsSignatureRef.current = traceEventsSignature;
+            setTraceEvents(trace.events || []);
+          }
+          const contextSnapshotsSignature = traceResponseSignature(trace, "context_snapshots");
+          if (contextSnapshotsSignatureRef.current !== contextSnapshotsSignature) {
+            contextSnapshotsSignatureRef.current = contextSnapshotsSignature;
+            setContextSnapshots(trace.context_snapshots || []);
+          }
           sessionLiveEventsRef.current.delete(activeSessionId);
           setLiveEvents((current) => current.length ? [] : current);
-          const nextMessages = historyToMessages(detail.history || []);
-          if (JSON.stringify(messagesRef.current) !== JSON.stringify(nextMessages)) {
+          const messagesHistorySignature = sessionHistorySignature(detail);
+          if (messagesHistorySignatureRef.current !== messagesHistorySignature) {
+            messagesHistorySignatureRef.current = messagesHistorySignature;
+            const nextMessages = historyToMessages(detail.history || []);
             messagesRef.current = nextMessages;
             setMessages(nextMessages);
           }
@@ -2814,6 +2843,95 @@ function sessionFromDetail(detail) {
     ...(detail?.session || {}),
     selectable_models: detail?.selectable_models || [],
   };
+}
+
+function sessionDetailSignature(session) {
+  return [
+    session?.session_id || "",
+    session?.updated_at || "",
+    session?.last_case_run_id || "",
+    session?.last_case_run_status || "",
+    session?.model_group_name || "",
+    session?.selected_model_key || "",
+    stableListSignature(session?.selectable_models || [], modelSummarySignature),
+  ].join("|");
+}
+
+function sessionHistorySignature(detail) {
+  const history = detail?.history || [];
+  return [
+    detail?.session?.session_id || "",
+    detail?.history_total ?? history.length,
+    detail?.history_truncated ? "truncated" : "complete",
+    stableListSignature(history, historyMessageSignature),
+  ].join("|");
+}
+
+function traceResponseSignature(trace, key) {
+  const items = trace?.[key] || [];
+  const totalKey = key === "events" ? "events_total" : "context_snapshots_total";
+  const truncatedKey = key === "events" ? "events_truncated" : "context_snapshots_truncated";
+  return [
+    trace?.session_id || "",
+    trace?.case_run_id || "",
+    trace?.[totalKey] ?? items.length,
+    trace?.[truncatedKey] ? "truncated" : "complete",
+    stableListSignature(items, key === "events" ? traceEventSignature : contextSnapshotSignature),
+  ].join("|");
+}
+
+function stableListSignature(items, itemSignature) {
+  if (!Array.isArray(items) || !items.length) {
+    return "0";
+  }
+  const first = itemSignature(items[0]);
+  const last = itemSignature(items[items.length - 1]);
+  return `${items.length}:${first}:${last}`;
+}
+
+function modelSummarySignature(model) {
+  return `${model?.model_key || ""}:${model?.provider || ""}:${model?.model_id || ""}`;
+}
+
+function historyMessageSignature(message) {
+  return [
+    message?.role || "",
+    message?.turn_id || "",
+    message?.checkpoint_id || "",
+    message?.case_run_id || "",
+    message?.run_timing?.case_run_id || "",
+    message?.run_timing?.status || "",
+    compactValueSignature(message?.content),
+  ].join(",");
+}
+
+function traceEventSignature(event) {
+  const payload = event?.payload || {};
+  return [
+    event?.id || "",
+    event?.type || "",
+    payload.sequence ?? "",
+    payload.kind || "",
+    payload.tool_call_id || payload.call_id || payload.model_tool_call_id || "",
+    payload.status || "",
+  ].join(",");
+}
+
+function contextSnapshotSignature(snapshot) {
+  return [
+    snapshot?.snapshot_id || "",
+    snapshot?.case_run_id || "",
+    snapshot?.turn_id || "",
+    snapshot?.compression_version ?? "",
+    snapshot?.projection_revision ?? "",
+  ].join(",");
+}
+
+function compactValueSignature(value) {
+  if (typeof value !== "string") {
+    return value === undefined || value === null ? "" : String(value);
+  }
+  return `${value.length}:${value.slice(0, 96)}:${value.slice(-48)}`;
 }
 
 export function shouldSubmitComposer(event) {

@@ -104,16 +104,25 @@ export function createApiClient(options = {}) {
           model_group_name: request.modelGroupName || undefined,
         },
       }),
-    getSession: (sessionId, { scopeId, ...options } = {}) =>
-      jsonRequest(`/sessions/${encodeURIComponent(sessionId)}${scopeQuery(scopeId)}`, options),
+    getSession: (sessionId, { scopeId, historyLimit, ...options } = {}) =>
+      jsonRequest(
+        `/sessions/${encodeURIComponent(sessionId)}${queryString({
+          scope_id: scopeId,
+          history_limit: historyLimit,
+        })}`,
+        options,
+      ),
     deleteSession: (sessionId, { scopeId, ...options } = {}) =>
       jsonRequest(`/sessions/${encodeURIComponent(sessionId)}${scopeQuery(scopeId)}`, {
         ...options,
         method: "DELETE",
       }),
-    getTraceEvents: (sessionId, caseRunId, options = {}) =>
+    getTraceEvents: (sessionId, caseRunId, { eventLimit, contextSnapshotLimit, ...options } = {}) =>
       jsonRequest(
-        `/traces/${encodeURIComponent(sessionId)}/${encodeURIComponent(caseRunId)}`,
+        `/traces/${encodeURIComponent(sessionId)}/${encodeURIComponent(caseRunId)}${queryString({
+          event_limit: eventLimit,
+          context_snapshot_limit: contextSnapshotLimit,
+        })}`,
         options,
       ),
     getToolResult: (toolCallId, options = {}) =>
@@ -380,6 +389,12 @@ function normalizeBaseUrl(value) {
 
 function scopeQuery(scopeId) {
   return scopeId ? `?scope_id=${encodeURIComponent(scopeId)}` : "";
+}
+
+function queryString(params) {
+  const entries = Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== "");
+  if (!entries.length) return "";
+  return `?${entries.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&")}`;
 }
 
 function settingsValue(value) {

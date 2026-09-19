@@ -22,12 +22,22 @@ function fixture(overrides = {}) {
 
 test("a background-completed run refreshes trace and context for the open session", async () => {
   const f = fixture();
-  f.options.api.getTraceEvents = async (sessionId, runId) => {
+  let sessionOptions;
+  let traceOptions;
+  f.options.api.getSession = async (_sessionId, options) => {
+    sessionOptions = options;
+    return f.detail;
+  };
+  f.options.api.getTraceEvents = async (sessionId, runId, options) => {
     assert.equal(sessionId, "child");
     assert.equal(runId, "new-run");
+    traceOptions = options;
     return f.trace;
   };
   await refreshActiveSession(f.options);
+  assert.equal(sessionOptions.historyLimit, 200);
+  assert.equal(traceOptions.eventLimit, 500);
+  assert.equal(traceOptions.contextSnapshotLimit, 50);
   assert.deepEqual(f.snapshots, [[f.detail, f.trace]]);
 });
 
@@ -78,5 +88,12 @@ test("a session without a run clears previous trace and context", async () => {
   const f = fixture({ getTraceEvents: () => assert.fail("no run") });
   f.detail.session.last_case_run_id = null;
   await refreshActiveSession(f.options);
-  assert.deepEqual(f.snapshots[0][1], { events: [], context_snapshots: [] });
+  assert.deepEqual(f.snapshots[0][1], {
+    events: [],
+    events_total: 0,
+    events_truncated: false,
+    context_snapshots: [],
+    context_snapshots_total: 0,
+    context_snapshots_truncated: false,
+  });
 });

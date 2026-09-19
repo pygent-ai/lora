@@ -194,6 +194,30 @@ def test_trace_response_includes_session_context_snapshots(tmp_path) -> None:
     assert [item["snapshot_id"] for item in response.context_snapshots] == ["context-1"]
 
 
+def test_trace_response_can_limit_large_event_windows(tmp_path) -> None:
+    context = ApiContext(
+        workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json")
+    )
+    session = context.manager.create(case_id="chat", mode="chat")
+    run = context.manager.start_case_run(
+        session.session_id, "chat", run_config=context.config
+    )
+    store = EventStore(run)
+    for index in range(5):
+        store.append("tool.call", actor="assistant", payload={"index": index})
+
+    response = get_trace_events(
+        session.session_id,
+        run.case_run_id,
+        event_limit=2,
+        context=context,
+    )
+
+    assert response.events_total == 5
+    assert response.events_truncated is True
+    assert [item["payload"]["index"] for item in response.events] == [3, 4]
+
+
 def test_get_trace_events_rejects_a_run_without_a_directory(tmp_path) -> None:
     context = ApiContext(
         workspace_root=str(tmp_path), state_path=str(tmp_path / "state.json")

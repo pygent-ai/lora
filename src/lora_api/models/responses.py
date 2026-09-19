@@ -83,6 +83,8 @@ class SessionGroupListResponse(BaseModel):
 class SessionDetailResponse(BaseModel):
     session: SessionRecordResponse
     history: list[dict[str, Any]] = Field(default_factory=list)
+    history_total: int = 0
+    history_truncated: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
     runtime_execution_id: str | None = None
     run_history_start_index: int = 0
@@ -129,7 +131,11 @@ class TraceEventsResponse(BaseModel):
     session_id: str
     case_run_id: str
     events: list[dict[str, Any]]
+    events_total: int = 0
+    events_truncated: bool = False
     context_snapshots: list[dict[str, Any]] = Field(default_factory=list)
+    context_snapshots_total: int = 0
+    context_snapshots_truncated: bool = False
 
 
 class ToolResultResponse(BaseModel):
